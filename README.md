@@ -238,6 +238,13 @@ Before deploying:
 4. Configure Cloudflare Access for `sleeper-mcp.neilbhavsar.com`.
 5. Deploy with `make worker-deploy`.
 
+For GitHub Actions deploys, add these repository secrets:
+
+- `CLOUDFLARE_ACCOUNT_ID`
+- `CLOUDFLARE_API_TOKEN`
+
+The deploy workflow runs only after the `CI` workflow succeeds on `main`, or when triggered manually.
+
 The remote MCP endpoint is:
 
 ```text
