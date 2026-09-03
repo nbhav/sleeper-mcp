@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "sleeper-fantasy": {
+      "command": "docker",
+      "args": [
+        "compose",
+        "-f",
+        "/absolute/path/to/fantasy-football/docker-compose.yml",
+        "run",
+        "--rm",
+        "-i",
+        "sleeper-mcp"
+      ]
+    }
+  }
+}
