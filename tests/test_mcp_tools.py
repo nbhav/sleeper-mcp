@@ -83,6 +83,85 @@ def test_missing_required_league_context_raises_clear_error(tmp_path) -> None:
         runner.injury_watch()
 
 
+def test_weekly_performance_backtest_returns_leaders_and_movers(tmp_path) -> None:
+    runner = FantasyToolRunner(
+        client_factory=lambda: FakeBacktestClient(),
+        players_cache=tmp_path / "players.json",
+    )
+
+    report = runner.weekly_performance_backtest(
+        season=2026,
+        start_week=1,
+        weeks=2,
+        positions="RB",
+        limit=2,
+        movement_limit=2,
+    )
+
+    assert report["weeks"] == [1, 2]
+    assert report["weekly_leaders"][0]["leaders"][0]["name"] == "Stable RB"
+    assert report["weekly_leaders"][1]["leaders"][0]["name"] == "Rising RB"
+    comparison = report["week_over_week"][0]
+    assert comparison["previous_week"] == 1
+    assert comparison["current_week"] == 2
+    assert comparison["top_risers"][0] == {
+        "player_id": "rising-rb",
+        "name": "Rising RB",
+        "team": "DEN",
+        "position": "RB",
+        "previous_points": 6.0,
+        "current_points": 14.0,
+        "points_delta": 8.0,
+        "previous_rank": 2,
+        "current_rank": 1,
+        "rank_delta": 1,
+    }
+    assert comparison["top_fallers"][0]["player_id"] == "stable-rb"
+    assert comparison["appeared"][0]["player_id"] == "new-rb"
+
+
+def test_weekly_performance_backtest_rejects_invalid_source(tmp_path) -> None:
+    runner = FantasyToolRunner(
+        client_factory=lambda: FakeBacktestClient(),
+        players_cache=tmp_path / "players.json",
+    )
+
+    with pytest.raises(ValueError, match="source must be"):
+        runner.weekly_performance_backtest(
+            season=2026,
+            start_week=1,
+            source="live",  # type: ignore[arg-type]
+        )
+
+
+def test_waiver_wire_watch_returns_actionable_ranked_candidates(tmp_path) -> None:
+    runner = FantasyToolRunner(
+        client_factory=lambda: FakeMcpClient(),
+        players_cache=tmp_path / "players.json",
+    )
+
+    report = runner.waiver_wire_watch(
+        league_id="league-1",
+        season=2026,
+        week=2,
+        positions="RB",
+        limit=1,
+        recent_weeks=1,
+    )
+
+    assert report["league_id"] == "league-1"
+    candidate = report["candidates"][0]
+    assert candidate["player_id"] == "free-rb"
+    assert candidate["league_id"] == "league-1"
+    assert candidate["season"] == 2026
+    assert candidate["week"] == 2
+    assert candidate["projected_points"] == 20
+    assert candidate["drop_trend_count"] == 5
+    assert candidate["net_trend_count"] == 45
+    assert candidate["recent_average_points"] == 10
+    assert candidate["watch_score"] == 30.45
+
+
 def test_opponent_watch_returns_matchup_context(tmp_path) -> None:
     fake_client = FakeMcpClient()
     runner = FantasyToolRunner(
@@ -270,6 +349,8 @@ class FakeMcpClient:
         }
 
     def get_trending_players(self, trend_type, *, sport="nfl", lookback_hours=24, limit=25):
+        if trend_type == "drop":
+            return [{"player_id": "free-rb", "count": 5}]
         return [{"player_id": "free-rb", "count": 50}]
 
     def get_projections(self, season, *, week=None, sport="nfl", season_type="regular", position=None, order_by=None):
@@ -303,4 +384,46 @@ class FakeMcpClient:
             "player_id": player_id,
             "player": {"full_name": name, "team": team, "position": position},
             "stats": {"custom_score": custom_score, "pts_ppr": custom_score},
+        }
+
+
+class FakeBacktestClient:
+    def __enter__(self) -> "FakeBacktestClient":
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+    def get_nfl_state(self) -> dict[str, object]:
+        return {"season": "2026", "week": 2}
+
+    def get_stats(self, season, *, week=None, sport="nfl", season_type="regular", position=None, order_by=None):
+        if position != "RB":
+            return []
+        if week == 1:
+            return [
+                self._row("stable-rb", "Stable RB", 10),
+                self._row("rising-rb", "Rising RB", 6),
+            ]
+        return [
+            self._row("rising-rb", "Rising RB", 14),
+            self._row("new-rb", "New RB", 8),
+            self._row("stable-rb", "Stable RB", 5),
+        ]
+
+    def get_projections(self, season, *, week=None, sport="nfl", season_type="regular", position=None, order_by=None):
+        return self.get_stats(
+            season,
+            week=week,
+            sport=sport,
+            season_type=season_type,
+            position=position,
+            order_by=order_by,
+        )
+
+    def _row(self, player_id: str, name: str, points: int) -> dict[str, object]:
+        return {
+            "player_id": player_id,
+            "player": {"full_name": name, "team": "DEN", "position": "RB"},
+            "stats": {"pts_ppr": points},
         }

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Sleeper Weekly Scout"
+  short_description: "Back-test weeks and actionable waivers"
+  default_prompt: "Use $sleeper-weekly-scout to call deterministic MCP tools for historical Sleeper leaders, week-over-week changes, and actionable waiver-wire targets."
+
+policy:
+  allow_implicit_invocation: true

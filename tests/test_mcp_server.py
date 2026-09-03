@@ -21,7 +21,9 @@ def test_mcp_tools_list_exposes_curated_decision_tools() -> None:
 
     assert tool_names == {
         "weekly_briefing",
+        "weekly_performance_backtest",
         "waiver_watch",
+        "waiver_wire_watch",
         "free_agent_watch",
         "injury_watch",
         "opponent_watch",

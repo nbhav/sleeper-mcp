@@ -9,6 +9,8 @@ Follow `AGENTS.md` for contributor rules. The short version:
 - Use the Cloudflare Worker only for remote HTTP MCP on `sleeper-mcp.neilbhavsar.com`.
 - Prefer JSON output for automation.
 - Prefer decision/chained commands and MCP tools over raw endpoint replication.
+- Prefer `weekly_performance_backtest` for historical leaders and week-over-week movement.
+- Prefer `waiver_wire_watch` when waiver recommendations must exclude rostered players and include evidence.
 - Set `SLEEPER_DEFAULT_LEAGUE_ID` and `SLEEPER_DEFAULT_ROSTER_ID` when registering MCP for a specific league/team.
 - Use `--league-id` when rankings should reflect a league's custom scoring settings.
 - Keep Python cache behavior on SQLite and Worker cache behavior on D1.

@@ -11,6 +11,7 @@ It is intentionally a remote adapter, not a replacement for the Python core. Loc
 - Auth boundary: Cloudflare Access on the hostname
 - Cache storage: Cloudflare D1 through the `SLEEPER_CACHE_DB` binding
 - Default context: `SLEEPER_DEFAULT_LEAGUE_ID` and `SLEEPER_DEFAULT_ROSTER_ID`
+- Tool surface: mirrors the curated Python MCP tools, including `weekly_performance_backtest` and `waiver_wire_watch`
 
 ## Docker-Only Commands
 

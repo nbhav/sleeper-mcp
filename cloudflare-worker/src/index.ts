@@ -29,6 +29,23 @@ const tools = [
     }
   },
   {
+    name: "weekly_performance_backtest",
+    description: "Back-test weekly leaders and deterministic week-over-week movers for a range of weeks.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        league_id: { type: "string" },
+        season: { type: "integer" },
+        start_week: { type: "integer" },
+        weeks: { type: "integer", default: 2 },
+        positions: { type: "string", default: DEFAULT_POSITIONS },
+        source: { type: "string", enum: ["stats", "projections"], default: "stats" },
+        limit: { type: "integer", default: 5 },
+        movement_limit: { type: "integer", default: 5 }
+      }
+    }
+  },
+  {
     name: "waiver_watch",
     description: "Find trending unrostered players with projected value under league scoring.",
     inputSchema: {
@@ -42,6 +59,23 @@ const tools = [
         lookback_hours: { type: "integer", default: 24 },
         trend_limit: { type: "integer", default: 100 },
         limit: { type: "integer", default: 25 }
+      }
+    }
+  },
+  {
+    name: "waiver_wire_watch",
+    description: "Return a compact actionable waiver shortlist with availability, projection, trends, injuries, and recent actuals.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        league_id: { type: "string" },
+        season: { type: "integer" },
+        week: { type: "integer" },
+        positions: { type: "string", default: "RB,WR,TE" },
+        lookback_hours: { type: "integer", default: 24 },
+        trend_limit: { type: "integer", default: 100 },
+        limit: { type: "integer", default: 25 },
+        recent_weeks: { type: "integer", default: 3 }
       }
     }
   },
@@ -174,8 +208,12 @@ async function callTool(name: string, args: JsonMap, env: Env): Promise<unknown>
   switch (name) {
     case "weekly_briefing":
       return weeklyBriefing(args, env);
+    case "weekly_performance_backtest":
+      return weeklyPerformanceBacktest(args, env);
     case "waiver_watch":
       return waiverWatch(args, env);
+    case "waiver_wire_watch":
+      return waiverWireWatch(args, env);
     case "free_agent_watch":
       return freeAgentWatch(args, env);
     case "injury_watch":
@@ -211,6 +249,61 @@ async function weeklyBriefing(args: JsonMap, env: Env): Promise<JsonMap> {
   };
 }
 
+async function weeklyPerformanceBacktest(args: JsonMap, env: Env): Promise<JsonMap> {
+  const weeks = numberArg(args, "weeks", 2);
+  const limit = numberArg(args, "limit", 5);
+  const movementLimit = numberArg(args, "movement_limit", 5);
+  if (weeks < 1) throw new Error("weeks must be at least 1");
+  if (limit < 1) throw new Error("limit must be at least 1");
+  if (movementLimit < 1) throw new Error("movement_limit must be at least 1");
+
+  const leagueId = optionalLeagueId(args, env);
+  const [season, endWeek] = await resolveSeasonWeek(args, env);
+  const startWeek = numberValue(args.start_week) ?? Math.max(1, endWeek - weeks + 1);
+  const targetWeeks = Array.from({ length: weeks }, (_, index) => startWeek + index);
+  const positions = parsePositions(stringArg(args, "positions", DEFAULT_POSITIONS));
+  const source = stringArg(args, "source", "stats");
+  validateStatSource(source);
+  const scoring = await leagueScoringSettings(leagueId, env);
+  const rankedByWeek: Record<string, JsonMap[]> = {};
+  const weeklyLeaders: JsonMap[] = [];
+
+  for (const targetWeek of targetWeeks) {
+    const rows = await fetchRowsForPositions(season, targetWeek, positions, source, scoring, env);
+    rankedByWeek[String(targetWeek)] = rankRowsByPosition(rows);
+    weeklyLeaders.push({
+      week: targetWeek,
+      leaders: topPlayersByPosition(rows, limit)
+    });
+  }
+
+  const comparisons: JsonMap[] = [];
+  for (let index = 0; index < targetWeeks.length - 1; index += 1) {
+    const previousWeek = targetWeeks[index];
+    const currentWeek = targetWeeks[index + 1];
+    comparisons.push(compareRankedWeeks({
+      previousWeek,
+      currentWeek,
+      previousRows: rankedByWeek[String(previousWeek)] || [],
+      currentRows: rankedByWeek[String(currentWeek)] || [],
+      limit: movementLimit
+    }));
+  }
+
+  return {
+    season,
+    start_week: startWeek,
+    end_week: targetWeeks[targetWeeks.length - 1],
+    weeks: targetWeeks,
+    positions,
+    source,
+    league_id: leagueId,
+    scoring_source: leagueId || "sleeper_default_points",
+    weekly_leaders: weeklyLeaders,
+    week_over_week: comparisons
+  };
+}
+
 async function waiverWatch(args: JsonMap, env: Env): Promise<JsonMap[]> {
   const leagueId = requireLeagueId(args, env);
   const [season, week] = await resolveSeasonWeek(args, env);
@@ -230,6 +323,45 @@ async function waiverWatch(args: JsonMap, env: Env): Promise<JsonMap[]> {
     buildWaiverWatch(trends, players, rows, arrayValue(rosters), positions, trendType).slice(0, numberArg(args, "limit", 25)),
     { league_id: leagueId, season, week }
   );
+}
+
+async function waiverWireWatch(args: JsonMap, env: Env): Promise<JsonMap> {
+  const leagueId = requireLeagueId(args, env);
+  const [season, week] = await resolveSeasonWeek(args, env);
+  const positions = parsePositions(stringArg(args, "positions", "RB,WR,TE"));
+  const limit = numberArg(args, "limit", 25);
+  const recentWeeks = numberArg(args, "recent_weeks", 3);
+  if (limit < 1) throw new Error("limit must be at least 1");
+  if (recentWeeks < 0) throw new Error("recent_weeks must be at least 0");
+
+  const scoring = await leagueScoringSettings(leagueId, env);
+  const projectionRows = await fetchRowsForPositions(season, week, positions, "projections", scoring, env);
+  const [addTrends, dropTrends, players, rosters] = await Promise.all([
+    getTrending("add", numberArg(args, "lookback_hours", 24), numberArg(args, "trend_limit", 100), env),
+    getTrending("drop", numberArg(args, "lookback_hours", 24), numberArg(args, "trend_limit", 100), env),
+    getPlayers(env),
+    getApp(`/league/${leagueId}/rosters`, env)
+  ]);
+  const candidates = buildWaiverWatch(addTrends, players, projectionRows, arrayValue(rosters), positions, "add");
+  const recentRows = await fetchRecentActuals(season, week, positions, scoring, recentWeeks, env);
+  return {
+    season,
+    week,
+    league_id: leagueId,
+    positions,
+    lookback_hours: numberArg(args, "lookback_hours", 24),
+    scoring_source: leagueId,
+    candidates: withContext(
+      enrichWaiverCandidates(candidates, dropTrends, recentRows).slice(0, limit),
+      { league_id: leagueId, season, week }
+    ),
+    evidence: [
+      "candidates are unrostered in the league",
+      "projected_points use league scoring",
+      "recent_actual_points uses completed stats for prior weeks",
+      "drop_trend_count is included to down-rank noisy add trends"
+    ]
+  };
 }
 
 async function freeAgentWatch(args: JsonMap, env: Env): Promise<JsonMap[]> {
@@ -368,6 +500,7 @@ async function fetchRowsForPositions(
   scoringSettings: JsonMap | undefined,
   env: Env
 ): Promise<JsonMap[]> {
+  validateStatSource(source);
   const rows: JsonMap[] = [];
   for (const position of positions) {
     const rawRows = arrayValue(await getData(`/${source}/nfl/${season}/${week}`, env, {
@@ -635,6 +768,170 @@ function topPlayersByPosition(rows: JsonMap[], limit: number): JsonMap[] {
   return leaders.sort((a, b) => `${a.position}${a.position_rank}`.localeCompare(`${b.position}${b.position_rank}`));
 }
 
+function rankRowsByPosition(rows: JsonMap[]): JsonMap[] {
+  const grouped: Record<string, JsonMap[]> = {};
+  for (const row of rows) {
+    const position = String(row.position || "");
+    if (!position) {
+      continue;
+    }
+    grouped[position] = [...(grouped[position] || []), row];
+  }
+
+  const rankedRows: JsonMap[] = [];
+  for (const positionRows of Object.values(grouped)) {
+    [...positionRows]
+      .sort((a, b) => sortNumber(b.points, a.points))
+      .forEach((row, index) => rankedRows.push({ position_rank: index + 1, ...row }));
+  }
+  return rankedRows;
+}
+
+function compareRankedWeeks(input: {
+  previousWeek: number;
+  currentWeek: number;
+  previousRows: JsonMap[];
+  currentRows: JsonMap[];
+  limit: number;
+}): JsonMap {
+  const previousByKey = keyedPlayerRows(input.previousRows);
+  const currentByKey = keyedPlayerRows(input.currentRows);
+  const previousKeys = new Set(Object.keys(previousByKey));
+  const currentKeys = new Set(Object.keys(currentByKey));
+  const sharedKeys = [...currentKeys].filter((key) => previousKeys.has(key));
+  const appearedKeys = [...currentKeys].filter((key) => !previousKeys.has(key));
+  const disappearedKeys = [...previousKeys].filter((key) => !currentKeys.has(key));
+  const movers = sharedKeys.map((key) => movementRow(previousByKey[key], currentByKey[key]));
+
+  return {
+    previous_week: input.previousWeek,
+    current_week: input.currentWeek,
+    top_risers: [...movers]
+      .sort((a, b) => sortNumber(b.points_delta, a.points_delta) || sortNumber(b.current_points, a.current_points))
+      .slice(0, input.limit),
+    top_fallers: [...movers]
+      .sort((a, b) => sortNumber(a.points_delta, b.points_delta) || sortNumber(a.current_points, b.current_points))
+      .slice(0, input.limit),
+    appeared: appearedKeys
+      .map((key) => appearanceRow(currentByKey[key], true))
+      .sort((a, b) =>
+        String(a.position || "").localeCompare(String(b.position || ""))
+        || sortNumber(a.current_rank, b.current_rank)
+      )
+      .slice(0, input.limit),
+    disappeared: disappearedKeys
+      .map((key) => appearanceRow(previousByKey[key], false))
+      .sort((a, b) =>
+        String(a.position || "").localeCompare(String(b.position || ""))
+        || sortNumber(a.previous_rank, b.previous_rank)
+      )
+      .slice(0, input.limit)
+  };
+}
+
+function keyedPlayerRows(rows: JsonMap[]): Record<string, JsonMap> {
+  return Object.fromEntries(
+    rows
+      .filter((row) => row.position && row.player_id)
+      .map((row) => [`${String(row.position)}:${String(row.player_id)}`, row])
+  );
+}
+
+function movementRow(previous: JsonMap, current: JsonMap): JsonMap {
+  const previousPoints = numberValue(previous.points) || 0;
+  const currentPoints = numberValue(current.points) || 0;
+  const previousRank = numberValue(previous.position_rank) || 0;
+  const currentRank = numberValue(current.position_rank) || 0;
+  return {
+    player_id: current.player_id || "",
+    name: current.name || "",
+    team: current.team || "",
+    position: current.position || "",
+    previous_points: previousPoints,
+    current_points: currentPoints,
+    points_delta: round(currentPoints - previousPoints, 2),
+    previous_rank: previousRank,
+    current_rank: currentRank,
+    rank_delta: previousRank - currentRank
+  };
+}
+
+function appearanceRow(row: JsonMap, current: boolean): JsonMap {
+  const output: JsonMap = {
+    player_id: row.player_id || "",
+    name: row.name || "",
+    team: row.team || "",
+    position: row.position || ""
+  };
+  if (current) {
+    output.current_points = row.points || 0;
+    output.current_rank = row.position_rank || "";
+  } else {
+    output.previous_points = row.points || 0;
+    output.previous_rank = row.position_rank || "";
+  }
+  return output;
+}
+
+async function fetchRecentActuals(
+  season: number,
+  week: number,
+  positions: string[],
+  scoring: JsonMap | undefined,
+  weeksBack: number,
+  env: Env
+): Promise<Record<string, JsonMap[]>> {
+  if (weeksBack === 0) {
+    return {};
+  }
+  const recentRows: Record<string, JsonMap[]> = {};
+  for (let targetWeek = Math.max(1, week - weeksBack); targetWeek < week; targetWeek += 1) {
+    const rows = await fetchRowsForPositions(season, targetWeek, positions, "stats", scoring, env);
+    for (const row of rows) {
+      const playerId = String(row.player_id || "");
+      if (!playerId) {
+        continue;
+      }
+      recentRows[playerId] = [...(recentRows[playerId] || []), { week: targetWeek, points: row.points || 0 }];
+    }
+  }
+  return recentRows;
+}
+
+function enrichWaiverCandidates(
+  candidates: JsonMap[],
+  dropTrends: JsonMap[],
+  recentRows: Record<string, JsonMap[]>
+): JsonMap[] {
+  const dropsByPlayer = Object.fromEntries(
+    dropTrends.map((trend) => [String(trend.player_id || ""), numberValue(trend.count) || 0])
+  );
+  return candidates
+    .map((row): JsonMap => {
+      const playerId = String(row.player_id || "");
+      const recentPoints = recentRows[playerId] || [];
+      const recentAverage = recentPoints.length
+        ? round(recentPoints.reduce((sum, item) => sum + (numberValue(item.points) || 0), 0) / recentPoints.length, 2)
+        : 0;
+      const dropCount = dropsByPlayer[playerId] || 0;
+      const addCount = numberValue(row.trend_count) || 0;
+      const projectedPoints = numberValue(row.projected_points) || 0;
+      return {
+        ...row,
+        drop_trend_count: dropCount,
+        net_trend_count: addCount - dropCount,
+        recent_actual_points: recentPoints,
+        recent_average_points: recentAverage,
+        watch_score: round(projectedPoints + recentAverage + ((addCount - dropCount) / 100), 2)
+      };
+    })
+    .sort((a, b) =>
+      sortNumber(b.watch_score, a.watch_score)
+      || sortNumber(b.projected_points, a.projected_points)
+      || sortNumber(b.net_trend_count, a.net_trend_count)
+    );
+}
+
 function leaderRow(row: JsonMap): JsonMap {
   const leader: JsonMap = {
     player_id: row.player_id || "",
@@ -819,6 +1116,12 @@ function stringArg(args: JsonMap, key: string, fallback: string): string {
 
 function numberArg(args: JsonMap, key: string, fallback: number): number {
   return numberValue(args[key]) ?? fallback;
+}
+
+function validateStatSource(source: string): void {
+  if (!["stats", "projections"].includes(source)) {
+    throw new Error("source must be 'stats' or 'projections'");
+  }
 }
 
 function objectValue(value: unknown): JsonMap {
