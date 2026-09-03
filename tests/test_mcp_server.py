@@ -17,6 +17,7 @@ def test_mcp_tools_list_exposes_curated_decision_tools() -> None:
     response = McpServer().handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
 
     tool_names = {tool["name"] for tool in response["result"]["tools"]}
+    tools_by_name = {tool["name"]: tool for tool in response["result"]["tools"]}
 
     assert tool_names == {
         "weekly_briefing",
@@ -27,6 +28,11 @@ def test_mcp_tools_list_exposes_curated_decision_tools() -> None:
         "league_team_watch",
         "player_card",
     }
+    assert "required" not in tools_by_name["waiver_watch"]["inputSchema"]
+    assert "required" not in tools_by_name["free_agent_watch"]["inputSchema"]
+    assert "required" not in tools_by_name["injury_watch"]["inputSchema"]
+    assert "required" not in tools_by_name["opponent_watch"]["inputSchema"]
+    assert "required" not in tools_by_name["league_team_watch"]["inputSchema"]
 
 
 def test_mcp_tool_call_returns_json_text_content() -> None:

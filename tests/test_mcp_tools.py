@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from sleeper_tooling.mcp_tools import FantasyToolRunner
 
 
@@ -22,6 +24,9 @@ def test_free_agent_watch_returns_unrostered_projected_players(tmp_path) -> None
 
     assert rows == [
         {
+            "league_id": "league-1",
+            "season": 2026,
+            "week": 1,
             "player_id": "free-rb",
             "name": "Free RB",
             "team": "DEN",
@@ -32,6 +37,50 @@ def test_free_agent_watch_returns_unrostered_projected_players(tmp_path) -> None
             "injury_status": "",
         }
     ]
+
+
+def test_tools_use_default_league_id_when_argument_is_omitted(tmp_path) -> None:
+    fake_client = FakeMcpClient()
+    runner = FantasyToolRunner(
+        client_factory=lambda: fake_client,
+        players_cache=tmp_path / "players.json",
+        default_league_id="default-league",
+    )
+
+    rows = runner.free_agent_watch(season=2026, week=1, positions="RB", limit=1)
+
+    assert rows[0]["league_id"] == "default-league"
+    assert fake_client.league_ids == ["default-league"]
+
+
+def test_explicit_league_id_overrides_default_league_id(tmp_path) -> None:
+    fake_client = FakeMcpClient()
+    runner = FantasyToolRunner(
+        client_factory=lambda: fake_client,
+        players_cache=tmp_path / "players.json",
+        default_league_id="default-league",
+    )
+
+    rows = runner.free_agent_watch(
+        league_id="explicit-league",
+        season=2026,
+        week=1,
+        positions="RB",
+        limit=1,
+    )
+
+    assert rows[0]["league_id"] == "explicit-league"
+    assert fake_client.league_ids == ["explicit-league"]
+
+
+def test_missing_required_league_context_raises_clear_error(tmp_path) -> None:
+    runner = FantasyToolRunner(
+        client_factory=lambda: FakeMcpClient(),
+        players_cache=tmp_path / "players.json",
+    )
+
+    with pytest.raises(ValueError, match="SLEEPER_DEFAULT_LEAGUE_ID"):
+        runner.injury_watch()
 
 
 def test_opponent_watch_returns_matchup_context(tmp_path) -> None:
@@ -49,9 +98,39 @@ def test_opponent_watch_returns_matchup_context(tmp_path) -> None:
     )
 
     assert report["opponent_found"] is True
+    assert report["league_id"] == "league-1"
+    assert report["roster_id"] == 1
+    assert report["season"] == 2026
     assert report["opponent_team_name"] == "Opponent"
     assert report["opponent_projected_starter_points"] == 10
     assert report["opponent_injuries"][0]["player_id"] == "hurt-wr"
+
+
+def test_opponent_watch_uses_default_league_and_roster_ids(tmp_path) -> None:
+    fake_client = FakeMcpClient()
+    runner = FantasyToolRunner(
+        client_factory=lambda: fake_client,
+        players_cache=tmp_path / "players.json",
+        default_league_id="default-league",
+        default_roster_id=1,
+    )
+
+    report = runner.opponent_watch(season=2026, week=1)
+
+    assert report["league_id"] == "default-league"
+    assert report["roster_id"] == 1
+    assert report["opponent_found"] is True
+
+
+def test_missing_required_roster_context_raises_clear_error(tmp_path) -> None:
+    runner = FantasyToolRunner(
+        client_factory=lambda: FakeMcpClient(),
+        players_cache=tmp_path / "players.json",
+        default_league_id="league-1",
+    )
+
+    with pytest.raises(ValueError, match="SLEEPER_DEFAULT_ROSTER_ID"):
+        runner.opponent_watch(season=2026, week=1)
 
 
 def test_league_team_watch_summarizes_completed_transactions(tmp_path) -> None:
@@ -65,6 +144,7 @@ def test_league_team_watch_summarizes_completed_transactions(tmp_path) -> None:
 
     assert rows == [
         {
+            "league_id": "league-1",
             "week": 1,
             "transaction_id": "txn-1",
             "type": "waiver",
@@ -104,6 +184,7 @@ def test_player_card_returns_chart_ready_points(tmp_path) -> None:
     )
 
     assert report["name"] == "Free RB"
+    assert report["league_id"] == "league-1"
     assert report["chart_data"]["weekly_points"] == [
         {"week": 1, "actual_points": 10, "projected_points": 20},
         {"week": 2, "actual_points": 10, "projected_points": 20},
@@ -111,6 +192,9 @@ def test_player_card_returns_chart_ready_points(tmp_path) -> None:
 
 
 class FakeMcpClient:
+    def __init__(self) -> None:
+        self.league_ids: list[str] = []
+
     def __enter__(self) -> "FakeMcpClient":
         return self
 
@@ -121,6 +205,7 @@ class FakeMcpClient:
         return {"season": "2026", "week": 1}
 
     def get_league(self, league_id: str) -> dict[str, object]:
+        self.league_ids.append(league_id)
         return {"scoring_settings": {"custom_score": 10}}
 
     def get_rosters(self, league_id: str) -> list[dict[str, object]]:

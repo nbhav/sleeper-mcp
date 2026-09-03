@@ -1,4 +1,4 @@
-.PHONY: build test integration-test shell sleeper mcp clean
+.PHONY: build test integration-test shell sleeper mcp worker-install worker-typecheck worker-dev worker-deploy clean
 
 build:
 	docker compose build sleeper
@@ -17,6 +17,18 @@ sleeper:
 
 mcp:
 	docker compose run --rm -i sleeper-mcp
+
+worker-install:
+	docker compose run --rm cloudflare-worker install
+
+worker-typecheck:
+	docker compose run --rm cloudflare-worker run typecheck
+
+worker-dev:
+	docker compose run --rm --service-ports cloudflare-worker run dev
+
+worker-deploy:
+	docker compose run --rm cloudflare-worker run deploy
 
 clean:
 	docker compose down -v

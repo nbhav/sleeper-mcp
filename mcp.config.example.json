@@ -10,7 +10,11 @@
         "--rm",
         "-i",
         "sleeper-mcp"
-      ]
+      ],
+      "env": {
+        "SLEEPER_DEFAULT_LEAGUE_ID": "<league_id>",
+        "SLEEPER_DEFAULT_ROSTER_ID": "<roster_id>"
+      }
     }
   }
 }

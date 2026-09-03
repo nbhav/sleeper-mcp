@@ -13,8 +13,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-and-test:
-    name: Build and test
+  python-unit:
+    name: Python unit tests
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -28,8 +28,43 @@ jobs:
       - name: Run unit tests
         run: docker compose run --rm --entrypoint /app/.venv/bin/pytest sleeper -q -m "not integration"
 
+      - name: Clean up Docker resources
+        if: always()
+        run: docker compose down -v --remove-orphans
+
+  sleeper-integration:
+    name: Sleeper API integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker compose build sleeper
+
       - name: Run Sleeper API integration tests
         run: docker compose run --rm --entrypoint /app/.venv/bin/pytest sleeper -q -m integration
+
+      - name: Clean up Docker resources
+        if: always()
+        run: docker compose down -v --remove-orphans
+
+  worker-typecheck:
+    name: Cloudflare Worker typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Cloudflare Worker dependencies
+        run: docker compose run --rm cloudflare-worker install
+
+      - name: Typecheck Cloudflare Worker
+        run: docker compose run --rm cloudflare-worker run typecheck
 
       - name: Clean up Docker resources
         if: always()

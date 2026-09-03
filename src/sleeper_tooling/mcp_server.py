@@ -33,7 +33,6 @@ TOOLS = [
         "description": "Find trending unrostered players with projected value under league scoring.",
         "inputSchema": {
             "type": "object",
-            "required": ["league_id"],
             "properties": {
                 "league_id": {"type": "string"},
                 "season": {"type": "integer"},
@@ -51,7 +50,6 @@ TOOLS = [
         "description": "Rank currently unrostered players by projection under league scoring.",
         "inputSchema": {
             "type": "object",
-            "required": ["league_id"],
             "properties": {
                 "league_id": {"type": "string"},
                 "season": {"type": "integer"},
@@ -66,7 +64,6 @@ TOOLS = [
         "description": "List injury-relevant players currently rostered in a league.",
         "inputSchema": {
             "type": "object",
-            "required": ["league_id"],
             "properties": {"league_id": {"type": "string"}},
         },
     },
@@ -75,7 +72,6 @@ TOOLS = [
         "description": "Summarize a roster's weekly opponent, projected starters, and injury flags.",
         "inputSchema": {
             "type": "object",
-            "required": ["league_id", "roster_id"],
             "properties": {
                 "league_id": {"type": "string"},
                 "roster_id": {"type": "integer"},
@@ -89,7 +85,6 @@ TOOLS = [
         "description": "Show completed league transactions for a week, grouped into adds and drops.",
         "inputSchema": {
             "type": "object",
-            "required": ["league_id"],
             "properties": {
                 "league_id": {"type": "string"},
                 "week": {"type": "integer"},

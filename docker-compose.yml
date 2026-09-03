@@ -15,3 +15,13 @@ services:
     environment:
       SLEEPER_CACHE_DIR: /data
       SLEEPER_CACHE_DB: /data/sleeper.db
+      SLEEPER_DEFAULT_LEAGUE_ID:
+      SLEEPER_DEFAULT_ROSTER_ID:
+  cloudflare-worker:
+    image: node:22-bookworm-slim
+    working_dir: /worker
+    entrypoint: ["npm"]
+    volumes:
+      - ./cloudflare-worker:/worker
+    environment:
+      CLOUDFLARE_API_TOKEN:
