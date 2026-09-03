@@ -219,6 +219,7 @@ make worker-deploy
 ```
 
 The Worker expects Cloudflare Access to protect the hostname and D1 to cache Sleeper API responses. Set `SLEEPER_DEFAULT_LEAGUE_ID` and `SLEEPER_DEFAULT_ROSTER_ID` as Worker vars before deployment.
+GitHub deploys use the `Deploy Cloudflare Worker` workflow and require `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` repository secrets.
 
 ## Common Commands
 

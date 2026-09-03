@@ -32,3 +32,12 @@ Do not run `npm install` on the host.
 3. Set Worker vars for league and roster defaults.
 4. Protect `sleeper-mcp.neilbhavsar.com` with Cloudflare Access.
 5. Deploy with `make worker-deploy`.
+
+## GitHub Actions Deploy
+
+If you want GitHub to deploy the Worker after CI passes on `main`, add these repository secrets:
+
+- `CLOUDFLARE_ACCOUNT_ID`
+- `CLOUDFLARE_API_TOKEN`
+
+The deploy workflow runs after the `CI` workflow succeeds on `main`, or manually through `workflow_dispatch`.
