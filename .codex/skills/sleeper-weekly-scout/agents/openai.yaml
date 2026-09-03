@@ -1,0 +1,7 @@
+interface:
+  display_name: "Sleeper Weekly Scout"
+  short_description: "Back-test weeks and cleaner waiver targets"
+  default_prompt: "Use $sleeper-weekly-scout to back-test historical Sleeper leaders, compare week-over-week changes, and shortlist cleaner waiver-wire targets."
+
+policy:
+  allow_implicit_invocation: true
