@@ -9,9 +9,9 @@ Use this skill when a user wants historical top players, week-over-week movement
 
 ## Core Workflow
 
-1. Prefer the repo CLI through Docker Compose.
+1. Prefer the repo CLI through Docker Compose for historical back-tests.
 2. Use JSON output unless the user explicitly wants a table.
-3. Use `best-week` for historical leaderboards, `waiver-watch` for waiver targets, and `free-agent-watch` when trends should be ignored.
+3. Use MCP tools for assistant-driven waiver work when the MCP server is registered.
 
 ## Historical Leaders
 
@@ -46,16 +46,17 @@ If the user asks for a compact trend view, summarize only the top movers per pos
 
 ## Waiver Wire
 
-For waiver-wire filtering, prefer:
+For CLI waiver-wire filtering, use `waiver-watch`:
 
 ```bash
 make sleeper ARGS="waiver-watch <league_id> --positions RB,WR,TE --limit 25 --output json"
 ```
 
-Use `free-agent-watch` when the user wants a cleaner available-player ranking without trend pressure:
+For MCP waiver-wire filtering, prefer these tools:
 
-```bash
-make sleeper ARGS="free-agent-watch <league_id> --positions RB,WR,TE --limit 25 --output json"
+```text
+waiver_watch
+free_agent_watch
 ```
 
 Rules:
@@ -63,6 +64,7 @@ Rules:
 - Prefer `RB,WR,TE` for standard waiver work.
 - Expand to `QB,K,DEF` only when the user asks.
 - Use available-player output, not raw trending lists, when the goal is actionable waiver suggestions.
+- Use `free_agent_watch` when the user wants a cleaner available-player ranking without trend pressure.
 - Keep the result focused on projected value and roster availability.
 
 ## Output Discipline
