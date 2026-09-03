@@ -15,8 +15,8 @@ This project is meant for local scripts, league analysis, weekly reporting, and 
 - Pulls trending adds and drops.
 - Pulls player stats and projections.
 - Chains common calls into higher-level reports, like weekly leaders and top players by NFL team.
-- Answers decision-focused questions with `waiver-watch` and `injury-watch`.
-- Exposes MCP-only assistant tools for free-agent watch, opponent watch, league team movement, and player cards.
+- Answers decision-focused questions with `waiver-watch`, `injury-watch`, and MCP-first weekly scout tools.
+- Exposes MCP-only assistant tools for historical backtests, actionable waiver shortlists, free-agent watch, opponent watch, league team movement, and player cards.
 - Supports default MCP league and roster context through environment variables.
 - Applies custom league scoring settings with `--league-id`.
 - Includes a Cloudflare Worker HTTP MCP adapter for running behind Cloudflare Access on a custom domain.
@@ -204,14 +204,16 @@ Registered MCP tools:
 | Tool | Purpose |
 |---|---|
 | `weekly_briefing` | Weekly leaders plus waiver signal. |
+| `weekly_performance_backtest` | Back-test weekly leaders and deterministic week-over-week movers. |
 | `waiver_watch` | Trending unrostered players with projected value. |
+| `waiver_wire_watch` | Actionable waiver shortlist with availability, projections, trends, injury/status, and recent actuals. |
 | `free_agent_watch` | Unrostered players ranked by projection. |
 | `injury_watch` | Rostered players with injury/status risk. |
 | `opponent_watch` | Weekly opponent starters, projection, and injury flags. |
 | `league_team_watch` | Completed league transactions for a week. |
 | `player_card` | Player metadata and chart-ready actual vs projected points. |
 
-This MCP layer intentionally exposes decision-shaped tools instead of raw Sleeper endpoints.
+This MCP layer intentionally exposes decision-shaped tools instead of raw Sleeper endpoints. Prefer `weekly_performance_backtest` for historical player performance questions and `waiver_wire_watch` for waiver recommendations that should exclude rostered players.
 
 Tools that need league context use the explicit `league_id` argument first, then `SLEEPER_DEFAULT_LEAGUE_ID`. `opponent_watch` also uses `SLEEPER_DEFAULT_ROSTER_ID` when `roster_id` is omitted. If required context is missing, the MCP server returns a clear protocol error.
 

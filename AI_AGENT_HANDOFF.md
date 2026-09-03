@@ -16,8 +16,8 @@ Primary use cases:
 - Pull and cache the full NFL player map from `https://api.sleeper.app/v1/players/nfl`.
 - Cache API responses in SQLite to reduce repeated calls and rate-limit risk.
 - Pull weekly stats and projections.
-- Chain common calls into higher-level reports, including weekly leaders, best player by team, and weekly briefing output.
-- Prefer decision commands like `waiver-watch` and `injury-watch` over raw endpoint replication.
+- Chain common calls into higher-level reports, including weekly leaders, best player by team, weekly briefing output, and MCP weekly scout output.
+- Prefer decision commands and MCP tools like `weekly_performance_backtest`, `waiver_wire_watch`, `waiver-watch`, and `injury-watch` over raw endpoint replication.
 - Apply custom Sleeper league scoring settings with `--league-id`.
 - Export data as JSON, CSV, or terminal tables.
 - Expose curated decision tools through a stdio MCP server.
@@ -191,7 +191,9 @@ Registered tools:
 
 ```text
 weekly_briefing
+weekly_performance_backtest
 waiver_watch
+waiver_wire_watch
 free_agent_watch
 injury_watch
 opponent_watch
@@ -199,7 +201,7 @@ league_team_watch
 player_card
 ```
 
-Keep this tool list curated to avoid token creep.
+Use `weekly_performance_backtest` for historical leaders and week-over-week movement. Use `waiver_wire_watch` when recommendations must be limited to unrostered waiver targets and backed by projections, trends, status, and recent actuals. Keep this tool list curated to avoid token creep.
 
 ## Remote MCP On Cloudflare
 

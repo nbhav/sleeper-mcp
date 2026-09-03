@@ -29,6 +29,23 @@ TOOLS = [
         },
     },
     {
+        "name": "weekly_performance_backtest",
+        "description": "Back-test weekly leaders and deterministic week-over-week movers for a range of weeks.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "league_id": {"type": "string"},
+                "season": {"type": "integer"},
+                "start_week": {"type": "integer"},
+                "weeks": {"type": "integer", "default": 2},
+                "positions": {"type": "string", "default": "QB,RB,WR,TE,K,DEF"},
+                "source": {"type": "string", "enum": ["stats", "projections"], "default": "stats"},
+                "limit": {"type": "integer", "default": 5},
+                "movement_limit": {"type": "integer", "default": 5},
+            },
+        },
+    },
+    {
         "name": "waiver_watch",
         "description": "Find trending unrostered players with projected value under league scoring.",
         "inputSchema": {
@@ -42,6 +59,23 @@ TOOLS = [
                 "lookback_hours": {"type": "integer", "default": 24},
                 "trend_limit": {"type": "integer", "default": 100},
                 "limit": {"type": "integer", "default": 25},
+            },
+        },
+    },
+    {
+        "name": "waiver_wire_watch",
+        "description": "Return a compact actionable waiver shortlist with availability, projection, trends, injuries, and recent actuals.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "league_id": {"type": "string"},
+                "season": {"type": "integer"},
+                "week": {"type": "integer"},
+                "positions": {"type": "string", "default": "RB,WR,TE"},
+                "lookback_hours": {"type": "integer", "default": 24},
+                "trend_limit": {"type": "integer", "default": 100},
+                "limit": {"type": "integer", "default": 25},
+                "recent_weeks": {"type": "integer", "default": 3},
             },
         },
     },
