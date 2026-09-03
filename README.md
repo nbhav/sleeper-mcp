@@ -17,7 +17,9 @@ This project is meant for local scripts, league analysis, weekly reporting, and 
 - Chains common calls into higher-level reports, like weekly leaders and top players by NFL team.
 - Answers decision-focused questions with `waiver-watch` and `injury-watch`.
 - Exposes MCP-only assistant tools for free-agent watch, opponent watch, league team movement, and player cards.
+- Supports default MCP league and roster context through environment variables.
 - Applies custom league scoring settings with `--league-id`.
+- Includes a Cloudflare Worker HTTP MCP adapter for running behind Cloudflare Access on a custom domain.
 - Outputs data as JSON, CSV, or terminal tables.
 - Provides a small Python client for programmatic use.
 
@@ -162,6 +164,14 @@ Run it through Docker:
 make mcp
 ```
 
+Set default context when you want assistant tools to use your league/team without repeating IDs in every call:
+
+```bash
+SLEEPER_DEFAULT_LEAGUE_ID=<league_id> \
+SLEEPER_DEFAULT_ROSTER_ID=<roster_id> \
+make mcp
+```
+
 Example MCP config:
 
 ```json
@@ -177,7 +187,11 @@ Example MCP config:
         "--rm",
         "-i",
         "sleeper-mcp"
-      ]
+      ],
+      "env": {
+        "SLEEPER_DEFAULT_LEAGUE_ID": "<league_id>",
+        "SLEEPER_DEFAULT_ROSTER_ID": "<roster_id>"
+      }
     }
   }
 }
@@ -198,6 +212,37 @@ Registered MCP tools:
 | `player_card` | Player metadata and chart-ready actual vs projected points. |
 
 This MCP layer intentionally exposes decision-shaped tools instead of raw Sleeper endpoints.
+
+Tools that need league context use the explicit `league_id` argument first, then `SLEEPER_DEFAULT_LEAGUE_ID`. `opponent_watch` also uses `SLEEPER_DEFAULT_ROSTER_ID` when `roster_id` is omitted. If required context is missing, the MCP server returns a clear protocol error.
+
+## Cloudflare Worker MCP
+
+The `cloudflare-worker/` package is a remote HTTP MCP adapter for `sleeper-mcp.neilbhavsar.com`. It is intended to run behind Cloudflare Access so you can use the assistant tools without your laptop.
+
+The Worker mirrors the curated MCP tool surface and uses Cloudflare D1 for API response caching. It does not use the local SQLite cache because Workers do not provide a persistent local filesystem.
+
+Run Worker commands through Docker:
+
+```bash
+make worker-install
+make worker-typecheck
+make worker-dev
+make worker-deploy
+```
+
+Before deploying:
+
+1. Create a D1 database named `sleeper-mcp-cache`.
+2. Replace `database_id` in `cloudflare-worker/wrangler.toml`.
+3. Set `SLEEPER_DEFAULT_LEAGUE_ID` and `SLEEPER_DEFAULT_ROSTER_ID` in Cloudflare Worker vars or `cloudflare-worker/.dev.vars`.
+4. Configure Cloudflare Access for `sleeper-mcp.neilbhavsar.com`.
+5. Deploy with `make worker-deploy`.
+
+The remote MCP endpoint is:
+
+```text
+https://sleeper-mcp.neilbhavsar.com/mcp
+```
 
 ## League Scoring
 
@@ -279,6 +324,10 @@ PY
 | `make integration-test` | Run live Sleeper API integration tests inside Docker. |
 | `make sleeper ARGS="..."` | Run the Sleeper CLI inside Docker. |
 | `make mcp` | Run the stdio MCP server inside Docker. |
+| `make worker-install` | Install Worker dependencies inside Docker. |
+| `make worker-typecheck` | Typecheck the Cloudflare Worker inside Docker. |
+| `make worker-dev` | Run Wrangler dev inside Docker. |
+| `make worker-deploy` | Deploy the Cloudflare Worker through Docker. |
 | `make shell` | Open a shell inside the app container. |
 | `make clean` | Stop containers and remove generated Python cache files. |
 
@@ -317,6 +366,15 @@ make sleeper ARGS="stats --help"
 .
 ├── Dockerfile
 ├── Makefile
+├── cloudflare-worker/
+│   ├── .dev.vars.example
+│   ├── README.md
+│   ├── package-lock.json
+│   ├── package.json
+│   ├── tsconfig.json
+│   ├── wrangler.toml
+│   └── src/
+│       └── index.ts
 ├── docker-compose.yml
 ├── pyproject.toml
 ├── src/
@@ -355,6 +413,8 @@ Key files:
 - `reports.py`: Helpers that join raw API objects into fantasy-friendly report rows.
 - `scoring.py`: League-specific fantasy point calculation.
 - `output.py`: JSON, CSV, and rich table rendering.
+- `cloudflare-worker/src/index.ts`: Remote HTTP MCP adapter for Cloudflare Workers.
+- `cloudflare-worker/wrangler.toml`: Worker route, vars, and D1 binding config.
 - `tests/`: Offline tests that use mocked HTTP responses.
 - `tests/integration/`: Live Sleeper API smoke tests marked with `pytest.mark.integration`.
 
@@ -458,7 +518,9 @@ Run live Sleeper API integration tests:
 make integration-test
 ```
 
-GitHub Actions builds the `sleeper` Compose service once, then runs unit tests and live integration tests against that same built image on PRs and pushes to `main`.
+GitHub Actions exposes separate protected checks for Python unit tests, live Sleeper API integration tests, and Cloudflare Worker typechecking. Each check runs through Docker Compose.
+
+`main` is protected on GitHub with required CI checks, admin enforcement enabled, and force-pushes/deletions disabled. This is a personal public repository, so GitHub does not support user/team push restrictions through branch protection; repo access is limited by collaborators instead. At the time this was configured, `nbhav` was the only collaborator with write access.
 
 Open a container shell:
 

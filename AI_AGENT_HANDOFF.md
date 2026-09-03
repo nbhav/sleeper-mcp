@@ -21,18 +21,21 @@ Primary use cases:
 - Apply custom Sleeper league scoring settings with `--league-id`.
 - Export data as JSON, CSV, or terminal tables.
 - Expose curated decision tools through a stdio MCP server.
+- Support default MCP league and roster context through environment variables.
+- Provide a Cloudflare Worker HTTP MCP adapter for remote usage behind Cloudflare Access.
 - Use the Python `SleeperClient` in scripts.
 
 Sleeper API docs: https://docs.sleeper.com/
 
 ## Hard Constraints
 
-- Do not install Python packages on the host.
+- Do not install Python or Node packages on the host.
 - Do not create or depend on a host virtualenv.
 - Run all commands through Docker or Docker Compose.
 - Treat live Sleeper calls as integration checks.
 - Keep unit tests mocked.
 - Use the SQLite API response cache by default.
+- Use Cloudflare D1 for the Worker cache.
 - Cache the large player map in `./data`, which is gitignored.
 
 ## Where The Tooling Lives
@@ -49,6 +52,15 @@ Important files:
 sleeper-mcp/
 ├── Dockerfile
 ├── Makefile
+├── cloudflare-worker/
+│   ├── .dev.vars.example
+│   ├── README.md
+│   ├── package-lock.json
+│   ├── package.json
+│   ├── tsconfig.json
+│   ├── wrangler.toml
+│   └── src/
+│       └── index.ts
 ├── docker-compose.yml
 ├── pyproject.toml
 ├── src/sleeper_tooling/
@@ -97,6 +109,7 @@ cd ./tools/sleeper-mcp
 make build
 make test
 make integration-test
+make worker-typecheck
 ```
 
 Equivalent without `make`:
@@ -106,6 +119,7 @@ cd ./tools/sleeper-mcp
 docker compose build sleeper
 docker compose run --rm --entrypoint /app/.venv/bin/pytest sleeper -q -m "not integration"
 docker compose run --rm --entrypoint /app/.venv/bin/pytest sleeper -q -m integration
+docker compose run --rm cloudflare-worker run typecheck
 ```
 
 ## Calling The CLI From Another Repo
@@ -161,11 +175,17 @@ Example config:
         "--rm",
         "-i",
         "sleeper-mcp"
-      ]
+      ],
+      "env": {
+        "SLEEPER_DEFAULT_LEAGUE_ID": "<league_id>",
+        "SLEEPER_DEFAULT_ROSTER_ID": "<roster_id>"
+      }
     }
   }
 }
 ```
+
+Tools that need league context use explicit arguments first, then `SLEEPER_DEFAULT_LEAGUE_ID`. `opponent_watch` also uses `SLEEPER_DEFAULT_ROSTER_ID` when `roster_id` is omitted.
 
 Registered tools:
 
@@ -180,6 +200,25 @@ player_card
 ```
 
 Keep this tool list curated to avoid token creep.
+
+## Remote MCP On Cloudflare
+
+The `cloudflare-worker/` package exposes the same curated MCP tool names over HTTP at:
+
+```text
+https://sleeper-mcp.neilbhavsar.com/mcp
+```
+
+Run all Worker commands through Docker Compose:
+
+```bash
+make worker-install
+make worker-typecheck
+make worker-dev
+make worker-deploy
+```
+
+The Worker expects Cloudflare Access to protect the hostname and D1 to cache Sleeper API responses. Set `SLEEPER_DEFAULT_LEAGUE_ID` and `SLEEPER_DEFAULT_ROSTER_ID` as Worker vars before deployment.
 
 ## Common Commands
 
@@ -486,12 +525,14 @@ When modifying this tooling:
 
 - Keep the Docker-only workflow intact.
 - Keep SQLite response caching on by default for CLI commands.
+- Keep Worker caching on D1; do not try to use the local SQLite cache inside Cloudflare Workers.
 - Do not add instructions that require local `pip install`, local `uv sync`, or a host virtualenv.
 - Add new API methods in `src/sleeper_tooling/client.py`.
 - Add CLI commands in `src/sleeper_tooling/cli.py`.
 - Add fantasy decision logic in `src/sleeper_tooling/decision_reports.py`.
 - Keep MCP registration in `src/sleeper_tooling/mcp_server.py`.
 - Keep MCP tool orchestration in `src/sleeper_tooling/mcp_tools.py`.
+- Keep the remote HTTP MCP adapter in `cloudflare-worker/src/index.ts`.
 - Add data shaping helpers in `src/sleeper_tooling/reports.py` when raw Sleeper responses are awkward for downstream use.
 - Keep custom scoring logic in `src/sleeper_tooling/scoring.py`.
 - Keep SQLite cache logic in `src/sleeper_tooling/db.py`.

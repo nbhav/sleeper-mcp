@@ -28,6 +28,8 @@ class FantasyToolRunner:
         client_factory: Callable[[], Any] | None = None,
         cache_db: Path | None = None,
         players_cache: Path | None = None,
+        default_league_id: str | None = None,
+        default_roster_id: int | None = None,
         cache_enabled: bool = True,
         refresh_cache: bool = False,
     ) -> None:
@@ -36,6 +38,10 @@ class FantasyToolRunner:
         self.players_cache = players_cache or Path(
             os.environ.get("SLEEPER_PLAYERS_CACHE", "/data/players.json")
         )
+        self.default_league_id = default_league_id or os.environ.get(
+            "SLEEPER_DEFAULT_LEAGUE_ID"
+        )
+        self.default_roster_id = default_roster_id or resolve_default_roster_id()
         self.cache_enabled = cache_enabled
         self.refresh_cache = refresh_cache
 
@@ -51,9 +57,10 @@ class FantasyToolRunner:
         trend_limit: int = 10,
         lookback_hours: int = 24,
     ) -> dict[str, Any]:
+        resolved_league_id = self._resolve_optional_league_id(league_id)
         with self._client() as client:
             resolved_season, resolved_week = resolve_season_week(client, season, week)
-            scoring_settings = get_league_scoring_settings(client, league_id)
+            scoring_settings = get_league_scoring_settings(client, resolved_league_id)
             player_map = load_or_fetch_players(client, cache_path=self.players_cache)
             position_list = parse_positions(positions)
             leader_rows = fetch_rows_for_positions(
@@ -72,8 +79,9 @@ class FantasyToolRunner:
             return {
                 "season": resolved_season,
                 "week": resolved_week,
+                "league_id": resolved_league_id,
                 "leader_source": source,
-                "scoring_source": league_id or "sleeper_default_points",
+                "scoring_source": resolved_league_id or "sleeper_default_points",
                 "leaders": top_players_by_position(leader_rows, limit=leader_limit),
                 "waiver_signal": build_waiver_watch(
                     trends=trends,
@@ -88,7 +96,7 @@ class FantasyToolRunner:
     def waiver_watch(
         self,
         *,
-        league_id: str,
+        league_id: str | None = None,
         season: int | None = None,
         week: int | None = None,
         positions: str = DEFAULT_POSITIONS,
@@ -98,9 +106,10 @@ class FantasyToolRunner:
         limit: int = 25,
     ) -> list[dict[str, Any]]:
         validate_trend_type(trend_type)
+        resolved_league_id = self._require_league_id(league_id)
         with self._client() as client:
             resolved_season, resolved_week = resolve_season_week(client, season, week)
-            scoring_settings = get_league_scoring_settings(client, league_id)
+            scoring_settings = get_league_scoring_settings(client, resolved_league_id)
             position_list = parse_positions(positions)
             projection_rows = fetch_rows_for_positions(
                 client,
@@ -118,24 +127,30 @@ class FantasyToolRunner:
                 ),
                 players=load_or_fetch_players(client, cache_path=self.players_cache),
                 projection_rows=projection_rows,
-                rosters=client.get_rosters(league_id),
+                rosters=client.get_rosters(resolved_league_id),
                 positions=position_list,
                 trend_type=trend_type,
             )
-            return rows[:limit]
+            return with_context(
+                rows[:limit],
+                league_id=resolved_league_id,
+                season=resolved_season,
+                week=resolved_week,
+            )
 
     def free_agent_watch(
         self,
         *,
-        league_id: str,
+        league_id: str | None = None,
         season: int | None = None,
         week: int | None = None,
         positions: str = "RB,WR,TE",
         limit: int = 25,
     ) -> list[dict[str, Any]]:
+        resolved_league_id = self._require_league_id(league_id)
         with self._client() as client:
             resolved_season, resolved_week = resolve_season_week(client, season, week)
-            scoring_settings = get_league_scoring_settings(client, league_id)
+            scoring_settings = get_league_scoring_settings(client, resolved_league_id)
             position_list = parse_positions(positions)
             projection_rows = fetch_rows_for_positions(
                 client,
@@ -147,28 +162,37 @@ class FantasyToolRunner:
             )
             rows = build_free_agent_watch(
                 projection_rows=projection_rows,
-                rosters=client.get_rosters(league_id),
+                rosters=client.get_rosters(resolved_league_id),
                 players=load_or_fetch_players(client, cache_path=self.players_cache),
                 positions=position_list,
             )
-            return rows[:limit]
+            return with_context(
+                rows[:limit],
+                league_id=resolved_league_id,
+                season=resolved_season,
+                week=resolved_week,
+            )
 
-    def injury_watch(self, *, league_id: str) -> list[dict[str, Any]]:
+    def injury_watch(self, *, league_id: str | None = None) -> list[dict[str, Any]]:
+        resolved_league_id = self._require_league_id(league_id)
         with self._client() as client:
-            return build_injury_watch(
-                users=client.get_league_users(league_id),
-                rosters=client.get_rosters(league_id),
+            rows = build_injury_watch(
+                users=client.get_league_users(resolved_league_id),
+                rosters=client.get_rosters(resolved_league_id),
                 players=load_or_fetch_players(client, cache_path=self.players_cache),
             )
+            return with_context(rows, league_id=resolved_league_id)
 
     def opponent_watch(
         self,
         *,
-        league_id: str,
-        roster_id: int,
+        league_id: str | None = None,
+        roster_id: int | None = None,
         season: int | None = None,
         week: int | None = None,
     ) -> dict[str, Any]:
+        resolved_league_id = self._require_league_id(league_id)
+        resolved_roster_id = self._require_roster_id(roster_id)
         with self._client() as client:
             resolved_season, resolved_week = resolve_season_week(client, season, week)
             projection_rows = fetch_rows_for_positions(
@@ -177,33 +201,41 @@ class FantasyToolRunner:
                 week=resolved_week,
                 positions=parse_positions(DEFAULT_POSITIONS),
                 source="projections",
-                scoring_settings=get_league_scoring_settings(client, league_id),
+                scoring_settings=get_league_scoring_settings(client, resolved_league_id),
             )
-            return build_opponent_watch(
-                roster_id=roster_id,
+            report = build_opponent_watch(
+                roster_id=resolved_roster_id,
                 week=resolved_week,
-                users=client.get_league_users(league_id),
-                rosters=client.get_rosters(league_id),
-                matchups=client.get_matchups(league_id, resolved_week),
+                users=client.get_league_users(resolved_league_id),
+                rosters=client.get_rosters(resolved_league_id),
+                matchups=client.get_matchups(resolved_league_id, resolved_week),
                 players=load_or_fetch_players(client, cache_path=self.players_cache),
                 projection_rows=projection_rows,
             )
+            return {
+                "league_id": resolved_league_id,
+                "roster_id": resolved_roster_id,
+                "season": resolved_season,
+                **report,
+            }
 
     def league_team_watch(
         self,
         *,
-        league_id: str,
+        league_id: str | None = None,
         week: int | None = None,
     ) -> list[dict[str, Any]]:
+        resolved_league_id = self._require_league_id(league_id)
         with self._client() as client:
             _, resolved_week = resolve_season_week(client, None, week)
-            return build_league_team_watch(
+            rows = build_league_team_watch(
                 week=resolved_week,
-                users=client.get_league_users(league_id),
-                rosters=client.get_rosters(league_id),
-                transactions=client.get_transactions(league_id, resolved_week),
+                users=client.get_league_users(resolved_league_id),
+                rosters=client.get_rosters(resolved_league_id),
+                transactions=client.get_transactions(resolved_league_id, resolved_week),
                 players=load_or_fetch_players(client, cache_path=self.players_cache),
             )
+            return with_context(rows, league_id=resolved_league_id, week=resolved_week)
 
     def player_card(
         self,
@@ -214,12 +246,13 @@ class FantasyToolRunner:
         week: int | None = None,
         weeks_back: int = 6,
     ) -> dict[str, Any]:
+        resolved_league_id = self._resolve_optional_league_id(league_id)
         with self._client() as client:
             resolved_season, resolved_week = resolve_season_week(client, season, week)
             players = load_or_fetch_players(client, cache_path=self.players_cache)
             player = players.get(str(player_id), {})
             position = str(player.get("position") or "RB")
-            scoring_settings = get_league_scoring_settings(client, league_id)
+            scoring_settings = get_league_scoring_settings(client, resolved_league_id)
             weekly_points = []
             start_week = max(1, resolved_week - weeks_back + 1)
 
@@ -252,6 +285,7 @@ class FantasyToolRunner:
 
             return {
                 "player_id": str(player_id),
+                "league_id": resolved_league_id,
                 "name": player.get("full_name") or player_id,
                 "team": player.get("team") or "",
                 "position": position,
@@ -259,13 +293,32 @@ class FantasyToolRunner:
                 "injury_status": player.get("injury_status") or "",
                 "season": resolved_season,
                 "week": resolved_week,
-                "scoring_source": league_id or "sleeper_default_points",
+                "scoring_source": resolved_league_id or "sleeper_default_points",
                 "chart_data": {"weekly_points": weekly_points},
                 "evidence": [
                     "actual_points and projected_points are calculated with league scoring when league_id is provided",
                     "missing stat keys are treated as zero",
                 ],
             }
+
+    def _resolve_optional_league_id(self, league_id: str | None) -> str | None:
+        return league_id or self.default_league_id
+
+    def _require_league_id(self, league_id: str | None) -> str:
+        resolved = self._resolve_optional_league_id(league_id)
+        if not resolved:
+            raise ValueError(
+                "league_id is required; pass league_id or set SLEEPER_DEFAULT_LEAGUE_ID"
+            )
+        return resolved
+
+    def _require_roster_id(self, roster_id: int | None) -> int:
+        resolved = roster_id if roster_id is not None else self.default_roster_id
+        if resolved is None:
+            raise ValueError(
+                "roster_id is required; pass roster_id or set SLEEPER_DEFAULT_ROSTER_ID"
+            )
+        return resolved
 
     def _client(self) -> Any:
         if self._client_factory is not None:
@@ -279,6 +332,34 @@ def resolve_cache_db_path() -> Path:
         return Path(os.environ["SLEEPER_CACHE_DB"])
     cache_dir = Path(os.environ.get("SLEEPER_CACHE_DIR", "/data"))
     return cache_dir / "sleeper.db"
+
+
+def resolve_default_roster_id() -> int | None:
+    value = os.environ.get("SLEEPER_DEFAULT_ROSTER_ID")
+    if not value:
+        return None
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise ValueError("SLEEPER_DEFAULT_ROSTER_ID must be an integer") from exc
+
+
+def with_context(
+    rows: list[dict[str, Any]],
+    *,
+    league_id: str,
+    roster_id: int | None = None,
+    season: int | None = None,
+    week: int | None = None,
+) -> list[dict[str, Any]]:
+    context = {"league_id": league_id}
+    if roster_id is not None:
+        context["roster_id"] = roster_id
+    if season is not None:
+        context["season"] = season
+    if week is not None:
+        context["week"] = week
+    return [{**context, **row} for row in rows]
 
 
 def parse_positions(positions: str) -> list[str]:

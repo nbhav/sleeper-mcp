@@ -1,0 +1,16 @@
+name = "sleeper-mcp"
+main = "src/index.ts"
+compatibility_date = "2026-09-02"
+
+routes = [
+  { pattern = "sleeper-mcp.neilbhavsar.com", custom_domain = true }
+]
+
+[vars]
+SLEEPER_DEFAULT_LEAGUE_ID = ""
+SLEEPER_DEFAULT_ROSTER_ID = ""
+
+[[d1_databases]]
+binding = "SLEEPER_CACHE_DB"
+database_name = "sleeper-mcp-cache"
+database_id = "replace-with-cloudflare-d1-database-id"
