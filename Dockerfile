@@ -7,10 +7,10 @@ ENV PYTHONUNBUFFERED=1 \
     UV_LINK_MODE=copy
 
 COPY pyproject.toml ./
-RUN uv sync --no-install-project --no-dev
+RUN uv sync --no-install-project --extra dev
 
 COPY src/ ./src/
 COPY tests/ ./tests/
-RUN uv sync --no-dev
+RUN uv sync --extra dev
 
 ENTRYPOINT ["/app/.venv/bin/sleeper"]

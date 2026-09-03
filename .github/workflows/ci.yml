@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker compose build sleeper
+
+      - name: Run unit tests
+        run: docker compose run --rm --entrypoint /app/.venv/bin/pytest sleeper -q -m "not integration"
+
+      - name: Run Sleeper API integration tests
+        run: docker compose run --rm --entrypoint /app/.venv/bin/pytest sleeper -q -m integration
+
+      - name: Clean up Docker resources
+        if: always()
+        run: docker compose down -v --remove-orphans

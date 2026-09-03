@@ -5,7 +5,7 @@
       "args": [
         "compose",
         "-f",
-        "/absolute/path/to/fantasy-football/docker-compose.yml",
+        "/absolute/path/to/sleeper-mcp/docker-compose.yml",
         "run",
         "--rm",
         "-i",

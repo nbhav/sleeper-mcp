@@ -43,6 +43,8 @@ make sleeper ARGS="state"
 
 The `state` command should return the current NFL season and week according to Sleeper. By default, API responses are cached in `./data/sleeper.db`.
 
+`make test` runs the offline unit suite. Use `make integration-test` when you want to run the live Sleeper API checks.
+
 ## Common Workflows
 
 Resolve your Sleeper user:
@@ -170,7 +172,7 @@ Example MCP config:
       "args": [
         "compose",
         "-f",
-        "/absolute/path/to/fantasy-football/docker-compose.yml",
+        "/absolute/path/to/sleeper-mcp/docker-compose.yml",
         "run",
         "--rm",
         "-i",
@@ -273,7 +275,8 @@ PY
 | Target | Action |
 |---|---|
 | `make build` | Build the Docker image. |
-| `make test` | Run the test suite inside Docker. |
+| `make test` | Run offline unit tests inside Docker. |
+| `make integration-test` | Run live Sleeper API integration tests inside Docker. |
 | `make sleeper ARGS="..."` | Run the Sleeper CLI inside Docker. |
 | `make mcp` | Run the stdio MCP server inside Docker. |
 | `make shell` | Open a shell inside the app container. |
@@ -329,6 +332,8 @@ make sleeper ARGS="stats --help"
 │       ├── reports.py
 │       └── scoring.py
 └── tests/
+    ├── integration/
+    │   └── test_sleeper_api.py
     ├── test_cli.py
     ├── test_client.py
     ├── test_decision_reports.py
@@ -350,7 +355,8 @@ Key files:
 - `reports.py`: Helpers that join raw API objects into fantasy-friendly report rows.
 - `scoring.py`: League-specific fantasy point calculation.
 - `output.py`: JSON, CSV, and rich table rendering.
-- `tests/`: Mocked tests that do not depend on live Sleeper responses.
+- `tests/`: Offline tests that use mocked HTTP responses.
+- `tests/integration/`: Live Sleeper API smoke tests marked with `pytest.mark.integration`.
 
 ## Caching
 
@@ -440,11 +446,19 @@ make sleeper ARGS="players --position QB --active --cache-path /data/qbs.json"
 
 ## Development
 
-Run tests:
+Run offline unit tests:
 
 ```bash
 make test
 ```
+
+Run live Sleeper API integration tests:
+
+```bash
+make integration-test
+```
+
+GitHub Actions builds the `sleeper` Compose service once, then runs unit tests and live integration tests against that same built image on PRs and pushes to `main`.
 
 Open a container shell:
 
@@ -465,4 +479,5 @@ When adding a new API method:
 3. Add decision reports in `src/sleeper_tooling/decision_reports.py` when the command answers a fantasy management question.
 4. Add report shaping in `src/sleeper_tooling/reports.py` if raw API output is awkward to consume.
 5. Add mocked tests under `tests/`.
-6. Run `make test`.
+6. Add live checks under `tests/integration/` for new Sleeper API assumptions.
+7. Run `make test`; run `make integration-test` when API behavior changed.

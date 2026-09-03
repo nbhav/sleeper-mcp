@@ -12,7 +12,7 @@ Core constraints:
 - Do not install packages on the host.
 - Do not create a local virtualenv.
 - Use Docker Compose for build, test, and runtime.
-- Keep unit tests mocked; use live Sleeper calls only as smoke checks.
+- Keep unit tests mocked; use live Sleeper calls only as integration smoke checks.
 - Keep SQLite API response caching enabled by default for CLI commands.
 - The large Sleeper player map should be cached under `./data`, which is gitignored.
 
@@ -21,6 +21,7 @@ Useful commands:
 ```bash
 make build
 make test
+make integration-test
 make sleeper ARGS="state"
 make sleeper ARGS="players --position QB --active --limit 20 --output table"
 make sleeper ARGS="best-by-team --source projections --position RB --output table"
@@ -49,3 +50,4 @@ When adding functionality:
 - Keep league scoring helpers in `src/sleeper_tooling/scoring.py`.
 - Keep response cache helpers in `src/sleeper_tooling/db.py`.
 - Add mocked tests in `tests/`.
+- Add live Sleeper API checks in `tests/integration/` and mark them with `pytest.mark.integration`.

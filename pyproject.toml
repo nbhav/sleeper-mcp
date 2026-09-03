@@ -27,3 +27,6 @@ packages = ["src/sleeper_tooling"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "integration: live checks against the Sleeper API",
+]

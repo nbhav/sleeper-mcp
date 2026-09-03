@@ -2,11 +2,11 @@
 
 Use this document as portable context for Claude, Codex, or another coding agent in a different repository.
 
-This describes how to use the `fantasy-football` Sleeper tooling project as an external Dockerized data source for fantasy football stats.
+This describes how to use the `sleeper-mcp` Sleeper tooling project as an external Dockerized data source for fantasy football stats.
 
 ## Project Summary
 
-`fantasy-football` is a Python CLI and client wrapper around the public Sleeper fantasy football API.
+`sleeper-mcp` is a Python CLI and client wrapper around the public Sleeper fantasy football API.
 
 Primary use cases:
 
@@ -40,13 +40,13 @@ Sleeper API docs: https://docs.sleeper.com/
 Expected source directory:
 
 ```text
-fantasy-football/
+sleeper-mcp/
 ```
 
 Important files:
 
 ```text
-fantasy-football/
+sleeper-mcp/
 ├── Dockerfile
 ├── Makefile
 ├── docker-compose.yml
@@ -73,7 +73,7 @@ Preferred options:
 ```text
 parent/
 ├── your-other-repo/
-└── fantasy-football/
+└── sleeper-mcp/
 ```
 
 2. Add this project as a submodule or vendored folder inside the repo that needs it:
@@ -81,29 +81,31 @@ parent/
 ```text
 your-other-repo/
 └── tools/
-    └── fantasy-football/
+    └── sleeper-mcp/
 ```
 
 Use the correct path when running commands. Examples below assume:
 
 ```text
-./tools/fantasy-football
+./tools/sleeper-mcp
 ```
 
 ## Build And Test
 
 ```bash
-cd ./tools/fantasy-football
+cd ./tools/sleeper-mcp
 make build
 make test
+make integration-test
 ```
 
 Equivalent without `make`:
 
 ```bash
-cd ./tools/fantasy-football
-docker compose build
-docker compose run --rm sleeper-test
+cd ./tools/sleeper-mcp
+docker compose build sleeper
+docker compose run --rm --entrypoint /app/.venv/bin/pytest sleeper -q -m "not integration"
+docker compose run --rm --entrypoint /app/.venv/bin/pytest sleeper -q -m integration
 ```
 
 ## Calling The CLI From Another Repo
@@ -111,13 +113,13 @@ docker compose run --rm sleeper-test
 From the repo root, call through Docker Compose with an explicit compose file:
 
 ```bash
-docker compose -f ./tools/fantasy-football/docker-compose.yml run --rm sleeper state
+docker compose -f ./tools/sleeper-mcp/docker-compose.yml run --rm sleeper state
 ```
 
 Because the Compose project directory can matter for relative paths and volume mounts, the most reliable pattern is:
 
 ```bash
-cd ./tools/fantasy-football
+cd ./tools/sleeper-mcp
 make sleeper ARGS="state"
 ```
 
@@ -127,7 +129,7 @@ If writing automation from another repo, use a small wrapper script that changes
 #!/usr/bin/env bash
 set -euo pipefail
 
-TOOL_DIR="${TOOL_DIR:-./tools/fantasy-football}"
+TOOL_DIR="${TOOL_DIR:-./tools/sleeper-mcp}"
 cd "$TOOL_DIR"
 docker compose run --rm sleeper "$@"
 ```
@@ -154,7 +156,7 @@ Example config:
       "args": [
         "compose",
         "-f",
-        "/absolute/path/to/fantasy-football/docker-compose.yml",
+        "/absolute/path/to/sleeper-mcp/docker-compose.yml",
         "run",
         "--rm",
         "-i",
@@ -332,7 +334,7 @@ For quick manual inspection, use `--output table`.
 The CLI uses SQLite for response caching:
 
 ```text
-fantasy-football/data/sleeper.db
+sleeper-mcp/data/sleeper.db
 ```
 
 Global cache controls:
@@ -364,7 +366,7 @@ The full Sleeper players response is large. The default cache path inside the co
 This maps to:
 
 ```text
-fantasy-football/data/players.json
+sleeper-mcp/data/players.json
 ```
 
 That directory is ignored by git.
@@ -372,7 +374,7 @@ That directory is ignored by git.
 Delete this file to force a refresh:
 
 ```bash
-rm -f ./tools/fantasy-football/data/players.json
+rm -f ./tools/sleeper-mcp/data/players.json
 ```
 
 ## Python Client Usage
@@ -396,7 +398,7 @@ with SleeperClient() as sleeper:
 Run a snippet inside Docker:
 
 ```bash
-cd ./tools/fantasy-football
+cd ./tools/sleeper-mcp
 docker compose run --rm --entrypoint /app/.venv/bin/python sleeper - <<'PY'
 from sleeper_tooling import SleeperClient
 
@@ -416,7 +418,7 @@ import json
 import subprocess
 from pathlib import Path
 
-TOOL_DIR = Path("tools/fantasy-football")
+TOOL_DIR = Path("tools/sleeper-mcp")
 
 
 def sleeper_json(*args: str):
@@ -495,7 +497,9 @@ When modifying this tooling:
 - Keep SQLite cache logic in `src/sleeper_tooling/db.py`.
 - Keep output handling in `src/sleeper_tooling/output.py`.
 - Add mocked tests under `tests/`.
-- Verify with `make test` from inside `fantasy-football`.
+- Add live API smoke checks under `tests/integration/` and mark them with `pytest.mark.integration`.
+- Verify with `make test` from inside `sleeper-mcp`.
+- Verify with `make integration-test` when API behavior or live response assumptions changed.
 
 ## Notes For Claude Or Codex
 

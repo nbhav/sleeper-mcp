@@ -1,10 +1,13 @@
-.PHONY: build test shell sleeper mcp clean
+.PHONY: build test integration-test shell sleeper mcp clean
 
 build:
-	docker compose build
+	docker compose build sleeper
 
 test:
-	docker compose run --rm sleeper-test
+	docker compose run --rm --entrypoint /app/.venv/bin/pytest sleeper -q -m "not integration"
+
+integration-test:
+	docker compose run --rm --entrypoint /app/.venv/bin/pytest sleeper -q -m integration
 
 shell:
 	docker compose run --rm --entrypoint bash sleeper

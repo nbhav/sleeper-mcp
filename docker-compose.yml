@@ -6,14 +6,6 @@ services:
     environment:
       SLEEPER_CACHE_DIR: /data
       SLEEPER_CACHE_DB: /data/sleeper.db
-  sleeper-test:
-    build: .
-    entrypoint: ["uv", "run", "--extra", "dev", "pytest", "-q"]
-    volumes:
-      - ./data:/data
-    environment:
-      SLEEPER_CACHE_DIR: /data
-      SLEEPER_CACHE_DB: /data/sleeper.db
   sleeper-mcp:
     build: .
     entrypoint: ["/app/.venv/bin/sleeper-mcp"]
