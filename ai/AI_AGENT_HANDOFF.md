@@ -60,6 +60,11 @@ sleeper-mcp/
 │   ├── mcp.config.example.json
 │   └── codex/
 │       └── skills/
+├── docs/
+│   ├── README.md
+│   ├── development.md
+│   ├── mcp-and-agents.md
+│   └── tool-breakdown.md
 ├── infra/
 │   ├── cloudflare-worker/
 │   └── docker/

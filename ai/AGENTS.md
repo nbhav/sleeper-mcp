@@ -1,6 +1,6 @@
 # Agent Instructions
 
-Read `README.md` and `ai/AI_AGENT_HANDOFF.md` before changing behavior.
+Read `README.md`, `docs/`, and `ai/AI_AGENT_HANDOFF.md` before changing behavior.
 
 ## Project Shape
 

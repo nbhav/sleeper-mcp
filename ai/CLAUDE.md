@@ -1,6 +1,6 @@
 # Claude Instructions
 
-Read `ai/AI_AGENT_HANDOFF.md` first. It is the portable context file for using this Sleeper fantasy football tooling from this repo or another repo.
+Read `ai/AI_AGENT_HANDOFF.md` first. It is the portable context file for using this Sleeper fantasy football tooling from this repo or another repo. Use `docs/` for detailed tool, MCP, and development references.
 
 Follow `ai/AGENTS.md` for contributor rules. The short version:
 
