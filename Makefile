@@ -1,36 +1,38 @@
+COMPOSE := docker compose -f infra/docker/docker-compose.yml
+
 .PHONY: build test integration-test shell sleeper mcp worker-install worker-typecheck worker-dev worker-deploy clean
 
 build:
-	docker compose build sleeper
+	$(COMPOSE) build sleeper
 
 test:
-	docker compose run --rm --entrypoint /app/.venv/bin/pytest sleeper -q -m "not integration"
+	$(COMPOSE) run --rm --entrypoint /app/.venv/bin/pytest sleeper -q -m "not integration"
 
 integration-test:
-	docker compose run --rm --entrypoint /app/.venv/bin/pytest sleeper -q -m integration
+	$(COMPOSE) run --rm --entrypoint /app/.venv/bin/pytest sleeper -q -m integration
 
 shell:
-	docker compose run --rm --entrypoint bash sleeper
+	$(COMPOSE) run --rm --entrypoint bash sleeper
 
 sleeper:
-	docker compose run --rm sleeper $(ARGS)
+	$(COMPOSE) run --rm sleeper $(ARGS)
 
 mcp:
-	docker compose run --rm -i sleeper-mcp
+	$(COMPOSE) run --rm -i sleeper-mcp
 
 worker-install:
-	docker compose run --rm cloudflare-worker install
+	$(COMPOSE) run --rm cloudflare-worker ci --no-audit --no-fund --progress=false
 
 worker-typecheck:
-	docker compose run --rm cloudflare-worker run typecheck
+	$(COMPOSE) run --rm cloudflare-worker run typecheck
 
 worker-dev:
-	docker compose run --rm --service-ports cloudflare-worker run dev
+	$(COMPOSE) run --rm --service-ports cloudflare-worker run dev
 
 worker-deploy:
-	docker compose run --rm cloudflare-worker run deploy
+	$(COMPOSE) run --rm cloudflare-worker run deploy
 
 clean:
-	docker compose down -v
+	$(COMPOSE) down -v
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	find . -name "*.pyc" -delete

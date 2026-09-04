@@ -50,30 +50,25 @@ Important files:
 
 ```text
 sleeper-mcp/
-├── Dockerfile
+├── AGENTS.md
+├── CLAUDE.md
 ├── Makefile
-├── cloudflare-worker/
-│   ├── .dev.vars.example
-│   ├── README.md
-│   ├── package-lock.json
-│   ├── package.json
-│   ├── tsconfig.json
-│   ├── wrangler.toml
-│   └── src/
-│       └── index.ts
-├── docker-compose.yml
-├── pyproject.toml
-├── src/sleeper_tooling/
-│   ├── cli.py
-│   ├── client.py
-│   ├── db.py
-│   ├── decision_reports.py
-│   ├── mcp_server.py
-│   ├── mcp_tools.py
-│   ├── output.py
-│   ├── reports.py
-│   └── scoring.py
-└── tests/
+├── ai/
+│   ├── AGENTS.md
+│   ├── AI_AGENT_HANDOFF.md
+│   ├── CLAUDE.md
+│   ├── mcp.config.example.json
+│   └── codex/
+│       └── skills/
+├── infra/
+│   ├── cloudflare-worker/
+│   └── docker/
+│       ├── Dockerfile
+│       └── docker-compose.yml
+└── python/
+    ├── pyproject.toml
+    ├── src/sleeper_tooling/
+    └── tests/
 ```
 
 ## Setup In Another Repo
@@ -116,10 +111,10 @@ Equivalent without `make`:
 
 ```bash
 cd ./tools/sleeper-mcp
-docker compose build sleeper
-docker compose run --rm --entrypoint /app/.venv/bin/pytest sleeper -q -m "not integration"
-docker compose run --rm --entrypoint /app/.venv/bin/pytest sleeper -q -m integration
-docker compose run --rm cloudflare-worker run typecheck
+docker compose -f infra/docker/docker-compose.yml build sleeper
+docker compose -f infra/docker/docker-compose.yml run --rm --entrypoint /app/.venv/bin/pytest sleeper -q -m "not integration"
+docker compose -f infra/docker/docker-compose.yml run --rm --entrypoint /app/.venv/bin/pytest sleeper -q -m integration
+docker compose -f infra/docker/docker-compose.yml run --rm cloudflare-worker run typecheck
 ```
 
 ## Calling The CLI From Another Repo
@@ -127,7 +122,7 @@ docker compose run --rm cloudflare-worker run typecheck
 From the repo root, call through Docker Compose with an explicit compose file:
 
 ```bash
-docker compose -f ./tools/sleeper-mcp/docker-compose.yml run --rm sleeper state
+docker compose -f ./tools/sleeper-mcp/infra/docker/docker-compose.yml run --rm sleeper state
 ```
 
 Because the Compose project directory can matter for relative paths and volume mounts, the most reliable pattern is:
@@ -145,7 +140,7 @@ set -euo pipefail
 
 TOOL_DIR="${TOOL_DIR:-./tools/sleeper-mcp}"
 cd "$TOOL_DIR"
-docker compose run --rm sleeper "$@"
+docker compose -f infra/docker/docker-compose.yml run --rm sleeper "$@"
 ```
 
 Example usage:
@@ -170,7 +165,7 @@ Example config:
       "args": [
         "compose",
         "-f",
-        "/absolute/path/to/sleeper-mcp/docker-compose.yml",
+        "/absolute/path/to/sleeper-mcp/infra/docker/docker-compose.yml",
         "run",
         "--rm",
         "-i",
@@ -205,7 +200,7 @@ Use `weekly_performance_backtest` for historical leaders and week-over-week move
 
 ## Remote MCP On Cloudflare
 
-The `cloudflare-worker/` package exposes the same curated MCP tool names over HTTP at:
+The `infra/cloudflare-worker/` package exposes the same curated MCP tool names over HTTP at:
 
 ```text
 https://sleeper-mcp.neilbhavsar.com/mcp
@@ -441,7 +436,7 @@ Run a snippet inside Docker:
 
 ```bash
 cd ./tools/sleeper-mcp
-docker compose run --rm --entrypoint /app/.venv/bin/python sleeper - <<'PY'
+docker compose -f infra/docker/docker-compose.yml run --rm --entrypoint /app/.venv/bin/python sleeper - <<'PY'
 from sleeper_tooling import SleeperClient
 
 with SleeperClient() as sleeper:
@@ -530,18 +525,18 @@ When modifying this tooling:
 - Keep SQLite response caching on by default for CLI commands.
 - Keep Worker caching on D1; do not try to use the local SQLite cache inside Cloudflare Workers.
 - Do not add instructions that require local `pip install`, local `uv sync`, or a host virtualenv.
-- Add new API methods in `src/sleeper_tooling/client.py`.
-- Add CLI commands in `src/sleeper_tooling/cli.py`.
-- Add fantasy decision logic in `src/sleeper_tooling/decision_reports.py`.
-- Keep MCP registration in `src/sleeper_tooling/mcp_server.py`.
-- Keep MCP tool orchestration in `src/sleeper_tooling/mcp_tools.py`.
-- Keep the remote HTTP MCP adapter in `cloudflare-worker/src/index.ts`.
-- Add data shaping helpers in `src/sleeper_tooling/reports.py` when raw Sleeper responses are awkward for downstream use.
-- Keep custom scoring logic in `src/sleeper_tooling/scoring.py`.
-- Keep SQLite cache logic in `src/sleeper_tooling/db.py`.
-- Keep output handling in `src/sleeper_tooling/output.py`.
-- Add mocked tests under `tests/`.
-- Add live API smoke checks under `tests/integration/` and mark them with `pytest.mark.integration`.
+- Add new API methods in `python/src/sleeper_tooling/client.py`.
+- Add CLI commands in `python/src/sleeper_tooling/cli.py` if they should be terminal-callable.
+- Add fantasy decision logic in `python/src/sleeper_tooling/decision_reports.py`.
+- Keep MCP registration in `python/src/sleeper_tooling/mcp_server.py`.
+- Keep MCP tool orchestration in `python/src/sleeper_tooling/mcp_tools.py`.
+- Keep the remote HTTP MCP adapter in `infra/cloudflare-worker/src/index.ts`.
+- Add data shaping helpers in `python/src/sleeper_tooling/reports.py` when raw Sleeper responses are awkward for downstream use.
+- Keep custom scoring logic in `python/src/sleeper_tooling/scoring.py`.
+- Keep SQLite cache logic in `python/src/sleeper_tooling/db.py`.
+- Keep output handling in `python/src/sleeper_tooling/output.py`.
+- Add mocked tests under `python/tests/`.
+- Add live API smoke checks under `python/tests/integration/` and mark them with `pytest.mark.integration`.
 - Verify with `make test` from inside `sleeper-mcp`.
 - Verify with `make integration-test` when API behavior or live response assumptions changed.
 

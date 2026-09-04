@@ -182,7 +182,7 @@ Example MCP config:
       "args": [
         "compose",
         "-f",
-        "/absolute/path/to/sleeper-mcp/docker-compose.yml",
+        "/absolute/path/to/sleeper-mcp/infra/docker/docker-compose.yml",
         "run",
         "--rm",
         "-i",
@@ -197,7 +197,7 @@ Example MCP config:
 }
 ```
 
-The same config is saved in `mcp.config.example.json`.
+The same config is saved in `ai/mcp.config.example.json`.
 
 Registered MCP tools:
 
@@ -219,7 +219,7 @@ Tools that need league context use the explicit `league_id` argument first, then
 
 ## Cloudflare Worker MCP
 
-The `cloudflare-worker/` package is a remote HTTP MCP adapter for `sleeper-mcp.neilbhavsar.com`. It is intended to run behind Cloudflare Access so you can use the assistant tools without your laptop.
+The `infra/cloudflare-worker/` package is a remote HTTP MCP adapter for `sleeper-mcp.neilbhavsar.com`. It is intended to run behind Cloudflare Access so you can use the assistant tools without your laptop.
 
 The Worker mirrors the curated MCP tool surface and uses Cloudflare D1 for API response caching. It does not use the local SQLite cache because Workers do not provide a persistent local filesystem.
 
@@ -235,8 +235,8 @@ make worker-deploy
 Before deploying:
 
 1. Create a D1 database named `sleeper-mcp-cache`.
-2. Replace `database_id` in `cloudflare-worker/wrangler.toml`.
-3. Set `SLEEPER_DEFAULT_LEAGUE_ID` and `SLEEPER_DEFAULT_ROSTER_ID` in Cloudflare Worker vars or `cloudflare-worker/.dev.vars`.
+2. Replace `database_id` in `infra/cloudflare-worker/wrangler.toml`.
+3. Set `SLEEPER_DEFAULT_LEAGUE_ID` and `SLEEPER_DEFAULT_ROSTER_ID` in Cloudflare Worker vars or `infra/cloudflare-worker/.dev.vars`.
 4. Configure Cloudflare Access for `sleeper-mcp.neilbhavsar.com`.
 5. Deploy with `make worker-deploy`.
 
@@ -316,7 +316,7 @@ print(stats[:5])
 Run Python snippets inside Docker:
 
 ```bash
-docker compose run --rm --entrypoint /app/.venv/bin/python sleeper - <<'PY'
+docker compose -f infra/docker/docker-compose.yml run --rm --entrypoint /app/.venv/bin/python sleeper - <<'PY'
 from sleeper_tooling import SleeperClient
 
 with SleeperClient() as sleeper:
@@ -373,59 +373,55 @@ make sleeper ARGS="stats --help"
 
 ```text
 .
-├── Dockerfile
+├── AGENTS.md
+├── CLAUDE.md
 ├── Makefile
-├── cloudflare-worker/
-│   ├── .dev.vars.example
-│   ├── README.md
-│   ├── package-lock.json
-│   ├── package.json
-│   ├── tsconfig.json
-│   ├── wrangler.toml
-│   └── src/
-│       └── index.ts
-├── docker-compose.yml
-├── pyproject.toml
-├── src/
-│   └── sleeper_tooling/
-│       ├── __init__.py
-│       ├── cli.py
-│       ├── client.py
-│       ├── db.py
-│       ├── decision_reports.py
-│       ├── mcp_server.py
-│       ├── mcp_tools.py
-│       ├── output.py
-│       ├── reports.py
-│       └── scoring.py
-└── tests/
-    ├── integration/
-    │   └── test_sleeper_api.py
-    ├── test_cli.py
-    ├── test_client.py
-    ├── test_decision_reports.py
-    ├── test_mcp_server.py
-    ├── test_mcp_tools.py
-    ├── test_output.py
-    ├── test_reports.py
-    └── test_scoring.py
+├── ai/
+│   ├── AGENTS.md
+│   ├── AI_AGENT_HANDOFF.md
+│   ├── CLAUDE.md
+│   ├── mcp.config.example.json
+│   └── codex/
+│       └── skills/
+├── infra/
+│   ├── cloudflare-worker/
+│   │   ├── README.md
+│   │   ├── package-lock.json
+│   │   ├── package.json
+│   │   ├── src/
+│   │   │   └── index.ts
+│   │   ├── tsconfig.json
+│   │   └── wrangler.toml
+│   └── docker/
+│       ├── Dockerfile
+│       └── docker-compose.yml
+└── python/
+    ├── pyproject.toml
+    ├── src/
+    │   └── sleeper_tooling/
+    └── tests/
+        └── integration/
 ```
 
 Key files:
 
-- `client.py`: Thin Sleeper API wrapper.
-- `cli.py`: Typer command-line interface.
-- `db.py`: SQLite response cache.
-- `decision_reports.py`: Fantasy decision reports built from multiple Sleeper calls.
-- `mcp_server.py`: Stdio MCP protocol server.
-- `mcp_tools.py`: MCP tool implementations over the decision engine.
-- `reports.py`: Helpers that join raw API objects into fantasy-friendly report rows.
-- `scoring.py`: League-specific fantasy point calculation.
-- `output.py`: JSON, CSV, and rich table rendering.
-- `cloudflare-worker/src/index.ts`: Remote HTTP MCP adapter for Cloudflare Workers.
-- `cloudflare-worker/wrangler.toml`: Worker route, vars, and D1 binding config.
-- `tests/`: Offline tests that use mocked HTTP responses.
-- `tests/integration/`: Live Sleeper API smoke tests marked with `pytest.mark.integration`.
+- `python/src/sleeper_tooling/client.py`: Thin Sleeper API wrapper.
+- `python/src/sleeper_tooling/cli.py`: Typer command-line interface.
+- `python/src/sleeper_tooling/db.py`: SQLite response cache.
+- `python/src/sleeper_tooling/decision_reports.py`: Fantasy decision reports built from multiple Sleeper calls.
+- `python/src/sleeper_tooling/mcp_server.py`: Stdio MCP protocol server.
+- `python/src/sleeper_tooling/mcp_tools.py`: MCP tool implementations over the decision engine.
+- `python/src/sleeper_tooling/reports.py`: Helpers that join raw API objects into fantasy-friendly report rows.
+- `python/src/sleeper_tooling/scoring.py`: League-specific fantasy point calculation.
+- `python/src/sleeper_tooling/output.py`: JSON, CSV, and rich table rendering.
+- `python/tests/`: Offline tests that use mocked HTTP responses.
+- `python/tests/integration/`: Live Sleeper API smoke tests marked with `pytest.mark.integration`.
+- `infra/docker/docker-compose.yml`: Docker Compose services for local CLI, stdio MCP, tests, and Worker tasks.
+- `infra/docker/Dockerfile`: Python app image build.
+- `infra/cloudflare-worker/src/index.ts`: Remote HTTP MCP adapter for Cloudflare Workers.
+- `infra/cloudflare-worker/wrangler.toml`: Worker route, vars, and D1 binding config.
+- `ai/`: Shareable agent instructions, handoff context, and Codex skill files.
+- `.github/workflows/`: GitHub-required CI/deploy workflow location.
 
 ## Caching
 
@@ -540,15 +536,15 @@ make shell
 Run the CLI directly through Compose:
 
 ```bash
-docker compose run --rm sleeper --help
+docker compose -f infra/docker/docker-compose.yml run --rm sleeper --help
 ```
 
 When adding a new API method:
 
-1. Add the method to `src/sleeper_tooling/client.py`.
-2. Add a CLI command in `src/sleeper_tooling/cli.py` if it should be callable from the terminal.
-3. Add decision reports in `src/sleeper_tooling/decision_reports.py` when the command answers a fantasy management question.
-4. Add report shaping in `src/sleeper_tooling/reports.py` if raw API output is awkward to consume.
-5. Add mocked tests under `tests/`.
-6. Add live checks under `tests/integration/` for new Sleeper API assumptions.
+1. Add the method to `python/src/sleeper_tooling/client.py`.
+2. Add a CLI command in `python/src/sleeper_tooling/cli.py` if it should be callable from the terminal.
+3. Add decision reports in `python/src/sleeper_tooling/decision_reports.py` when the command answers a fantasy management question.
+4. Add report shaping in `python/src/sleeper_tooling/reports.py` if raw API output is awkward to consume.
+5. Add mocked tests under `python/tests/`.
+6. Add live checks under `python/tests/integration/` for new Sleeper API assumptions.
 7. Run `make test`; run `make integration-test` when API behavior changed.
