@@ -6,6 +6,6 @@ __pycache__/
 data/
 dist/
 .DS_Store
-cloudflare-worker/.wrangler/
-cloudflare-worker/node_modules/
-cloudflare-worker/.dev.vars
+infra/cloudflare-worker/.wrangler/
+infra/cloudflare-worker/node_modules/
+infra/cloudflare-worker/.dev.vars

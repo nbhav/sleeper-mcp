@@ -2,7 +2,7 @@
 
 This package exposes the curated Sleeper MCP tools over HTTP for `sleeper-mcp.neilbhavsar.com`.
 
-It is intentionally a remote adapter, not a replacement for the Python core. Local CLI and stdio MCP development stays in `src/sleeper_tooling/`; hosted MCP behavior lives here.
+It is intentionally a remote adapter, not a replacement for the Python core. Local CLI and stdio MCP development stays in `python/src/sleeper_tooling/`; hosted MCP behavior lives here.
 
 ## Runtime Shape
 

@@ -1,17 +1,23 @@
+name: sleeper-mcp
+
 services:
   sleeper:
-    build: .
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile
     volumes:
-      - ./data:/data
+      - ../../data:/data
     environment:
       SLEEPER_CACHE_DIR: /data
       SLEEPER_CACHE_DB: /data/sleeper.db
   sleeper-mcp:
-    build: .
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile
     entrypoint: ["/app/.venv/bin/sleeper-mcp"]
     stdin_open: true
     volumes:
-      - ./data:/data
+      - ../../data:/data
     environment:
       SLEEPER_CACHE_DIR: /data
       SLEEPER_CACHE_DB: /data/sleeper.db
@@ -22,7 +28,11 @@ services:
     working_dir: /worker
     entrypoint: ["npm"]
     volumes:
-      - ./cloudflare-worker:/worker
+      - ../cloudflare-worker:/worker
+      - worker_node_modules:/worker/node_modules
     environment:
       CLOUDFLARE_ACCOUNT_ID:
       CLOUDFLARE_API_TOKEN:
+
+volumes:
+  worker_node_modules:
