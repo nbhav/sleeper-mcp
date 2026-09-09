@@ -9,6 +9,7 @@ routes = [
 [vars]
 SLEEPER_DEFAULT_LEAGUE_ID = ""
 SLEEPER_DEFAULT_ROSTER_ID = ""
+SLEEPER_DEFAULT_OWNER_ID = ""
 
 [[d1_databases]]
 binding = "SLEEPER_CACHE_DB"

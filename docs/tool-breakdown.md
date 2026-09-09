@@ -15,6 +15,7 @@ The Docker and Compose files live under `infra/docker/`. The main Makefile at th
 | `python/src/sleeper_tooling/cli.py` | Typer command-line interface. |
 | `python/src/sleeper_tooling/db.py` | SQLite response cache. |
 | `python/src/sleeper_tooling/decision_reports.py` | Fantasy decision reports built from multiple Sleeper calls. |
+| `python/src/sleeper_tooling/league_context.py` | Resolve default league, owner, and roster IDs from a league URL plus team/user name. |
 | `python/src/sleeper_tooling/mcp_server.py` | Stdio MCP protocol server. |
 | `python/src/sleeper_tooling/mcp_tools.py` | MCP tool implementations over the decision engine. |
 | `python/src/sleeper_tooling/reports.py` | Helpers that join raw API objects into fantasy-friendly rows. |
@@ -31,6 +32,9 @@ Most decision workflows follow this shape:
 4. Apply league scoring settings when a league ID is provided.
 5. Return JSON-first output that an LLM or script can consume directly.
 
+When a command or MCP tool omits `season`, the tooling uses the current calendar
+year. When `week` is omitted, it asks Sleeper for the current NFL week.
+
 ## CLI Commands
 
 | Command | Purpose |
@@ -40,6 +44,7 @@ Most decision workflows follow this shape:
 | `leagues` | List a user's NFL leagues for a season. |
 | `league` | Fetch league settings and metadata. |
 | `rosters` | Fetch all rosters in a league. |
+| `configure-context` | Resolve league/roster defaults from a league URL and team/user name, then write `./data/sleeper-mcp.env`. |
 | `matchups` | Fetch weekly matchups, optionally enriched with team and player names. |
 | `players` | Fetch or cache the NFL player map. |
 | `trending` | Fetch players trending by adds or drops. |
@@ -64,6 +69,7 @@ make sleeper ARGS="waiver-watch --help"
 
 | Tool | Purpose |
 |---|---|
+| `resolve_league_context` | Setup-time league, owner, and roster ID resolution from league URL plus team/user name. |
 | `weekly_briefing` | Weekly leaders plus waiver signal. |
 | `weekly_performance_backtest` | Back-test weekly leaders and deterministic week-over-week movers. |
 | `waiver_watch` | Trending unrostered players with projected value. |
@@ -79,6 +85,12 @@ The MCP surface is intentionally decision-shaped. Add new MCP tools when they an
 ## League Scoring
 
 Pass `--league-id` or MCP `league_id` when rankings should reflect your league's scoring settings.
+
+Use `configure-context` when you want local Docker CLI and MCP runs to pick up a default league and roster:
+
+```bash
+make sleeper ARGS='configure-context https://sleeper.com/leagues/<league_id>/matchup --team "Your Team Name"'
+```
 
 League-scored rows include:
 

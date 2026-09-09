@@ -11,6 +11,7 @@ This describes how to use the `sleeper-mcp` Sleeper tooling project as an extern
 Primary use cases:
 
 - Resolve Sleeper users.
+- Resolve default league, owner, and roster context from a Sleeper league URL plus team/user name.
 - Find leagues for a user and season.
 - Pull league metadata, rosters, users, transactions, and weekly matchups.
 - Pull and cache the full NFL player map from `https://api.sleeper.app/v1/players/nfl`.
@@ -154,7 +155,10 @@ Example usage:
 ./scripts/sleeper state
 ./scripts/sleeper user your_username
 ./scripts/sleeper leagues <user_id> --season 2026 --output json
+./scripts/sleeper configure-context https://sleeper.com/leagues/<league_id>/matchup --team "Your Team Name"
 ```
+
+`configure-context` writes `./data/sleeper-mcp.env` in the `sleeper-mcp` repo. Docker Compose loads that file for both CLI and local stdio MCP runs, so tools can omit `league_id` and `roster_id` after setup.
 
 ## MCP Integration
 
@@ -176,20 +180,18 @@ Example config:
         "-i",
         "sleeper-mcp"
       ],
-      "env": {
-        "SLEEPER_DEFAULT_LEAGUE_ID": "<league_id>",
-        "SLEEPER_DEFAULT_ROSTER_ID": "<roster_id>"
-      }
+      "env": {}
     }
   }
 }
 ```
 
-Tools that need league context use explicit arguments first, then `SLEEPER_DEFAULT_LEAGUE_ID`. `opponent_watch` also uses `SLEEPER_DEFAULT_ROSTER_ID` when `roster_id` is omitted.
+Tools that need league context use explicit arguments first, then `SLEEPER_DEFAULT_LEAGUE_ID`. `opponent_watch` also uses `SLEEPER_DEFAULT_ROSTER_ID` when `roster_id` is omitted. For local Docker Compose runs, prefer the generated `./data/sleeper-mcp.env` file. For hosted Worker runs, set the same values as Worker vars.
 
 Registered tools:
 
 ```text
+resolve_league_context
 weekly_briefing
 weekly_performance_backtest
 waiver_watch
@@ -201,6 +203,8 @@ league_team_watch
 player_card
 ```
 
+Use `resolve_league_context` for setup-time league, owner, and roster ID resolution. It returns `env_text` for local `.env` files and `cloudflare_vars` for hosted Worker configuration; it does not persist settings by itself.
+
 Use `weekly_performance_backtest` for historical leaders and week-over-week movement. Use `waiver_wire_watch` when recommendations must be limited to unrostered waiver targets and backed by projections, trends, status, and recent actuals. Keep this tool list curated to avoid token creep.
 
 ## Remote MCP On Cloudflare
@@ -210,6 +214,8 @@ The `infra/cloudflare-worker/` package exposes the same curated MCP tool names o
 ```text
 https://sleeper-mcp.neilbhavsar.com/mcp
 ```
+
+The Worker mirrors `resolve_league_context`, but default context must be persisted as Worker vars because Cloudflare Workers cannot modify runtime environment variables from an MCP request.
 
 Run all Worker commands through Docker Compose:
 

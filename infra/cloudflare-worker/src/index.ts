@@ -8,9 +8,22 @@ type Env = {
   SLEEPER_CACHE_DB?: D1Database;
   SLEEPER_DEFAULT_LEAGUE_ID?: string;
   SLEEPER_DEFAULT_ROSTER_ID?: string;
+  SLEEPER_DEFAULT_OWNER_ID?: string;
 };
 
 const tools = [
+  {
+    name: "resolve_league_context",
+    description: "Resolve league, owner, and roster IDs from a Sleeper league URL plus team/user name.",
+    inputSchema: {
+      type: "object",
+      required: ["league_ref", "team_name"],
+      properties: {
+        league_ref: { type: "string" },
+        team_name: { type: "string" }
+      }
+    }
+  },
   {
     name: "weekly_briefing",
     description: "League-aware weekly leaders plus waiver signal for the current or requested week.",
@@ -206,6 +219,8 @@ async function handleMcpMessage(message: JsonMap, env: Env): Promise<JsonMap | n
 
 async function callTool(name: string, args: JsonMap, env: Env): Promise<unknown> {
   switch (name) {
+    case "resolve_league_context":
+      return resolveLeagueContext(args, env);
     case "weekly_briefing":
       return weeklyBriefing(args, env);
     case "weekly_performance_backtest":
@@ -227,6 +242,41 @@ async function callTool(name: string, args: JsonMap, env: Env): Promise<unknown>
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
+}
+
+async function resolveLeagueContext(args: JsonMap, env: Env): Promise<JsonMap> {
+  const leagueRef = String(args.league_ref || "").trim();
+  const teamName = String(args.team_name || "").trim();
+  if (!leagueRef) {
+    throw new Error("league_ref is required");
+  }
+  if (!teamName) {
+    throw new Error("team_name is required");
+  }
+
+  const leagueId = extractLeagueId(leagueRef);
+  const [users, rosters] = await Promise.all([
+    getApp(`/league/${leagueId}/users`, env),
+    getApp(`/league/${leagueId}/rosters`, env)
+  ]);
+  const context = resolveLeagueContextFromRows(
+    leagueId,
+    teamName,
+    arrayValue(users),
+    arrayValue(rosters)
+  );
+
+  return {
+    ...context,
+    local_env_file: "/data/sleeper-mcp.env",
+    env_text: renderContextEnv(context, leagueRef),
+    cloudflare_vars: context.env,
+    evidence: [
+      "league_id was parsed from league_ref",
+      "roster_id was matched from league users and rosters",
+      "Cloudflare Workers cannot mutate runtime vars; set cloudflare_vars before deploy or through the Cloudflare dashboard"
+    ]
+  };
 }
 
 async function weeklyBriefing(args: JsonMap, env: Env): Promise<JsonMap> {
@@ -480,8 +530,12 @@ async function resolveSeasonWeek(args: JsonMap, env: Env): Promise<[number, numb
   if (season !== undefined && week !== undefined) {
     return [season, week];
   }
+  const resolvedSeason = season ?? currentSeasonYear();
+  if (week !== undefined) {
+    return [resolvedSeason, week];
+  }
   const state = objectValue(await getApp("/state/nfl", env));
-  return [season ?? Number(state.season), week ?? Number(state.week)];
+  return [resolvedSeason, Number(state.week)];
 }
 
 async function leagueScoringSettings(leagueId: string | undefined, env: Env): Promise<JsonMap | undefined> {
@@ -1081,6 +1135,169 @@ function requireRosterId(args: JsonMap, env: Env): number {
   return value;
 }
 
+function extractLeagueId(leagueRef: string): string {
+  const value = leagueRef.trim();
+  if (/^\d+$/.test(value)) {
+    return value;
+  }
+  try {
+    const parsed = new URL(value);
+    const pathLeagueId = parsed.pathname.split("/").find((segment) => /^\d+$/.test(segment));
+    if (pathLeagueId) {
+      return pathLeagueId;
+    }
+  } catch {
+    // Fall back to scanning below.
+  }
+  const match = value.match(/\b\d{8,}\b/);
+  if (match) {
+    return match[0];
+  }
+  throw new Error("Could not find a Sleeper league_id in the provided league URL or value.");
+}
+
+function resolveLeagueContextFromRows(
+  leagueId: string,
+  teamName: string,
+  users: JsonMap[],
+  rosters: JsonMap[]
+): JsonMap {
+  const query = normalizeForMatch(teamName);
+  if (!query) {
+    throw new Error("team_name must not be empty");
+  }
+  const candidates = rosters.map((roster) =>
+    buildLeagueContextCandidate(leagueId, roster, userForRoster(users, roster))
+  );
+
+  const exactMatches = findLeagueContextMatches(candidates, query, "exact");
+  if (exactMatches.length === 1) {
+    return withLeagueContextEnv(exactMatches[0]);
+  }
+  if (exactMatches.length > 1) {
+    throw new Error(ambiguousLeagueContextMessage(teamName, exactMatches));
+  }
+
+  const partialMatches = findLeagueContextMatches(candidates, query, "partial");
+  if (partialMatches.length === 1) {
+    return withLeagueContextEnv(partialMatches[0]);
+  }
+  if (partialMatches.length > 1) {
+    throw new Error(ambiguousLeagueContextMessage(teamName, partialMatches));
+  }
+
+  throw new Error(
+    `No roster matched ${JSON.stringify(teamName)}. Available teams: ${candidates.map(candidateLabel).join(", ")}`
+  );
+}
+
+function buildLeagueContextCandidate(leagueId: string, roster: JsonMap, user: JsonMap): JsonMap {
+  const userMetadata = objectValue(user.metadata);
+  const rosterMetadata = objectValue(roster.metadata);
+  const ownerId = stringValue(roster.owner_id);
+  const userId = stringValue(user.user_id) || ownerId;
+  return {
+    league_id: leagueId,
+    roster_id: roster.roster_id,
+    owner_id: ownerId,
+    user_id: userId,
+    display_name: stringValue(user.display_name),
+    username: stringValue(user.username),
+    team_name: stringValue(userMetadata.team_name) || stringValue(rosterMetadata.team_name),
+    matched_on: "",
+    match_value: ""
+  };
+}
+
+function findLeagueContextMatches(candidates: JsonMap[], query: string, mode: "exact" | "partial"): JsonMap[] {
+  const fields = ["team_name", "display_name", "username", "owner_id", "user_id", "roster_id"];
+  const matches: JsonMap[] = [];
+  for (const candidate of candidates) {
+    for (const field of fields) {
+      const rawValue = candidate[field];
+      const normalizedValue = normalizeForMatch(String(rawValue || ""));
+      if (!normalizedValue) {
+        continue;
+      }
+      if (mode === "exact" && normalizedValue !== query) {
+        continue;
+      }
+      if (mode === "partial" && !normalizedValue.includes(query)) {
+        continue;
+      }
+      matches.push({ ...candidate, matched_on: field, match_value: rawValue });
+      break;
+    }
+  }
+  return matches;
+}
+
+function userForRoster(users: JsonMap[], roster: JsonMap): JsonMap {
+  const ownerId = String(roster.owner_id || "");
+  return users.find((user) => String(user.user_id || "") === ownerId) || {};
+}
+
+function withLeagueContextEnv(context: JsonMap): JsonMap {
+  return {
+    ...context,
+    env: {
+      SLEEPER_DEFAULT_LEAGUE_ID: String(context.league_id || ""),
+      SLEEPER_DEFAULT_ROSTER_ID: String(context.roster_id || ""),
+      SLEEPER_DEFAULT_OWNER_ID: String(context.owner_id || "")
+    }
+  };
+}
+
+function renderContextEnv(context: JsonMap, leagueRef: string): string {
+  const lines = [
+    "# Generated by sleeper resolve_league_context.",
+    `SLEEPER_DEFAULT_LEAGUE_URL=${envValue(leagueRef)}`,
+    `SLEEPER_DEFAULT_LEAGUE_ID=${String(context.league_id || "")}`,
+    `SLEEPER_DEFAULT_ROSTER_ID=${String(context.roster_id || "")}`
+  ];
+  if (context.owner_id) {
+    lines.push(`SLEEPER_DEFAULT_OWNER_ID=${String(context.owner_id)}`);
+  }
+  if (context.team_name) {
+    lines.push(`SLEEPER_DEFAULT_TEAM_NAME=${envValue(context.team_name)}`);
+  }
+  if (context.display_name) {
+    lines.push(`SLEEPER_DEFAULT_DISPLAY_NAME=${envValue(context.display_name)}`);
+  }
+  if (context.username) {
+    lines.push(`SLEEPER_DEFAULT_USERNAME=${envValue(context.username)}`);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+function ambiguousLeagueContextMessage(teamName: string, matches: JsonMap[]): string {
+  return (
+    `Multiple rosters matched ${JSON.stringify(teamName)}: `
+    + `${matches.map(candidateLabel).join(", ")}. `
+    + "Use a more specific team name, display name, roster_id, or owner_id."
+  );
+}
+
+function candidateLabel(candidate: JsonMap): string {
+  return (
+    `roster_id=${String(candidate.roster_id || "")} `
+    + `team=${JSON.stringify(candidate.team_name || "(no team name)")} `
+    + `display=${JSON.stringify(candidate.display_name || "(no display name)")}`
+  );
+}
+
+function normalizeForMatch(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function envValue(value: unknown): string {
+  return `"${String(value)
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, "\\\"")
+    .replace(/\$/g, "\\$")
+    .replace(/`/g, "\\`")}"`;
+}
+
 function withContext(rows: JsonMap[], context: JsonMap): JsonMap[] {
   return rows.map((row) => ({ ...context, ...row }));
 }
@@ -1112,6 +1329,10 @@ function parsePositions(value: string): string[] {
 
 function stringArg(args: JsonMap, key: string, fallback: string): string {
   return typeof args[key] === "string" && args[key] ? String(args[key]) : fallback;
+}
+
+function stringValue(value: unknown): string {
+  return value === null || value === undefined ? "" : String(value);
 }
 
 function numberArg(args: JsonMap, key: string, fallback: number): number {
@@ -1166,6 +1387,10 @@ function round(value: number, digits: number): number {
 
 function nowSeconds(): number {
   return Math.floor(Date.now() / 1000);
+}
+
+function currentSeasonYear(): number {
+  return new Date().getFullYear();
 }
 
 function jsonResponse(payload: unknown, status = 200): Response {

@@ -12,6 +12,18 @@ PROTOCOL_VERSION = "2024-11-05"
 
 TOOLS = [
     {
+        "name": "resolve_league_context",
+        "description": "Resolve league, owner, and roster IDs from a Sleeper league URL plus team/user name.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["league_ref", "team_name"],
+            "properties": {
+                "league_ref": {"type": "string"},
+                "team_name": {"type": "string"},
+            },
+        },
+    },
+    {
         "name": "weekly_briefing",
         "description": "League-aware weekly leaders plus waiver signal for the current or requested week.",
         "inputSchema": {
