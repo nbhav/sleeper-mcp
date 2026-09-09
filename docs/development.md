@@ -90,6 +90,7 @@ Keep the MCP surface curated and decision-focused. Do not add one tool per raw S
 These are intentionally ignored:
 
 - `data/`
+  - includes `data/sleeper-mcp.env`, SQLite cache files, and cached player maps
 - `infra/cloudflare-worker/node_modules/`
 - `infra/cloudflare-worker/.wrangler/`
 - `infra/cloudflare-worker/.dev.vars`

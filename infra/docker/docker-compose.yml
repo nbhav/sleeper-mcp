@@ -7,9 +7,12 @@ services:
       dockerfile: infra/docker/Dockerfile
     volumes:
       - ../../data:/data
+    env_file:
+      - path: ../../data/sleeper-mcp.env
+        required: false
     environment:
-      SLEEPER_CACHE_DIR: /data
-      SLEEPER_CACHE_DB: /data/sleeper.db
+      - SLEEPER_CACHE_DIR=/data
+      - SLEEPER_CACHE_DB=/data/sleeper.db
   sleeper-mcp:
     build:
       context: ../..
@@ -18,13 +21,16 @@ services:
     stdin_open: true
     volumes:
       - ../../data:/data
+    env_file:
+      - path: ../../data/sleeper-mcp.env
+        required: false
     environment:
-      SLEEPER_CACHE_DIR: /data
-      SLEEPER_CACHE_DB: /data/sleeper.db
-      SLEEPER_DEFAULT_LEAGUE_ID:
-      SLEEPER_DEFAULT_ROSTER_ID:
+      - SLEEPER_CACHE_DIR=/data
+      - SLEEPER_CACHE_DB=/data/sleeper.db
   cloudflare-worker:
-    image: node:22-bookworm-slim
+    build:
+      context: ../cloudflare-worker
+      dockerfile: Dockerfile
     working_dir: /worker
     entrypoint: ["npm"]
     volumes:

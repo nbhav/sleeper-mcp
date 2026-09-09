@@ -9,6 +9,12 @@ import typer
 from sleeper_tooling.client import SleeperApiError, SleeperClient, load_or_fetch_players
 from sleeper_tooling.decision_reports import build_injury_watch, build_waiver_watch
 from sleeper_tooling.db import ApiResponseCache
+from sleeper_tooling.league_context import (
+    LeagueContextError,
+    render_context_env,
+    resolve_league_context,
+    write_context_env_file,
+)
 from sleeper_tooling.output import OutputFormat, emit
 from sleeper_tooling.reports import (
     build_league_week_report,
@@ -20,9 +26,11 @@ from sleeper_tooling.reports import (
     top_players_by_team,
 )
 from sleeper_tooling.scoring import flatten_scored_player_rows
+from sleeper_tooling.season import current_season_year
 
 app = typer.Typer(no_args_is_help=True, help="Pull fantasy football data from Sleeper.")
 StatSource = Literal["stats", "projections"]
+ContextOutputFormat = Literal["json", "table", "env"]
 _CACHE_DB_PATH: Path | None = None
 _CACHE_ENABLED = True
 _REFRESH_CACHE = False
@@ -84,6 +92,52 @@ def rosters(
     """Fetch rosters for a league."""
     with client_or_exit() as client:
         emit(client.get_rosters(league_id), output_format=output)
+
+
+@app.command("configure-context")
+def configure_context_command(
+    league_ref: Annotated[str, typer.Argument(help="Sleeper league_id or league URL.")],
+    team_name: Annotated[
+        str,
+        typer.Option(
+            "--team-name",
+            "--team",
+            help="Sleeper team name, display name, username, owner_id, or roster_id.",
+        ),
+    ],
+    env_file: Annotated[
+        Path,
+        typer.Option(
+            "--env-file",
+            help="Env file path. /data maps to ./data through Docker Compose.",
+        ),
+    ] = Path("/data/sleeper-mcp.env"),
+    write: Annotated[
+        bool,
+        typer.Option("--write/--no-write", help="Write resolved defaults to env_file."),
+    ] = True,
+    output: Annotated[ContextOutputFormat, typer.Option("--output", "-o")] = "json",
+) -> None:
+    """Resolve league and roster defaults from a league URL plus team/user name."""
+    with client_or_exit() as client:
+        try:
+            context = resolve_league_context(
+                client,
+                league_ref=league_ref,
+                team_name=team_name,
+            )
+        except LeagueContextError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(1) from exc
+
+        if write:
+            write_context_env_file(context, env_file, league_ref=league_ref)
+
+        payload = {**context, "env_file": str(env_file), "written": write}
+        if output == "env":
+            typer.echo(render_context_env(context, league_ref=league_ref), nl=False)
+            return
+        emit(payload, output_format=output)
 
 
 @app.command()
@@ -401,8 +455,11 @@ def resolve_season_week(
 ) -> tuple[int, int]:
     if season is not None and week is not None:
         return season, week
+    resolved_season = season or current_season_year()
+    if week is not None:
+        return resolved_season, week
     state = client.get_nfl_state()
-    return season or int(state["season"]), week or int(state["week"])
+    return resolved_season, int(state["week"])
 
 
 def fetch_rows_for_positions(

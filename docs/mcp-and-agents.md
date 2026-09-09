@@ -39,14 +39,42 @@ The same example lives at `ai/mcp.config.example.json`.
 
 ## Default Context
 
+Configure local defaults once from a Sleeper league URL plus your team, display,
+username, owner ID, or roster ID:
+
+```bash
+make sleeper ARGS='configure-context https://sleeper.com/leagues/<league_id>/matchup --team "Your Team Name"'
+```
+
+The command resolves and writes:
+
+```text
+./data/sleeper-mcp.env
+```
+
 Tools that need league context use explicit arguments first, then environment defaults:
 
 ```text
 SLEEPER_DEFAULT_LEAGUE_ID
 SLEEPER_DEFAULT_ROSTER_ID
+SLEEPER_DEFAULT_OWNER_ID
 ```
 
 `opponent_watch` uses `SLEEPER_DEFAULT_ROSTER_ID` when `roster_id` is omitted. If required context is missing, the MCP server returns a clear protocol error.
+
+For local Docker Compose runs, those defaults should live in `./data/sleeper-mcp.env`.
+For hosted Worker runs, set the same values as Worker vars.
+
+Use a dry run when you want to inspect the values without writing the env file:
+
+```bash
+make sleeper ARGS='configure-context https://sleeper.com/leagues/<league_id>/matchup --team "Your Team Name" --no-write --output env'
+```
+
+The MCP surface also exposes `resolve_league_context` for hosted or agent-driven
+setup. It returns the resolved IDs, `env_text` for local `.env` files, and
+`cloudflare_vars` for Worker configuration. It does not persist settings by
+itself.
 
 ## Recommended Tool Choices
 
@@ -66,6 +94,7 @@ Use `waiver_wire_watch` when the user asks:
 
 Use lower-level tools only when the user needs narrower context:
 
+- `resolve_league_context`: setup-time league, owner, and roster ID resolution
 - `waiver_watch`: trending unrostered players with projected value
 - `free_agent_watch`: unrostered players ranked by projection
 - `injury_watch`: rostered players with injury or status risk

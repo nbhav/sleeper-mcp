@@ -4,7 +4,15 @@ from pathlib import Path
 
 import pytest
 
+import sleeper_tooling.mcp_tools as mcp_tools
 from sleeper_tooling.mcp_tools import FantasyToolRunner
+
+
+@pytest.fixture(autouse=True)
+def clear_default_context_env(monkeypatch) -> None:
+    monkeypatch.delenv("SLEEPER_DEFAULT_LEAGUE_ID", raising=False)
+    monkeypatch.delenv("SLEEPER_DEFAULT_ROSTER_ID", raising=False)
+    monkeypatch.delenv("SLEEPER_DEFAULT_OWNER_ID", raising=False)
 
 
 def test_free_agent_watch_returns_unrostered_projected_players(tmp_path) -> None:
@@ -37,6 +45,34 @@ def test_free_agent_watch_returns_unrostered_projected_players(tmp_path) -> None
             "injury_status": "",
         }
     ]
+
+
+def test_mcp_resolve_season_week_defaults_season_to_current_year(monkeypatch) -> None:
+    fake_client = FakeMcpClient()
+    monkeypatch.setattr(mcp_tools, "current_season_year", lambda: 2030)
+
+    assert mcp_tools.resolve_season_week(fake_client, None, 4) == (2030, 4)
+
+
+def test_resolve_league_context_returns_env_and_cloudflare_vars(tmp_path) -> None:
+    runner = FantasyToolRunner(
+        client_factory=lambda: FakeMcpClient(),
+        players_cache=tmp_path / "players.json",
+    )
+
+    context = runner.resolve_league_context(
+        league_ref="https://sleeper.com/leagues/1389328071634460672/matchup",
+        team_name="Me",
+    )
+
+    assert context["league_id"] == "1389328071634460672"
+    assert context["roster_id"] == 1
+    assert context["cloudflare_vars"] == {
+        "SLEEPER_DEFAULT_LEAGUE_ID": "1389328071634460672",
+        "SLEEPER_DEFAULT_ROSTER_ID": "1",
+        "SLEEPER_DEFAULT_OWNER_ID": "u1",
+    }
+    assert "SLEEPER_DEFAULT_ROSTER_ID=1" in context["env_text"]
 
 
 def test_tools_use_default_league_id_when_argument_is_omitted(tmp_path) -> None:

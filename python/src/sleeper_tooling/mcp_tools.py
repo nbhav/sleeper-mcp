@@ -14,8 +14,13 @@ from sleeper_tooling.decision_reports import (
     build_opponent_watch,
     build_waiver_watch,
 )
+from sleeper_tooling.league_context import (
+    render_context_env,
+    resolve_league_context as build_league_context,
+)
 from sleeper_tooling.reports import flatten_player_rows, top_players_by_position
 from sleeper_tooling.scoring import flatten_scored_player_rows
+from sleeper_tooling.season import current_season_year
 
 StatSource = Literal["stats", "projections"]
 DEFAULT_POSITIONS = "QB,RB,WR,TE,K,DEF"
@@ -44,6 +49,30 @@ class FantasyToolRunner:
         self.default_roster_id = default_roster_id or resolve_default_roster_id()
         self.cache_enabled = cache_enabled
         self.refresh_cache = refresh_cache
+
+    def resolve_league_context(
+        self,
+        *,
+        league_ref: str,
+        team_name: str,
+    ) -> dict[str, Any]:
+        with self._client() as client:
+            context = build_league_context(
+                client,
+                league_ref=league_ref,
+                team_name=team_name,
+            )
+            return {
+                **context,
+                "local_env_file": "/data/sleeper-mcp.env",
+                "env_text": render_context_env(context, league_ref=league_ref),
+                "cloudflare_vars": context["env"],
+                "evidence": [
+                    "league_id was parsed from league_ref",
+                    "roster_id was matched from league users and rosters",
+                    "Cloudflare Workers cannot mutate runtime vars; set cloudflare_vars before deploy or through the Cloudflare dashboard",
+                ],
+            }
 
     def weekly_briefing(
         self,
@@ -736,8 +765,11 @@ def validate_stat_source(source: str) -> None:
 def resolve_season_week(client: Any, season: int | None, week: int | None) -> tuple[int, int]:
     if season is not None and week is not None:
         return season, week
+    resolved_season = season or current_season_year()
+    if week is not None:
+        return resolved_season, week
     state = client.get_nfl_state()
-    return season or int(state["season"]), week or int(state["week"])
+    return resolved_season, int(state["week"])
 
 
 def get_league_scoring_settings(client: Any, league_id: str | None) -> dict[str, Any] | None:

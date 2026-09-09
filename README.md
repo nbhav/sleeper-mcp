@@ -35,6 +35,16 @@ make sleeper ARGS="state"
 
 The `state` command returns Sleeper's current NFL season and week. API responses are cached under `./data/`.
 
+Configure your default league and roster context from a Sleeper league URL plus
+your team, display, or username:
+
+```bash
+make sleeper ARGS='configure-context https://sleeper.com/leagues/<league_id>/matchup --team "Your Team Name"'
+```
+
+This writes `./data/sleeper-mcp.env`, which Docker Compose loads for the CLI and
+local MCP server.
+
 ## Common Usage
 
 Resolve your Sleeper user and leagues:
@@ -59,6 +69,9 @@ make sleeper ARGS="best-week --season 2025 --week 1 --source stats --limit 5 --o
 make sleeper ARGS="best-by-team --season 2026 --week 1 --source projections --position RB --output table"
 ```
 
+When `--season` is omitted, scripts use the current calendar year. When `--week`
+is omitted, scripts use Sleeper's current NFL week.
+
 Use league scoring settings:
 
 ```bash
@@ -81,6 +94,9 @@ Run the local stdio MCP server through Docker:
 make mcp
 ```
 
+If you ran `configure-context`, MCP tools that need league context can use those
+defaults without passing `league_id` or `roster_id` every time.
+
 Register it with your LLM harness using the Compose file under `infra/docker/`:
 
 ```json
@@ -97,19 +113,19 @@ Register it with your LLM harness using the Compose file under `infra/docker/`:
         "-i",
         "sleeper-mcp"
       ],
-      "env": {
-        "SLEEPER_DEFAULT_LEAGUE_ID": "<league_id>",
-        "SLEEPER_DEFAULT_ROSTER_ID": "<roster_id>"
-      }
+      "env": {}
     }
   }
 }
 ```
 
-The same config is saved at `ai/mcp.config.example.json`.
+The same config is saved at `ai/mcp.config.example.json`. For local runs, use
+`configure-context` or pass `league_id` and `roster_id` directly to individual
+MCP tools.
 
 For assistant usage, prefer:
 
+- `resolve_league_context` for setup-time league, owner, and roster ID resolution
 - `weekly_performance_backtest` for historical leaders and week-over-week movement
 - `waiver_wire_watch` for actionable waiver recommendations
 - `weekly_briefing`, `opponent_watch`, `league_team_watch`, and `player_card` for supporting context
@@ -117,6 +133,10 @@ For assistant usage, prefer:
 ## Remote MCP
 
 The Cloudflare Worker under `infra/cloudflare-worker/` exposes the curated MCP tool surface over HTTP and uses Cloudflare D1 for response caching.
+
+Use `resolve_league_context` over MCP to get the `cloudflare_vars` values, then
+set those vars in Cloudflare before deploy. The Worker cannot persist runtime
+environment changes from a tool call.
 
 Run Worker tasks through Docker:
 
