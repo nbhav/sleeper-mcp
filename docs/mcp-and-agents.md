@@ -95,9 +95,24 @@ Use `waiver_wire_watch` when the user asks:
 - which waiver players have projection plus recent actual evidence
 - which candidates should be filtered through league scoring
 
+Use `my_lineup` when the user asks:
+
+- who is currently starting this week
+- who is on the bench
+- what the current lineup projects for under league scoring
+
+Use `lineup_recommendations` when the user asks:
+
+- who to start or sit
+- whether a bench player should replace a starter
+- whether a free agent or waiver player is better than the roster's weakest comparable player
+- how add/drop momentum and rostered percentage should affect watch priority or FAAB range
+
 Use lower-level tools only when the user needs narrower context:
 
 - `resolve_league_context`: setup-time league, owner, and roster ID resolution
+- `my_lineup`: current starters, bench, slots, and projections
+- `lineup_recommendations`: deterministic start/sit and add/drop comparisons
 - `waiver_watch`: trending unrostered players with projected value
 - `free_agent_watch`: unrostered players ranked by projection
 - `injury_watch`: rostered players with injury or status risk

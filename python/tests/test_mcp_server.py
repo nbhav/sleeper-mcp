@@ -24,6 +24,8 @@ def test_mcp_tools_list_exposes_curated_decision_tools() -> None:
         "weekly_briefing",
         "weekly_performance_backtest",
         "waiver_watch",
+        "my_lineup",
+        "lineup_recommendations",
         "waiver_wire_watch",
         "free_agent_watch",
         "injury_watch",
@@ -34,6 +36,8 @@ def test_mcp_tools_list_exposes_curated_decision_tools() -> None:
     assert tools_by_name["resolve_league_context"]["inputSchema"]["required"] == ["league_ref"]
     assert "user_ref" in tools_by_name["resolve_league_context"]["inputSchema"]["properties"]
     assert "required" not in tools_by_name["waiver_watch"]["inputSchema"]
+    assert "required" not in tools_by_name["my_lineup"]["inputSchema"]
+    assert "required" not in tools_by_name["lineup_recommendations"]["inputSchema"]
     assert "required" not in tools_by_name["free_agent_watch"]["inputSchema"]
     assert "required" not in tools_by_name["injury_watch"]["inputSchema"]
     assert "required" not in tools_by_name["opponent_watch"]["inputSchema"]

@@ -10,8 +10,9 @@ It is intentionally a remote adapter, not a replacement for the Python core. Loc
 - MCP endpoint: `/mcp`
 - Auth boundary: Cloudflare Access on the hostname
 - Cache storage: Cloudflare D1 through the `SLEEPER_CACHE_DB` binding
+- Large response handling: oversized payloads such as the full player map are not written to D1
 - Default context: `SLEEPER_DEFAULT_LEAGUE_ID`, `SLEEPER_DEFAULT_ROSTER_ID`, and `SLEEPER_DEFAULT_OWNER_ID`
-- Tool surface: mirrors the curated Python MCP tools, including `weekly_performance_backtest` and `waiver_wire_watch`
+- Tool surface: mirrors the curated Python MCP tools, including `weekly_performance_backtest`, `my_lineup`, `lineup_recommendations`, and `waiver_wire_watch`
 - Season default: current calendar year when `season` is omitted; Sleeper state is used for current week when `week` is omitted
 
 ## League Context

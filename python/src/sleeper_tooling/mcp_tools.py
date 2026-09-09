@@ -11,6 +11,8 @@ from sleeper_tooling.decision_reports import (
     build_free_agent_watch,
     build_injury_watch,
     build_league_team_watch,
+    build_lineup_recommendations,
+    build_my_lineup,
     build_opponent_watch,
     build_waiver_watch,
 )
@@ -243,6 +245,111 @@ class FantasyToolRunner:
                 league_id=resolved_league_id,
                 season=resolved_season,
                 week=resolved_week,
+            )
+
+    def my_lineup(
+        self,
+        *,
+        league_id: str | None = None,
+        roster_id: int | None = None,
+        season: int | None = None,
+        week: int | None = None,
+        positions: str = DEFAULT_POSITIONS,
+    ) -> dict[str, Any]:
+        resolved_league_id = self._require_league_id(league_id)
+        resolved_roster_id = self._require_roster_id(roster_id)
+        with self._client() as client:
+            resolved_season, resolved_week = resolve_season_week(client, season, week)
+            league = client.get_league(resolved_league_id)
+            scoring_settings = league.get("scoring_settings") or {}
+            position_list = parse_positions(positions)
+            projection_rows = fetch_rows_for_positions(
+                client,
+                season=resolved_season,
+                week=resolved_week,
+                positions=position_list,
+                source="projections",
+                scoring_settings=scoring_settings,
+            )
+            return build_my_lineup(
+                league_id=resolved_league_id,
+                roster_id=resolved_roster_id,
+                season=resolved_season,
+                week=resolved_week,
+                league=league,
+                users=client.get_league_users(resolved_league_id),
+                rosters=client.get_rosters(resolved_league_id),
+                matchups=client.get_matchups(resolved_league_id, resolved_week),
+                players=load_or_fetch_players(client, cache_path=self.players_cache),
+                projection_rows=projection_rows,
+            )
+
+    def lineup_recommendations(
+        self,
+        *,
+        league_id: str | None = None,
+        roster_id: int | None = None,
+        season: int | None = None,
+        week: int | None = None,
+        positions: str = DEFAULT_POSITIONS,
+        trend_limit: int = 100,
+        lookback_hours: int = 24,
+        min_delta: float = 1.0,
+        limit: int = 10,
+    ) -> dict[str, Any]:
+        if limit < 1:
+            raise ValueError("limit must be at least 1")
+        if min_delta < 0:
+            raise ValueError("min_delta must be zero or greater")
+
+        resolved_league_id = self._require_league_id(league_id)
+        resolved_roster_id = self._require_roster_id(roster_id)
+        with self._client() as client:
+            resolved_season, resolved_week = resolve_season_week(client, season, week)
+            league = client.get_league(resolved_league_id)
+            scoring_settings = league.get("scoring_settings") or {}
+            position_list = parse_positions(positions)
+            projection_rows = fetch_rows_for_positions(
+                client,
+                season=resolved_season,
+                week=resolved_week,
+                positions=position_list,
+                source="projections",
+                scoring_settings=scoring_settings,
+            )
+            users = client.get_league_users(resolved_league_id)
+            rosters = client.get_rosters(resolved_league_id)
+            players = load_or_fetch_players(client, cache_path=self.players_cache)
+            lineup = build_my_lineup(
+                league_id=resolved_league_id,
+                roster_id=resolved_roster_id,
+                season=resolved_season,
+                week=resolved_week,
+                league=league,
+                users=users,
+                rosters=rosters,
+                matchups=client.get_matchups(resolved_league_id, resolved_week),
+                players=players,
+                projection_rows=projection_rows,
+            )
+            return build_lineup_recommendations(
+                lineup=lineup,
+                rosters=rosters,
+                players=players,
+                projection_rows=projection_rows,
+                add_trends=client.get_trending_players(
+                    "add",
+                    lookback_hours=lookback_hours,
+                    limit=trend_limit,
+                ),
+                drop_trends=client.get_trending_players(
+                    "drop",
+                    lookback_hours=lookback_hours,
+                    limit=trend_limit,
+                ),
+                positions=position_list,
+                min_delta=min_delta,
+                limit=limit,
             )
 
     def waiver_wire_watch(

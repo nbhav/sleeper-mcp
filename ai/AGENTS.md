@@ -9,7 +9,7 @@ This repo has two runtime surfaces:
 - Python core under `python/`: local CLI, stdio MCP server, Sleeper client, SQLite cache, report shaping, and league scoring.
 - Infra under `infra/`: Docker/Compose plus the Cloudflare Worker HTTP MCP adapter for `sleeper-mcp.neilbhavsar.com`.
 
-Keep the MCP tool surface curated and decision-focused. Prefer deterministic tools like `weekly_performance_backtest` and `waiver_wire_watch` for agent workflows, and do not expose raw Sleeper API endpoints as individual MCP tools unless there is a clear product reason.
+Keep the MCP tool surface curated and decision-focused. Prefer deterministic tools like `weekly_performance_backtest`, `my_lineup`, `lineup_recommendations`, and `waiver_wire_watch` for agent workflows, and do not expose raw Sleeper API endpoints as individual MCP tools unless there is a clear product reason.
 
 ## Constraints
 
@@ -46,7 +46,7 @@ make sleeper ARGS="waiver-watch <league_id> --positions RB,WR,TE --output table"
 make sleeper ARGS="injury-watch <league_id> --output table"
 ```
 
-For MCP users, prefer `weekly_performance_backtest` for historical leaders and week-over-week changes, and `waiver_wire_watch` for actionable waiver candidates.
+For MCP users, prefer `weekly_performance_backtest` for historical leaders and week-over-week changes, `my_lineup` or `lineup_recommendations` for lineup decisions, and `waiver_wire_watch` for actionable waiver candidates.
 
 For MCP registration with built-in context, set:
 
