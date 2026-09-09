@@ -31,10 +31,8 @@ def test_mcp_tools_list_exposes_curated_decision_tools() -> None:
         "league_team_watch",
         "player_card",
     }
-    assert tools_by_name["resolve_league_context"]["inputSchema"]["required"] == [
-        "league_ref",
-        "team_name",
-    ]
+    assert tools_by_name["resolve_league_context"]["inputSchema"]["required"] == ["league_ref"]
+    assert "user_ref" in tools_by_name["resolve_league_context"]["inputSchema"]["properties"]
     assert "required" not in tools_by_name["waiver_watch"]["inputSchema"]
     assert "required" not in tools_by_name["free_agent_watch"]["inputSchema"]
     assert "required" not in tools_by_name["injury_watch"]["inputSchema"]

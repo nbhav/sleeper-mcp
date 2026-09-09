@@ -97,12 +97,14 @@ def rosters(
 @app.command("configure-context")
 def configure_context_command(
     league_ref: Annotated[str, typer.Argument(help="Sleeper league_id or league URL.")],
-    team_name: Annotated[
+    user_ref: Annotated[
         str,
         typer.Option(
+            "--user-ref",
+            "--user",
             "--team-name",
             "--team",
-            help="Sleeper team name, display name, username, owner_id, or roster_id.",
+            help="Sleeper username, display name, owner_id, roster_id, or team name.",
         ),
     ],
     env_file: Annotated[
@@ -124,7 +126,7 @@ def configure_context_command(
             context = resolve_league_context(
                 client,
                 league_ref=league_ref,
-                team_name=team_name,
+                team_name=user_ref,
             )
         except LeagueContextError as exc:
             typer.echo(str(exc), err=True)

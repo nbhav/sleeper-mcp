@@ -62,7 +62,7 @@ def test_resolve_league_context_returns_env_and_cloudflare_vars(tmp_path) -> Non
 
     context = runner.resolve_league_context(
         league_ref="https://sleeper.com/leagues/1389328071634460672/matchup",
-        team_name="Me",
+        user_ref="Me",
     )
 
     assert context["league_id"] == "1389328071634460672"

@@ -16,10 +16,11 @@ TOOLS = [
         "description": "Resolve league, owner, and roster IDs from a Sleeper league URL plus team/user name.",
         "inputSchema": {
             "type": "object",
-            "required": ["league_ref", "team_name"],
+            "required": ["league_ref"],
             "properties": {
                 "league_ref": {"type": "string"},
-                "team_name": {"type": "string"},
+                "user_ref": {"type": "string"},
+                "team_name": {"type": "string", "description": "Deprecated alias for user_ref."},
             },
         },
     },

@@ -39,11 +39,11 @@ The same example lives at `ai/mcp.config.example.json`.
 
 ## Default Context
 
-Configure local defaults once from a Sleeper league URL plus your team, display,
-username, owner ID, or roster ID:
+Configure local defaults once from a Sleeper league URL plus your Sleeper
+username, display name, owner ID, roster ID, or team name:
 
 ```bash
-make sleeper ARGS='configure-context https://sleeper.com/leagues/<league_id>/matchup --team "Your Team Name"'
+make sleeper ARGS='configure-context https://sleeper.com/leagues/<league_id>/matchup --user-ref your_username'
 ```
 
 The command resolves and writes:
@@ -64,11 +64,14 @@ SLEEPER_DEFAULT_OWNER_ID
 
 For local Docker Compose runs, those defaults should live in `./data/sleeper-mcp.env`.
 For hosted Worker runs, set the same values as Worker vars.
+GitHub Actions deploys resolve those Worker vars from GitHub `production`
+environment variables named `SLEEPER_DEFAULT_LEAGUE_URL` and
+`SLEEPER_DEFAULT_USER_REF`.
 
 Use a dry run when you want to inspect the values without writing the env file:
 
 ```bash
-make sleeper ARGS='configure-context https://sleeper.com/leagues/<league_id>/matchup --team "Your Team Name" --no-write --output env'
+make sleeper ARGS='configure-context https://sleeper.com/leagues/<league_id>/matchup --user-ref your_username --no-write --output env'
 ```
 
 The MCP surface also exposes `resolve_league_context` for hosted or agent-driven

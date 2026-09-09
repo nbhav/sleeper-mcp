@@ -17,10 +17,11 @@ const tools = [
     description: "Resolve league, owner, and roster IDs from a Sleeper league URL plus team/user name.",
     inputSchema: {
       type: "object",
-      required: ["league_ref", "team_name"],
+      required: ["league_ref"],
       properties: {
         league_ref: { type: "string" },
-        team_name: { type: "string" }
+        user_ref: { type: "string" },
+        team_name: { type: "string", description: "Deprecated alias for user_ref." }
       }
     }
   },
@@ -246,12 +247,12 @@ async function callTool(name: string, args: JsonMap, env: Env): Promise<unknown>
 
 async function resolveLeagueContext(args: JsonMap, env: Env): Promise<JsonMap> {
   const leagueRef = String(args.league_ref || "").trim();
-  const teamName = String(args.team_name || "").trim();
+  const userRef = String(args.user_ref || args.team_name || "").trim();
   if (!leagueRef) {
     throw new Error("league_ref is required");
   }
-  if (!teamName) {
-    throw new Error("team_name is required");
+  if (!userRef) {
+    throw new Error("user_ref is required");
   }
 
   const leagueId = extractLeagueId(leagueRef);
@@ -261,7 +262,7 @@ async function resolveLeagueContext(args: JsonMap, env: Env): Promise<JsonMap> {
   ]);
   const context = resolveLeagueContextFromRows(
     leagueId,
-    teamName,
+    userRef,
     arrayValue(users),
     arrayValue(rosters)
   );

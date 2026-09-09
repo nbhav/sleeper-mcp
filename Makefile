@@ -1,4 +1,5 @@
 COMPOSE := docker compose -f infra/docker/docker-compose.yml
+WORKER_DEPLOY_ARGS ?=
 
 .PHONY: build test integration-test shell sleeper mcp worker-install worker-typecheck worker-dev worker-deploy clean
 
@@ -30,7 +31,7 @@ worker-dev:
 	$(COMPOSE) run --rm --service-ports cloudflare-worker run dev
 
 worker-deploy:
-	$(COMPOSE) run --rm cloudflare-worker run deploy
+	$(COMPOSE) run --rm cloudflare-worker run deploy $(if $(WORKER_DEPLOY_ARGS),-- $(WORKER_DEPLOY_ARGS),)
 
 clean:
 	$(COMPOSE) down -v

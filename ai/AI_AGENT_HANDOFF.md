@@ -155,7 +155,7 @@ Example usage:
 ./scripts/sleeper state
 ./scripts/sleeper user your_username
 ./scripts/sleeper leagues <user_id> --season 2026 --output json
-./scripts/sleeper configure-context https://sleeper.com/leagues/<league_id>/matchup --team "Your Team Name"
+./scripts/sleeper configure-context https://sleeper.com/leagues/<league_id>/matchup --user-ref your_username
 ```
 
 `configure-context` writes `./data/sleeper-mcp.env` in the `sleeper-mcp` repo. Docker Compose loads that file for both CLI and local stdio MCP runs, so tools can omit `league_id` and `roster_id` after setup.
@@ -216,6 +216,14 @@ https://sleeper-mcp.neilbhavsar.com/mcp
 ```
 
 The Worker mirrors `resolve_league_context`, but default context must be persisted as Worker vars because Cloudflare Workers cannot modify runtime environment variables from an MCP request.
+
+GitHub Actions deploys expect these GitHub `production` environment variables
+and resolve them into Worker vars during the deploy job:
+
+```text
+SLEEPER_DEFAULT_LEAGUE_URL
+SLEEPER_DEFAULT_USER_REF
+```
 
 Run all Worker commands through Docker Compose:
 

@@ -36,10 +36,10 @@ make sleeper ARGS="state"
 The `state` command returns Sleeper's current NFL season and week. API responses are cached under `./data/`.
 
 Configure your default league and roster context from a Sleeper league URL plus
-your team, display, or username:
+your Sleeper username, display name, owner ID, roster ID, or team name:
 
 ```bash
-make sleeper ARGS='configure-context https://sleeper.com/leagues/<league_id>/matchup --team "Your Team Name"'
+make sleeper ARGS='configure-context https://sleeper.com/leagues/<league_id>/matchup --user-ref your_username'
 ```
 
 This writes `./data/sleeper-mcp.env`, which Docker Compose loads for the CLI and
@@ -151,6 +151,12 @@ For GitHub Actions deploys, set these repository secrets:
 
 - `CLOUDFLARE_ACCOUNT_ID`
 - `CLOUDFLARE_API_TOKEN`
+
+Set these GitHub `production` environment variables so deploys can resolve the
+Worker's default league context:
+
+- `SLEEPER_DEFAULT_LEAGUE_URL`
+- `SLEEPER_DEFAULT_USER_REF`
 
 ## Project Layout
 

@@ -15,11 +15,73 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  resolve_sleeper_context:
+    name: Resolve Sleeper context
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    environment: production
+    outputs:
+      league_id: ${{ steps.context.outputs.league_id }}
+      roster_id: ${{ steps.context.outputs.roster_id }}
+      owner_id: ${{ steps.context.outputs.owner_id }}
+
+    env:
+      SLEEPER_DEFAULT_LEAGUE_URL: ${{ vars.SLEEPER_DEFAULT_LEAGUE_URL }}
+      SLEEPER_DEFAULT_USER_REF: ${{ vars.SLEEPER_DEFAULT_USER_REF }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate Sleeper deploy context inputs
+        run: |
+          test -n "$SLEEPER_DEFAULT_LEAGUE_URL" || {
+            echo "SLEEPER_DEFAULT_LEAGUE_URL production environment variable is required"
+            exit 1
+          }
+          test -n "$SLEEPER_DEFAULT_USER_REF" || {
+            echo "SLEEPER_DEFAULT_USER_REF production environment variable is required"
+            exit 1
+          }
+
+      - name: Build Python resolver image
+        run: make build
+
+      - name: Resolve Sleeper deploy context
+        id: context
+        run: |
+          docker compose -f infra/docker/docker-compose.yml run --rm sleeper configure-context "$SLEEPER_DEFAULT_LEAGUE_URL" --user-ref "$SLEEPER_DEFAULT_USER_REF" --output env > /tmp/sleeper-context.env
+          league_id="$(grep '^SLEEPER_DEFAULT_LEAGUE_ID=' data/sleeper-mcp.env | cut -d= -f2-)"
+          roster_id="$(grep '^SLEEPER_DEFAULT_ROSTER_ID=' data/sleeper-mcp.env | cut -d= -f2-)"
+          owner_id="$(grep '^SLEEPER_DEFAULT_OWNER_ID=' data/sleeper-mcp.env | cut -d= -f2-)"
+          test -n "$league_id" || {
+            echo "Failed to resolve SLEEPER_DEFAULT_LEAGUE_ID"
+            exit 1
+          }
+          test -n "$roster_id" || {
+            echo "Failed to resolve SLEEPER_DEFAULT_ROSTER_ID"
+            exit 1
+          }
+          test -n "$owner_id" || {
+            echo "Failed to resolve SLEEPER_DEFAULT_OWNER_ID"
+            exit 1
+          }
+          echo "league_id=$league_id" >> "$GITHUB_OUTPUT"
+          echo "roster_id=$roster_id" >> "$GITHUB_OUTPUT"
+          echo "owner_id=$owner_id" >> "$GITHUB_OUTPUT"
+
+      - name: Clean up Docker resources
+        if: always()
+        run: docker compose -f infra/docker/docker-compose.yml down -v --remove-orphans
+
   deploy:
     name: Deploy Worker
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    needs:
+      - resolve_sleeper_context
+    environment: production
 
     env:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -33,7 +95,8 @@ jobs:
         run: make worker-install
 
       - name: Deploy Cloudflare Worker
-        run: make worker-deploy
+        run: |
+          make worker-deploy WORKER_DEPLOY_ARGS="--keep-vars --var SLEEPER_DEFAULT_LEAGUE_ID:${{ needs.resolve_sleeper_context.outputs.league_id }} --var SLEEPER_DEFAULT_ROSTER_ID:${{ needs.resolve_sleeper_context.outputs.roster_id }} --var SLEEPER_DEFAULT_OWNER_ID:${{ needs.resolve_sleeper_context.outputs.owner_id }}"
 
       - name: Clean up Docker resources
         if: always()
