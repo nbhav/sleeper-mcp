@@ -89,7 +89,7 @@ Pass `--league-id` or MCP `league_id` when rankings should reflect your league's
 Use `configure-context` when you want local Docker CLI and MCP runs to pick up a default league and roster:
 
 ```bash
-make sleeper ARGS='configure-context https://sleeper.com/leagues/<league_id>/matchup --team "Your Team Name"'
+make sleeper ARGS='configure-context https://sleeper.com/leagues/<league_id>/matchup --user-ref your_username'
 ```
 
 League-scored rows include:

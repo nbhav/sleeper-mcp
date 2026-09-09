@@ -64,6 +64,15 @@ Required repository secrets:
 - `CLOUDFLARE_ACCOUNT_ID`
 - `CLOUDFLARE_API_TOKEN`
 
+Required GitHub `production` environment variables:
+
+- `SLEEPER_DEFAULT_LEAGUE_URL`
+- `SLEEPER_DEFAULT_USER_REF`
+
+The deploy workflow resolves those values into `SLEEPER_DEFAULT_LEAGUE_ID`,
+`SLEEPER_DEFAULT_ROSTER_ID`, and `SLEEPER_DEFAULT_OWNER_ID`, then passes them to
+`wrangler deploy --var`.
+
 Deploy locally through Docker:
 
 ```bash

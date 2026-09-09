@@ -54,13 +54,17 @@ class FantasyToolRunner:
         self,
         *,
         league_ref: str,
-        team_name: str,
+        user_ref: str | None = None,
+        team_name: str | None = None,
     ) -> dict[str, Any]:
+        lookup = user_ref or team_name
+        if not lookup:
+            raise ValueError("user_ref is required")
         with self._client() as client:
             context = build_league_context(
                 client,
                 league_ref=league_ref,
-                team_name=team_name,
+                team_name=lookup,
             )
             return {
                 **context,

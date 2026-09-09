@@ -25,7 +25,7 @@ Example MCP tool call arguments:
 ```json
 {
   "league_ref": "https://sleeper.com/leagues/<league_id>/matchup",
-  "team_name": "Your Team Name"
+  "user_ref": "your_username"
 }
 ```
 
@@ -56,5 +56,13 @@ If you want GitHub to deploy the Worker after CI passes on `main`, add these rep
 
 - `CLOUDFLARE_ACCOUNT_ID`
 - `CLOUDFLARE_API_TOKEN`
+
+Add these GitHub `production` environment variables:
+
+- `SLEEPER_DEFAULT_LEAGUE_URL`
+- `SLEEPER_DEFAULT_USER_REF`
+
+The deploy workflow resolves the URL/user pair through the Python CLI, exports
+the resulting IDs, and passes them to Wrangler as deploy-time vars.
 
 The deploy workflow runs after the `CI` workflow succeeds on `main`, or manually through `workflow_dispatch`.
