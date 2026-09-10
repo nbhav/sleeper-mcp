@@ -7,6 +7,7 @@ Use MCP when Claude, Codex, or another LLM harness should query Sleeper data dir
 Run the server:
 
 ```bash
+make local-up
 make mcp
 ```
 
@@ -132,6 +133,21 @@ Prefer adding deterministic, decision-shaped tools when:
 - the result should be chart-ready or LLM-ready
 
 Avoid adding tools that only return unshaped raw endpoint payloads.
+
+## Local Lifecycle
+
+Prepare local Docker workflow dependencies before a session when needed:
+
+```bash
+make local-up
+```
+
+After containerized workflow checks, stop Compose resources and prune stopped
+containers plus dangling images:
+
+```bash
+make teardown
+```
 
 ## Shareable Skill
 

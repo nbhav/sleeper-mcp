@@ -21,8 +21,8 @@ Keep the MCP tool surface curated and decision-focused. Prefer deterministic too
 - Keep Python CLI response caching on SQLite by default.
 - Keep Worker response caching on D1; Workers cannot use the local SQLite file cache.
 - Keep generated `data/`, `infra/cloudflare-worker/node_modules/`, `infra/cloudflare-worker/.wrangler/`, and `infra/cloudflare-worker/.dev.vars` out of git.
-- After Docker workflow runs, tear down containers with `docker compose -f infra/docker/docker-compose.yml down --remove-orphans`.
-- Clean up stopped containers and dangling images after workflow checks when appropriate. Do not remove named volumes or cached `data/` files unless explicitly requested.
+- Use `make local-up` to prepare the local Docker workflow.
+- Use `make teardown` after Docker workflow checks to stop Compose resources and prune stopped containers plus dangling images. Do not remove named volumes or cached `data/` files unless explicitly requested.
 
 ## Session Startup
 
@@ -43,6 +43,10 @@ make worker-install
 make worker-typecheck
 make worker-dev
 make worker-deploy
+make local-up
+make local-down
+make docker-prune
+make teardown
 ```
 
 For direct Python smoke checks, run the project venv inside the container:
