@@ -76,6 +76,38 @@ TOOLS = [
         },
     },
     {
+        "name": "my_lineup",
+        "description": "Return the current roster's starters and bench with slots, points so far, and league-scored projections.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "league_id": {"type": "string"},
+                "roster_id": {"type": "integer"},
+                "season": {"type": "integer"},
+                "week": {"type": "integer"},
+                "positions": {"type": "string", "default": "QB,RB,WR,TE,K,DEF"},
+            },
+        },
+    },
+    {
+        "name": "lineup_recommendations",
+        "description": "Recommend start/sit moves and compare roster players against available waiver/free-agent options.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "league_id": {"type": "string"},
+                "roster_id": {"type": "integer"},
+                "season": {"type": "integer"},
+                "week": {"type": "integer"},
+                "positions": {"type": "string", "default": "QB,RB,WR,TE,K,DEF"},
+                "trend_limit": {"type": "integer", "default": 100},
+                "lookback_hours": {"type": "integer", "default": 24},
+                "min_delta": {"type": "number", "default": 1.0},
+                "limit": {"type": "integer", "default": 10},
+            },
+        },
+    },
+    {
         "name": "waiver_wire_watch",
         "description": "Return a compact actionable waiver shortlist with availability, projection, trends, injuries, and recent actuals.",
         "inputSchema": {

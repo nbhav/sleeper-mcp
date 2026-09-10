@@ -198,6 +198,81 @@ def test_waiver_wire_watch_returns_actionable_ranked_candidates(tmp_path) -> Non
     assert candidate["watch_score"] == 30.45
 
 
+def test_my_lineup_returns_slots_starters_bench_and_projections(tmp_path) -> None:
+    runner = FantasyToolRunner(
+        client_factory=lambda: FakeLineupClient(),
+        players_cache=tmp_path / "players.json",
+    )
+
+    report = runner.my_lineup(
+        league_id="league-1",
+        roster_id=1,
+        season=2026,
+        week=1,
+        positions="RB,WR",
+    )
+
+    assert report["league_id"] == "league-1"
+    assert report["roster_id"] == 1
+    assert report["team_name"] == "Me"
+    assert report["roster_slots"] == ["RB", "FLEX"]
+    assert report["projected_starter_points"] == 24
+    assert [row["slot"] for row in report["starters"]] == ["RB", "FLEX"]
+    assert [row["player_id"] for row in report["starters"]] == [
+        "starter-rb",
+        "bench-wr",
+    ]
+    assert [row["player_id"] for row in report["bench"]] == ["bench-rb", "drop-rb"]
+    assert report["bench"][0]["projected_points"] == 20
+
+
+def test_lineup_recommendations_compares_lineup_and_available_players(tmp_path) -> None:
+    runner = FantasyToolRunner(
+        client_factory=lambda: FakeLineupClient(),
+        players_cache=tmp_path / "players.json",
+    )
+
+    report = runner.lineup_recommendations(
+        league_id="league-1",
+        roster_id=1,
+        season=2026,
+        week=1,
+        positions="RB,WR",
+        min_delta=1,
+        limit=3,
+    )
+
+    assert report["current_lineup"]["projected_starter_points"] == 24
+    assert report["start_sit"][0] == {
+        "action": "start",
+        "slot": "RB",
+        "start_player_id": "bench-rb",
+        "start_name": "Bench RB",
+        "start_position": "RB",
+        "start_team": "DEN",
+        "start_projected_points": 20.0,
+        "sit_player_id": "starter-rb",
+        "sit_name": "Starter RB",
+        "sit_position": "RB",
+        "sit_team": "KC",
+        "sit_projected_points": 10.0,
+        "projected_gain": 10.0,
+        "evidence": [
+            "Bench RB is eligible for RB",
+            "recommendation is based on projected point delta",
+        ],
+    }
+    waiver_pick = report["waiver_comparisons"][0]
+    assert waiver_pick["add_player_id"] == "free-rb"
+    assert waiver_pick["drop_player_id"] == "drop-rb"
+    assert waiver_pick["projected_gain_over_drop"] == 25
+    assert waiver_pick["faab_bid_pct"] == 12
+    watch = report["watchlist"][0]
+    assert watch["player_id"] == "free-rb"
+    assert watch["net_trend_count"] == 2400
+    assert watch["rostered_percent"] == 55.0
+
+
 def test_opponent_watch_returns_matchup_context(tmp_path) -> None:
     fake_client = FakeMcpClient()
     runner = FantasyToolRunner(
@@ -421,6 +496,123 @@ class FakeMcpClient:
             "player": {"full_name": name, "team": team, "position": position},
             "stats": {"custom_score": custom_score, "pts_ppr": custom_score},
         }
+
+
+class FakeLineupClient(FakeMcpClient):
+    def get_league(self, league_id: str) -> dict[str, object]:
+        self.league_ids.append(league_id)
+        return {
+            "roster_positions": ["RB", "FLEX", "BN", "IR"],
+            "scoring_settings": {"custom_score": 10},
+        }
+
+    def get_rosters(self, league_id: str) -> list[dict[str, object]]:
+        return [
+            {
+                "roster_id": 1,
+                "owner_id": "u1",
+                "players": ["starter-rb", "bench-wr", "bench-rb", "drop-rb"],
+            },
+            {"roster_id": 2, "owner_id": "u2", "players": ["rostered-rb"]},
+        ]
+
+    def get_matchups(self, league_id: str, week: int) -> list[dict[str, object]]:
+        return [
+            {
+                "roster_id": 1,
+                "matchup_id": 10,
+                "points": 4,
+                "starters": ["starter-rb", "bench-wr"],
+                "players": ["starter-rb", "bench-wr", "bench-rb", "drop-rb"],
+                "players_points": {"starter-rb": 2, "bench-wr": 2},
+            },
+            {
+                "roster_id": 2,
+                "matchup_id": 10,
+                "points": 0,
+                "starters": ["rostered-rb"],
+                "players": ["rostered-rb"],
+            },
+        ]
+
+    def get_players(self, *, position=None, active=None, sport="nfl") -> dict[str, dict[str, object]]:
+        return {
+            "starter-rb": {
+                "full_name": "Starter RB",
+                "team": "KC",
+                "position": "RB",
+                "fantasy_positions": ["RB"],
+                "status": "Active",
+            },
+            "bench-wr": {
+                "full_name": "Bench WR",
+                "team": "GB",
+                "position": "WR",
+                "fantasy_positions": ["WR"],
+                "status": "Active",
+            },
+            "bench-rb": {
+                "full_name": "Bench RB",
+                "team": "DEN",
+                "position": "RB",
+                "fantasy_positions": ["RB"],
+                "status": "Active",
+            },
+            "drop-rb": {
+                "full_name": "Drop RB",
+                "team": "LV",
+                "position": "RB",
+                "fantasy_positions": ["RB"],
+                "status": "Active",
+            },
+            "free-rb": {
+                "full_name": "Free RB",
+                "team": "DEN",
+                "position": "RB",
+                "fantasy_positions": ["RB"],
+                "status": "Active",
+                "rostered_percent": 55,
+            },
+            "watch-wr": {
+                "full_name": "Watch WR",
+                "team": "SF",
+                "position": "WR",
+                "fantasy_positions": ["WR"],
+                "status": "Active",
+                "rostered_percent": 15,
+            },
+            "rostered-rb": {
+                "full_name": "Rostered RB",
+                "team": "BAL",
+                "position": "RB",
+                "fantasy_positions": ["RB"],
+                "status": "Active",
+            },
+        }
+
+    def get_trending_players(self, trend_type, *, sport="nfl", lookback_hours=24, limit=25):
+        if trend_type == "drop":
+            return [{"player_id": "free-rb", "count": 100}]
+        return [
+            {"player_id": "free-rb", "count": 2500},
+            {"player_id": "watch-wr", "count": 600},
+        ]
+
+    def _rows(self, position: str | None, *, projected: bool) -> list[dict[str, object]]:
+        if position == "RB":
+            return [
+                self._row("starter-rb", "Starter RB", "KC", "RB", 1),
+                self._row("bench-rb", "Bench RB", "DEN", "RB", 2),
+                self._row("drop-rb", "Drop RB", "LV", "RB", 0.5),
+                self._row("free-rb", "Free RB", "DEN", "RB", 3),
+                self._row("rostered-rb", "Rostered RB", "BAL", "RB", 4),
+            ]
+        if position == "WR":
+            return [
+                self._row("bench-wr", "Bench WR", "GB", "WR", 1.4),
+                self._row("watch-wr", "Watch WR", "SF", "WR", 1.5),
+            ]
+        return []
 
 
 class FakeBacktestClient:

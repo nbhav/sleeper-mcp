@@ -73,6 +73,8 @@ make sleeper ARGS="waiver-watch --help"
 | `weekly_briefing` | Weekly leaders plus waiver signal. |
 | `weekly_performance_backtest` | Back-test weekly leaders and deterministic week-over-week movers. |
 | `waiver_watch` | Trending unrostered players with projected value. |
+| `my_lineup` | Current starters and bench for the configured roster, with slots and league-scored projections. |
+| `lineup_recommendations` | Start/sit changes plus available-player comparisons against drop candidates and FAAB hints. |
 | `waiver_wire_watch` | Actionable waiver shortlist with availability, projections, trends, status, and recent actuals. |
 | `free_agent_watch` | Unrostered players ranked by projection. |
 | `injury_watch` | Rostered players with injury/status risk. |
@@ -135,7 +137,7 @@ make sleeper ARGS="--refresh-cache best-week --source projections --output table
 make sleeper ARGS="--no-cache state"
 ```
 
-The Cloudflare Worker uses D1 instead of SQLite because Workers do not have a persistent local filesystem.
+The Cloudflare Worker uses D1 instead of SQLite because Workers do not have a persistent local filesystem. Very large responses, such as the full Sleeper player map, are served without D1 writes so they do not exceed D1 value limits.
 
 ## Output Formats
 

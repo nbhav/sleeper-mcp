@@ -4,7 +4,7 @@ WORKER_DEPLOY_ARGS ?=
 .PHONY: build test integration-test shell sleeper mcp worker-install worker-typecheck worker-dev worker-deploy clean
 
 build:
-	$(COMPOSE) build sleeper
+	$(COMPOSE) build sleeper sleeper-mcp
 
 test:
 	$(COMPOSE) run --rm --entrypoint /app/.venv/bin/pytest sleeper -q -m "not integration"

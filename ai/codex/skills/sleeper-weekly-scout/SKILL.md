@@ -1,11 +1,11 @@
 ---
 name: sleeper-weekly-scout
-description: Back-test Sleeper weekly leaders, compare week-over-week changes, and filter cleaner waiver-wire targets from this repo's deterministic MCP tools and Dockerized CLI fallbacks.
+description: Back-test Sleeper weekly leaders, compare week-over-week changes, inspect current lineups, and filter cleaner waiver-wire targets from this repo's deterministic MCP tools and Dockerized CLI fallbacks.
 ---
 
 # Sleeper Weekly Scout
 
-Use this skill when a user wants historical top players, week-over-week movement, or waiver-wire shortlists without raw Sleeper endpoint noise.
+Use this skill when a user wants historical top players, week-over-week movement, lineup decisions, or waiver-wire shortlists without raw Sleeper endpoint noise.
 
 ## Core Workflow
 
@@ -107,6 +107,41 @@ Rules:
 - Use available-player output, not raw trending lists, when the goal is actionable waiver suggestions.
 - Use `free_agent_watch` when the user wants a cleaner available-player ranking without trend pressure.
 - Keep the result focused on projected value and roster availability.
+
+## Lineup Decisions
+
+For the user's current starters and bench, call:
+
+```text
+my_lineup
+```
+
+For start/sit changes, add/drop comparisons, watchlist priority, and FAAB hints, call:
+
+```text
+lineup_recommendations
+```
+
+Recommended inputs:
+
+```json
+{
+  "league_id": "<league_id>",
+  "roster_id": 1,
+  "positions": "QB,RB,WR,TE,K,DEF",
+  "trend_limit": 100,
+  "lookback_hours": 24,
+  "min_delta": 1,
+  "limit": 10
+}
+```
+
+Rules:
+
+- Omit `league_id` and `roster_id` only when MCP default context is configured.
+- Treat FAAB output as a deterministic range hint, not a final bid.
+- Explain recommendations from `projected_gain`, add/drop trend counts, rostered percentage when present, injury status, and league scoring.
+- Use `player_card` for chart-ready evidence when a recommendation needs weekly trajectory.
 
 ## Output Discipline
 

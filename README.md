@@ -10,6 +10,7 @@ Sleeper already has a useful API. This project is not trying to mirror every end
 - cached API reads to reduce repeated calls and rate-limit risk
 - weekly leaders and historical backtests
 - waiver-wire shortlists that exclude rostered players
+- current lineup and start/sit recommendations for a configured roster
 - injury, opponent, free-agent, and league activity context
 - MCP tools that keep LLM usage focused instead of registering dozens of raw API calls
 
@@ -128,6 +129,8 @@ For assistant usage, prefer:
 - `resolve_league_context` for setup-time league, owner, and roster ID resolution
 - `weekly_performance_backtest` for historical leaders and week-over-week movement
 - `waiver_wire_watch` for actionable waiver recommendations
+- `my_lineup` for current starters, bench, and league-scored projections
+- `lineup_recommendations` for start/sit and add/drop comparisons
 - `weekly_briefing`, `opponent_watch`, `league_team_watch`, and `player_card` for supporting context
 
 ## Remote MCP

@@ -10,6 +10,7 @@ Follow `ai/AGENTS.md` for contributor rules. The short version:
 - Prefer JSON output for automation.
 - Prefer decision/chained commands and MCP tools over raw endpoint replication.
 - Prefer `weekly_performance_backtest` for historical leaders and week-over-week movement.
+- Prefer `my_lineup` and `lineup_recommendations` for current lineup, start/sit, add/drop, watchlist, and FAAB questions.
 - Prefer `waiver_wire_watch` when waiver recommendations must exclude rostered players and include evidence.
 - Set `SLEEPER_DEFAULT_LEAGUE_ID` and `SLEEPER_DEFAULT_ROSTER_ID` when registering MCP for a specific league/team.
 - Use `--league-id` when rankings should reflect a league's custom scoring settings.

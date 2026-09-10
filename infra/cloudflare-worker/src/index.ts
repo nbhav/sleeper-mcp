@@ -2,6 +2,20 @@ const PROTOCOL_VERSION = "2024-11-05";
 const APP_BASE_URL = "https://api.sleeper.app/v1";
 const DATA_BASE_URL = "https://api.sleeper.com";
 const DEFAULT_POSITIONS = "QB,RB,WR,TE,K,DEF";
+const DEFAULT_STARTER_SLOTS = ["QB", "RB", "RB", "WR", "WR", "WR", "TE", "FLEX", "K", "DEF"];
+const NON_STARTER_SLOTS = new Set(["BN", "BE", "IR", "TAXI"]);
+const POSITION_SLOTS = new Set(["QB", "RB", "WR", "TE", "K", "DEF", "DL", "LB", "DB", "IDP"]);
+const FLEX_SLOT_POSITIONS: Record<string, string[]> = {
+  FLEX: ["RB", "WR", "TE"],
+  "W/R/T": ["RB", "WR", "TE"],
+  REC_FLEX: ["WR", "TE"],
+  "WR/TE": ["WR", "TE"],
+  "WR/RB": ["WR", "RB"],
+  WRRB_FLEX: ["WR", "RB"],
+  SUPER_FLEX: ["QB", "RB", "WR", "TE"],
+  OP: ["QB", "RB", "WR", "TE"]
+};
+const MAX_D1_RESPONSE_BYTES = 900_000;
 
 type JsonMap = Record<string, unknown>;
 type Env = {
@@ -73,6 +87,38 @@ const tools = [
         lookback_hours: { type: "integer", default: 24 },
         trend_limit: { type: "integer", default: 100 },
         limit: { type: "integer", default: 25 }
+      }
+    }
+  },
+  {
+    name: "my_lineup",
+    description: "Return the current roster's starters and bench with slots, points so far, and league-scored projections.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        league_id: { type: "string" },
+        roster_id: { type: "integer" },
+        season: { type: "integer" },
+        week: { type: "integer" },
+        positions: { type: "string", default: DEFAULT_POSITIONS }
+      }
+    }
+  },
+  {
+    name: "lineup_recommendations",
+    description: "Recommend start/sit moves and compare roster players against available waiver/free-agent options.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        league_id: { type: "string" },
+        roster_id: { type: "integer" },
+        season: { type: "integer" },
+        week: { type: "integer" },
+        positions: { type: "string", default: DEFAULT_POSITIONS },
+        trend_limit: { type: "integer", default: 100 },
+        lookback_hours: { type: "integer", default: 24 },
+        min_delta: { type: "number", default: 1.0 },
+        limit: { type: "integer", default: 10 }
       }
     }
   },
@@ -228,6 +274,10 @@ async function callTool(name: string, args: JsonMap, env: Env): Promise<unknown>
       return weeklyPerformanceBacktest(args, env);
     case "waiver_watch":
       return waiverWatch(args, env);
+    case "my_lineup":
+      return myLineup(args, env);
+    case "lineup_recommendations":
+      return lineupRecommendations(args, env);
     case "waiver_wire_watch":
       return waiverWireWatch(args, env);
     case "free_agent_watch":
@@ -374,6 +424,85 @@ async function waiverWatch(args: JsonMap, env: Env): Promise<JsonMap[]> {
     buildWaiverWatch(trends, players, rows, arrayValue(rosters), positions, trendType).slice(0, numberArg(args, "limit", 25)),
     { league_id: leagueId, season, week }
   );
+}
+
+async function myLineup(args: JsonMap, env: Env): Promise<JsonMap> {
+  const leagueId = requireLeagueId(args, env);
+  const rosterId = requireRosterId(args, env);
+  const [season, week] = await resolveSeasonWeek(args, env);
+  const league = objectValue(await getApp(`/league/${leagueId}`, env));
+  const scoring = objectValue(league.scoring_settings);
+  const positions = parsePositions(stringArg(args, "positions", DEFAULT_POSITIONS));
+  const projectionRows = await fetchRowsForPositions(season, week, positions, "projections", scoring, env);
+  const [users, rosters, matchups, players] = await Promise.all([
+    getApp(`/league/${leagueId}/users`, env),
+    getApp(`/league/${leagueId}/rosters`, env),
+    getApp(`/league/${leagueId}/matchups/${week}`, env),
+    getPlayers(env)
+  ]);
+  return buildMyLineup({
+    leagueId,
+    rosterId,
+    season,
+    week,
+    league,
+    users: arrayValue(users),
+    rosters: arrayValue(rosters),
+    matchups: arrayValue(matchups),
+    players,
+    projectionRows
+  });
+}
+
+async function lineupRecommendations(args: JsonMap, env: Env): Promise<JsonMap> {
+  const leagueId = requireLeagueId(args, env);
+  const rosterId = requireRosterId(args, env);
+  const [season, week] = await resolveSeasonWeek(args, env);
+  const limit = numberArg(args, "limit", 10);
+  const minDelta = numberArg(args, "min_delta", 1.0);
+  if (limit < 1) throw new Error("limit must be at least 1");
+  if (minDelta < 0) throw new Error("min_delta must be zero or greater");
+
+  const league = objectValue(await getApp(`/league/${leagueId}`, env));
+  const scoring = objectValue(league.scoring_settings);
+  const positions = parsePositions(stringArg(args, "positions", DEFAULT_POSITIONS));
+  const projectionRows = await fetchRowsForPositions(season, week, positions, "projections", scoring, env);
+  const lookbackHours = numberArg(args, "lookback_hours", 24);
+  const trendLimit = numberArg(args, "trend_limit", 100);
+  const [users, rosters, matchups, players, addTrends, dropTrends] = await Promise.all([
+    getApp(`/league/${leagueId}/users`, env),
+    getApp(`/league/${leagueId}/rosters`, env),
+    getApp(`/league/${leagueId}/matchups/${week}`, env),
+    getPlayers(env),
+    getTrending("add", lookbackHours, trendLimit, env),
+    getTrending("drop", lookbackHours, trendLimit, env)
+  ]);
+  const rosterRows = arrayValue(rosters);
+  const playerMap = recordValue(players);
+  const lineup = buildMyLineup({
+    leagueId,
+    rosterId,
+    season,
+    week,
+    league,
+    users: arrayValue(users),
+    rosters: rosterRows,
+    matchups: arrayValue(matchups),
+    players: playerMap,
+    projectionRows
+  });
+
+  return buildLineupRecommendations({
+    lineup,
+    rosters: rosterRows,
+    players: playerMap,
+    projectionRows,
+    addTrends,
+    dropTrends,
+    positions,
+    minDelta,
+    limit
+  });
 }
 
 async function waiverWireWatch(args: JsonMap, env: Env): Promise<JsonMap> {
@@ -687,6 +816,127 @@ function buildFreeAgentWatch(
     .sort((a, b) => sortNumber(b.projected_points, a.projected_points));
 }
 
+function buildMyLineup(input: {
+  leagueId: string;
+  rosterId: number;
+  season: number;
+  week: number;
+  league: JsonMap;
+  users: JsonMap[];
+  rosters: JsonMap[];
+  matchups: JsonMap[];
+  players: Record<string, JsonMap>;
+  projectionRows: JsonMap[];
+}): JsonMap {
+  const usersById = Object.fromEntries(input.users.map((user) => [String(user.user_id || ""), user]));
+  const roster = input.rosters.find((row) => Number(row.roster_id) === input.rosterId) || {};
+  const owner = objectValue(usersById[String(roster.owner_id || "")]);
+  const matchup = input.matchups.find((row) => Number(row.roster_id) === input.rosterId) || {};
+  const slots = starterSlots(input.league);
+  const projectionsByPlayer = Object.fromEntries(input.projectionRows.map((row) => [String(row.player_id || ""), row]));
+  const playerPoints = objectValue(matchup.players_points);
+  const starterIds = listValue(matchup.starters).map((playerId) => String(playerId));
+  const rosterPlayerIds = listValue(matchup.players).length
+    ? listValue(matchup.players).map((playerId) => String(playerId))
+    : listValue(roster.players).map((playerId) => String(playerId));
+  const starterIdSet = new Set(starterIds);
+  const benchIds = rosterPlayerIds.filter((playerId) => !starterIdSet.has(playerId));
+  const starters = starterIds.map((playerId, index) =>
+    playerLineupSummary(playerId, {
+      players: input.players,
+      projectionsByPlayer,
+      playerPoints,
+      slot: slots[index] || `STARTER_${index + 1}`,
+      lineupStatus: "starter"
+    })
+  );
+  const bench = benchIds.map((playerId) =>
+    playerLineupSummary(playerId, {
+      players: input.players,
+      projectionsByPlayer,
+      playerPoints,
+      slot: "BN",
+      lineupStatus: "bench"
+    })
+  );
+
+  return {
+    league_id: input.leagueId,
+    roster_id: input.rosterId,
+    owner_id: roster.owner_id,
+    team_name: ownerDisplayName(owner),
+    season: input.season,
+    week: input.week,
+    lineup_found: Object.keys(matchup).length > 0,
+    roster_slots: slots,
+    starter_count: starters.length,
+    bench_count: bench.length,
+    points_so_far: matchup.points || 0,
+    projected_starter_points: round(starters.reduce((sum, row) => sum + (numberValue(row.projected_points) || 0), 0), 2),
+    starters,
+    bench
+  };
+}
+
+function buildLineupRecommendations(input: {
+  lineup: JsonMap;
+  rosters: JsonMap[];
+  players: Record<string, JsonMap>;
+  projectionRows: JsonMap[];
+  addTrends: JsonMap[];
+  dropTrends: JsonMap[];
+  positions: string[];
+  minDelta: number;
+  limit: number;
+}): JsonMap {
+  const starters = arrayValue(input.lineup.starters).filter((row) => row.player_id !== "0");
+  const bench = arrayValue(input.lineup.bench).filter((row) => row.player_id !== "0");
+  const rosterPlayers = [...starters, ...bench];
+  const projectionCandidates = buildFreeAgentWatch(input.projectionRows, input.rosters, input.players, input.positions);
+  const trendCandidates = buildWaiverWatch(input.addTrends, input.players, input.projectionRows, input.rosters, input.positions, "add");
+  const availableCandidates = mergeAvailableCandidates({
+    projectionCandidates,
+    trendCandidates,
+    players: input.players,
+    addTrends: input.addTrends,
+    dropTrends: input.dropTrends
+  });
+  const startSit = starters
+    .flatMap((starter) => eligibleRosterRecommendations(starter, bench, input.minDelta))
+    .sort((a, b) => sortNumber(b.projected_gain, a.projected_gain))
+    .slice(0, input.limit);
+  const waiverComparisons = availableCandidates
+    .map((candidate) => compareAvailablePlayer(candidate, rosterPlayers))
+    .sort((a, b) =>
+      sortNumber(b.priority_score, a.priority_score)
+      || sortNumber(b.projected_gain_over_drop, a.projected_gain_over_drop)
+    )
+    .slice(0, input.limit);
+  const watchlist = availableCandidates
+    .filter((candidate) => (numberValue(candidate.add_trend_count) || 0) > 0 || (numberValue(candidate.projected_points) || 0) > 0)
+    .map((candidate) => watchlistRow(candidate))
+    .sort((a, b) => sortNumber(b.priority_score, a.priority_score))
+    .slice(0, input.limit);
+
+  return {
+    league_id: input.lineup.league_id,
+    roster_id: input.lineup.roster_id,
+    season: input.lineup.season,
+    week: input.lineup.week,
+    team_name: input.lineup.team_name,
+    current_lineup: input.lineup,
+    start_sit: startSit,
+    waiver_comparisons: waiverComparisons,
+    watchlist,
+    evidence: [
+      "starter and bench comparisons use projected_points under league scoring",
+      "waiver comparisons exclude players already rostered in the league",
+      "priority_score combines projection, projected roster gain, normalized add/drop momentum, and rostered percentage when present",
+      "Sleeper player metadata does not always expose global rostered percentage"
+    ]
+  };
+}
+
 function buildInjuryWatch(users: JsonMap[], rosters: JsonMap[], players: Record<string, JsonMap>): JsonMap[] {
   const usersById = Object.fromEntries(users.map((user) => [String(user.user_id || ""), user]));
   const rows: JsonMap[] = [];
@@ -987,6 +1237,228 @@ function enrichWaiverCandidates(
     );
 }
 
+function starterSlots(league: JsonMap): string[] {
+  const configured = listValue(league.roster_positions)
+    .map((slot) => String(slot).toUpperCase())
+    .filter((slot) => !NON_STARTER_SLOTS.has(slot));
+  return configured.length ? configured : DEFAULT_STARTER_SLOTS;
+}
+
+function playerLineupSummary(
+  playerId: string,
+  input: {
+    players: Record<string, JsonMap>;
+    projectionsByPlayer: Record<string, JsonMap>;
+    playerPoints: JsonMap;
+    slot: string;
+    lineupStatus: string;
+  }
+): JsonMap {
+  const player = objectValue(input.players[playerId]);
+  const projection = objectValue(input.projectionsByPlayer[playerId]);
+  return {
+    slot: input.slot,
+    lineup_status: input.lineupStatus,
+    player_id: playerId,
+    name: playerName(player, playerId),
+    team: String(player.team || projection.team || ""),
+    position: String(player.position || projection.position || ""),
+    fantasy_positions: listValue(player.fantasy_positions),
+    points_so_far: input.playerPoints[playerId] || 0,
+    projected_points: projection.points || 0,
+    sleeper_projected_points: projection.sleeper_points || "",
+    status: String(player.status || ""),
+    injury_status: String(player.injury_status || ""),
+    rostered_percent: rosteredPercent(player)
+  };
+}
+
+function eligibleRosterRecommendations(starter: JsonMap, bench: JsonMap[], minDelta: number): JsonMap[] {
+  const slot = String(starter.slot || "");
+  const starterPoints = numberValue(starter.projected_points) || 0;
+  const rows: JsonMap[] = [];
+  for (const candidate of bench) {
+    if (!isPlayerEligibleForSlot(candidate, slot)) {
+      continue;
+    }
+    const candidatePoints = numberValue(candidate.projected_points) || 0;
+    const projectedGain = round(candidatePoints - starterPoints, 2);
+    if (projectedGain < minDelta) {
+      continue;
+    }
+    rows.push({
+      action: "start",
+      slot,
+      start_player_id: candidate.player_id,
+      start_name: candidate.name,
+      start_position: candidate.position,
+      start_team: candidate.team,
+      start_projected_points: candidatePoints,
+      sit_player_id: starter.player_id,
+      sit_name: starter.name,
+      sit_position: starter.position,
+      sit_team: starter.team,
+      sit_projected_points: starterPoints,
+      projected_gain: projectedGain,
+      evidence: [
+        `${String(candidate.name || "")} is eligible for ${slot}`,
+        "recommendation is based on projected point delta"
+      ]
+    });
+  }
+  return rows;
+}
+
+function mergeAvailableCandidates(input: {
+  projectionCandidates: JsonMap[];
+  trendCandidates: JsonMap[];
+  players: Record<string, JsonMap>;
+  addTrends: JsonMap[];
+  dropTrends: JsonMap[];
+}): JsonMap[] {
+  const addCounts = trendCounts(input.addTrends);
+  const dropCounts = trendCounts(input.dropTrends);
+  const byPlayer = Object.fromEntries(input.projectionCandidates.map((row) => [String(row.player_id || ""), { ...row }]));
+  for (const row of input.trendCandidates) {
+    const playerId = String(row.player_id || "");
+    if (playerId) {
+      byPlayer[playerId] = { ...objectValue(byPlayer[playerId]), ...row };
+    }
+  }
+
+  return Object.entries(byPlayer).map(([playerId, row]) => {
+    const player = objectValue(input.players[playerId]);
+    const addCount = addCounts[playerId] || 0;
+    const dropCount = dropCounts[playerId] || 0;
+    const rosteredPct = rosteredPercent(player);
+    const projectedPoints = numberValue(row.projected_points) || 0;
+    let priorityScore = projectedPoints + trendPriorityBoost(addCount - dropCount);
+    if (rosteredPct !== undefined) {
+      priorityScore += rosteredPct / 20;
+    }
+    return {
+      ...row,
+      add_trend_count: addCount,
+      drop_trend_count: dropCount,
+      net_trend_count: addCount - dropCount,
+      rostered_percent: rosteredPct,
+      market_type: addCount ? "waiver_trending" : "free_agent_projection",
+      priority_score: round(priorityScore, 2)
+    };
+  });
+}
+
+function compareAvailablePlayer(candidate: JsonMap, rosterPlayers: JsonMap[]): JsonMap {
+  const comparableRosterPlayers = rosterPlayers.filter((row) => samePositionFamily(candidate, row));
+  const dropCandidate = [...(comparableRosterPlayers.length ? comparableRosterPlayers : rosterPlayers)]
+    .sort((a, b) => sortNumber(a.projected_points, b.projected_points))[0] || {};
+  const projectedPoints = numberValue(candidate.projected_points) || 0;
+  const dropPoints = numberValue(dropCandidate.projected_points) || 0;
+  const projectedGain = round(projectedPoints - dropPoints, 2);
+  const priorityScore = round((numberValue(candidate.priority_score) || 0) + Math.max(projectedGain, 0) * 1.5, 2);
+  return {
+    action: projectedGain > 0 ? "add" : "watch",
+    add_player_id: candidate.player_id,
+    add_name: candidate.name,
+    add_position: candidate.position,
+    add_team: candidate.team,
+    add_projected_points: projectedPoints,
+    drop_player_id: dropCandidate.player_id || "",
+    drop_name: dropCandidate.name || "",
+    drop_position: dropCandidate.position || "",
+    drop_team: dropCandidate.team || "",
+    drop_projected_points: dropPoints,
+    projected_gain_over_drop: projectedGain,
+    market_type: candidate.market_type,
+    add_trend_count: candidate.add_trend_count || 0,
+    drop_trend_count: candidate.drop_trend_count || 0,
+    net_trend_count: candidate.net_trend_count || 0,
+    rostered_percent: candidate.rostered_percent,
+    faab_bid_pct: faabBidPct(projectedGain, candidate),
+    priority_score: priorityScore
+  };
+}
+
+function watchlistRow(candidate: JsonMap): JsonMap {
+  return {
+    player_id: candidate.player_id,
+    name: candidate.name,
+    team: candidate.team,
+    position: candidate.position,
+    projected_points: candidate.projected_points || 0,
+    add_trend_count: candidate.add_trend_count || 0,
+    drop_trend_count: candidate.drop_trend_count || 0,
+    net_trend_count: candidate.net_trend_count || 0,
+    rostered_percent: candidate.rostered_percent,
+    market_type: candidate.market_type,
+    priority_score: candidate.priority_score || 0,
+    status: candidate.status || "",
+    injury_status: candidate.injury_status || ""
+  };
+}
+
+function trendCounts(trends: JsonMap[]): Record<string, number> {
+  return Object.fromEntries(
+    trends
+      .filter((row) => row.player_id)
+      .map((row) => [String(row.player_id), numberValue(row.count) || 0])
+  );
+}
+
+function samePositionFamily(left: JsonMap, right: JsonMap): boolean {
+  const leftPosition = String(left.position || "").toUpperCase();
+  const rightPosition = String(right.position || "").toUpperCase();
+  if (leftPosition === rightPosition) {
+    return true;
+  }
+  return ["RB", "WR", "TE"].includes(leftPosition) && ["RB", "WR", "TE"].includes(rightPosition);
+}
+
+function isPlayerEligibleForSlot(player: JsonMap, slot: string): boolean {
+  const normalizedSlot = slot.toUpperCase();
+  const positions = new Set(listValue(player.fantasy_positions).map((position) => String(position).toUpperCase()).filter(Boolean));
+  if (player.position) {
+    positions.add(String(player.position).toUpperCase());
+  }
+  const flexPositions = FLEX_SLOT_POSITIONS[normalizedSlot];
+  if (flexPositions) {
+    return flexPositions.some((position) => positions.has(position));
+  }
+  if (POSITION_SLOTS.has(normalizedSlot)) {
+    return positions.has(normalizedSlot);
+  }
+  return positions.has(normalizedSlot);
+}
+
+function rosteredPercent(player: JsonMap): number | undefined {
+  for (const key of ["rostered_percent", "rostered_pct", "percent_rostered", "percent_owned", "owned_percent"]) {
+    const parsed = numberValue(player[key]);
+    if (parsed !== undefined) {
+      return round(parsed, 2);
+    }
+  }
+  return undefined;
+}
+
+function faabBidPct(projectedGain: number, candidate: JsonMap): number {
+  const netTrendCount = numberValue(candidate.net_trend_count) || 0;
+  const rosteredPct = numberValue(candidate.rostered_percent) || 0;
+  if (projectedGain >= 6) return 12;
+  if (projectedGain >= 3) return 7;
+  if (projectedGain >= 1) return 3;
+  if (netTrendCount >= 1000 || rosteredPct >= 40) return 3;
+  if (netTrendCount > 0) return 1;
+  return 0;
+}
+
+function trendPriorityBoost(netTrendCount: number): number {
+  if (netTrendCount === 0) {
+    return 0;
+  }
+  const direction = netTrendCount > 0 ? 1 : -1;
+  return round(direction * Math.log10(Math.abs(netTrendCount) + 1), 2);
+}
+
 function leaderRow(row: JsonMap): JsonMap {
   const leader: JsonMap = {
     player_id: row.player_id || "",
@@ -1093,11 +1565,15 @@ async function cacheSet(cacheKey: string, payload: unknown, ttlSeconds: number, 
   if (!env.SLEEPER_CACHE_DB) {
     return;
   }
+  const responseJson = JSON.stringify(payload);
+  if (responseJson.length > MAX_D1_RESPONSE_BYTES) {
+    return;
+  }
   await ensureCacheTable(env.SLEEPER_CACHE_DB);
   const now = nowSeconds();
   await env.SLEEPER_CACHE_DB.prepare(
     "INSERT OR REPLACE INTO api_response_cache (cache_key, url, response_json, expires_at, created_at) VALUES (?, ?, ?, ?, ?)"
-  ).bind(cacheKey, cacheKey, JSON.stringify(payload), now + ttlSeconds, now).run();
+  ).bind(cacheKey, cacheKey, responseJson, now + ttlSeconds, now).run();
 }
 
 async function ensureCacheTable(db: D1Database): Promise<void> {
