@@ -15,12 +15,21 @@ Keep the MCP tool surface curated and decision-focused. Prefer deterministic too
 
 - Do not install packages on the host.
 - Do not create a local virtualenv.
-- Use Docker Compose for build, test, local MCP, Worker install, Worker typecheck, and Worker deploy.
+- Use Docker Compose for build, test, local MCP, Worker install, Worker typecheck, Worker deploy, and direct Python snippets.
 - Keep unit tests mocked.
 - Use live Sleeper calls only as integration smoke checks.
 - Keep Python CLI response caching on SQLite by default.
 - Keep Worker response caching on D1; Workers cannot use the local SQLite file cache.
 - Keep generated `data/`, `infra/cloudflare-worker/node_modules/`, `infra/cloudflare-worker/.wrangler/`, and `infra/cloudflare-worker/.dev.vars` out of git.
+- After Docker workflow runs, tear down containers with `docker compose -f infra/docker/docker-compose.yml down --remove-orphans`.
+- Clean up stopped containers and dangling images after workflow checks when appropriate. Do not remove named volumes or cached `data/` files unless explicitly requested.
+
+## Session Startup
+
+- Check `git status --short --branch` before making edits.
+- If the user asks for a fresh branch, start from up-to-date `main` and create a purpose-named feature branch.
+- Keep work on a feature branch unless the user explicitly asks to work on `main`.
+- Use existing default Sleeper context from `data/sleeper-mcp.env` through Docker Compose when available; do not print secrets or env files unnecessarily.
 
 ## Commands
 
@@ -34,6 +43,12 @@ make worker-install
 make worker-typecheck
 make worker-dev
 make worker-deploy
+```
+
+For direct Python smoke checks, run the project venv inside the container:
+
+```bash
+docker compose -f infra/docker/docker-compose.yml run --rm --entrypoint /app/.venv/bin/python sleeper -c '<python code>'
 ```
 
 Useful fantasy checks:
