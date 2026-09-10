@@ -12,6 +12,8 @@ Use this skill when a user wants historical top players, week-over-week movement
 1. Prefer deterministic MCP tools when the MCP server is registered.
 2. Use JSON output unless the user explicitly wants a table.
 3. Fall back to the repo CLI through Docker Compose only when MCP is unavailable.
+4. Do not install packages or create a virtualenv on the host.
+5. After Docker workflow runs, tear down Compose resources and prune stopped containers plus dangling images when appropriate.
 
 ## Historical Leaders
 
@@ -148,3 +150,4 @@ Rules:
 - Return compact JSON summaries by default.
 - Do not dump full player maps.
 - Keep explanations tied to the requested week range and positions.
+- Do cleanup after containerized workflow checks: `docker compose -f infra/docker/docker-compose.yml down --remove-orphans`, then prune stopped containers and dangling images when appropriate.

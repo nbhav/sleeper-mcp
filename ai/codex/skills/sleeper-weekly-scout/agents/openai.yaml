@@ -1,7 +1,7 @@
 interface:
   display_name: "Sleeper Weekly Scout"
   short_description: "Back-test weeks and actionable waivers"
-  default_prompt: "Use $sleeper-weekly-scout to call deterministic MCP tools for historical Sleeper leaders, week-over-week changes, and actionable waiver-wire targets."
+  default_prompt: "Use $sleeper-weekly-scout to call deterministic MCP tools for Sleeper leaders, lineup decisions, and actionable waiver targets. Fall back only to Dockerized repo commands, never host installs, and clean up Docker resources after workflow checks."
 
 policy:
   allow_implicit_invocation: true
