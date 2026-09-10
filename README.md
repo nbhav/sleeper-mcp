@@ -29,7 +29,7 @@ Sleeper API docs: https://docs.sleeper.com/
 From this repo:
 
 ```bash
-make build
+make local-up
 make test
 make sleeper ARGS="state"
 ```
@@ -144,7 +144,7 @@ environment changes from a tool call.
 Run Worker tasks through Docker:
 
 ```bash
-make worker-install
+make local-up
 make worker-typecheck
 make worker-dev
 make worker-deploy
@@ -190,6 +190,7 @@ Worker's default league context:
 make test
 make integration-test
 make worker-typecheck
+make teardown
 ```
 
 `main` is protected by GitHub-required checks for Python unit tests, live Sleeper integration smoke tests, and Cloudflare Worker typechecking.

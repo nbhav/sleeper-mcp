@@ -11,10 +11,16 @@ All development commands run through Docker or Docker Compose. Do not install Py
 | `make integration-test` | Run live Sleeper API integration tests inside Docker. |
 | `make sleeper ARGS="..."` | Run the Sleeper CLI inside Docker. |
 | `make mcp` | Run the stdio MCP server inside Docker. |
+| `make worker-build` | Build the Cloudflare Worker Docker image. |
 | `make worker-install` | Install Worker dependencies inside Docker with `npm ci`. |
 | `make worker-typecheck` | Typecheck the Cloudflare Worker inside Docker. |
 | `make worker-dev` | Run Wrangler dev inside Docker. |
 | `make worker-deploy` | Deploy the Cloudflare Worker through Docker. |
+| `make local-up` | Prepare local Docker workflow dependencies by building Python images and installing Worker dependencies in Docker. |
+| `make local-down` | Stop Compose resources and remove orphans without deleting named volumes. |
+| `make docker-prune` | Prune stopped containers and dangling images. |
+| `make teardown` | Run `local-down` plus `docker-prune` after workflow checks. |
+| `make ci-teardown` | Stop Compose resources, remove volumes, and prune stopped containers plus dangling images in CI. |
 | `make shell` | Open a shell inside the Python app container. |
 | `make clean` | Stop containers and remove generated Python cache files. |
 
@@ -43,6 +49,18 @@ Run Worker typecheck:
 ```bash
 make worker-install
 make worker-typecheck
+```
+
+After local Docker workflow checks:
+
+```bash
+make teardown
+```
+
+CI and deploy workflows use:
+
+```bash
+make ci-teardown
 ```
 
 ## CI

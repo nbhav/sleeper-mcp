@@ -73,7 +73,7 @@ jobs:
 
       - name: Clean up Docker resources
         if: always()
-        run: docker compose -f infra/docker/docker-compose.yml down -v --remove-orphans
+        run: make ci-teardown
 
   deploy:
     name: Deploy Worker
@@ -100,4 +100,4 @@ jobs:
 
       - name: Clean up Docker resources
         if: always()
-        run: docker compose -f infra/docker/docker-compose.yml down -v --remove-orphans
+        run: make ci-teardown
