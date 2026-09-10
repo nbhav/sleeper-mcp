@@ -27,6 +27,8 @@ def test_mcp_tools_list_exposes_curated_decision_tools() -> None:
         "my_lineup",
         "lineup_recommendations",
         "waiver_wire_watch",
+        "waiver_wire_by_position",
+        "trade_opportunities",
         "free_agent_watch",
         "injury_watch",
         "opponent_watch",
@@ -38,10 +40,36 @@ def test_mcp_tools_list_exposes_curated_decision_tools() -> None:
     assert "required" not in tools_by_name["waiver_watch"]["inputSchema"]
     assert "required" not in tools_by_name["my_lineup"]["inputSchema"]
     assert "required" not in tools_by_name["lineup_recommendations"]["inputSchema"]
+    assert "required" not in tools_by_name["waiver_wire_by_position"]["inputSchema"]
+    assert "required" not in tools_by_name["trade_opportunities"]["inputSchema"]
     assert "required" not in tools_by_name["free_agent_watch"]["inputSchema"]
     assert "required" not in tools_by_name["injury_watch"]["inputSchema"]
     assert "required" not in tools_by_name["opponent_watch"]["inputSchema"]
     assert "required" not in tools_by_name["league_team_watch"]["inputSchema"]
+    assert (
+        tools_by_name["waiver_wire_by_position"]["inputSchema"]["properties"][
+            "per_position_limit"
+        ]["default"]
+        == 10
+    )
+    assert (
+        tools_by_name["waiver_wire_watch"]["inputSchema"]["properties"][
+            "positions"
+        ]["default"]
+        == "QB,RB,WR,TE,K,DEF"
+    )
+    assert (
+        tools_by_name["free_agent_watch"]["inputSchema"]["properties"][
+            "positions"
+        ]["default"]
+        == "QB,RB,WR,TE,K,DEF"
+    )
+    assert (
+        tools_by_name["trade_opportunities"]["inputSchema"]["properties"][
+            "offers_per_team"
+        ]["default"]
+        == 3
+    )
 
 
 def test_mcp_tool_call_returns_json_text_content() -> None:

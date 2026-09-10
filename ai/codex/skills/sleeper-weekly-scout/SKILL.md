@@ -15,6 +15,7 @@ Use this skill when a user wants historical top players, week-over-week movement
 4. Do not install packages or create a virtualenv on the host.
 5. Use `make local-up` before local Docker workflows when setup is needed.
 6. After Docker workflow runs, use `make teardown` to stop Compose resources and prune stopped containers plus dangling images when appropriate.
+7. Use `make decision-smoke` for live validation of lineup, waiver, and trade workflows.
 
 ## Historical Leaders
 
@@ -75,6 +76,12 @@ For actionable waiver-wire filtering, call:
 waiver_wire_watch
 ```
 
+For top waiver options by position, call:
+
+```text
+waiver_wire_by_position
+```
+
 Recommended inputs:
 
 ```json
@@ -82,7 +89,7 @@ Recommended inputs:
   "league_id": "<league_id>",
   "season": 2026,
   "week": 1,
-  "positions": "RB,WR,TE",
+  "positions": "QB,RB,WR,TE,K,DEF",
   "lookback_hours": 24,
   "trend_limit": 100,
   "limit": 25,
@@ -105,11 +112,12 @@ make sleeper ARGS="waiver-watch <league_id> --positions RB,WR,TE --limit 25 --ou
 
 Rules:
 
-- Prefer `RB,WR,TE` for standard waiver work.
-- Expand to `QB,K,DEF` only when the user asks.
+- Use the default `QB,RB,WR,TE,K,DEF` when the user asks broadly for waiver or free-agent options.
+- Narrow to `RB,WR,TE` when the user explicitly wants skill-position bench churn.
 - Use available-player output, not raw trending lists, when the goal is actionable waiver suggestions.
 - Use `free_agent_watch` when the user wants a cleaner available-player ranking without trend pressure.
 - Keep the result focused on projected value and roster availability.
+- Explain `acquisition_action`, `urgency`, add/drop reasoning, and FAAB fields only when `market_type` is `waiver`.
 
 ## Lineup Decisions
 
@@ -118,6 +126,8 @@ For the user's current starters and bench, call:
 ```text
 my_lineup
 ```
+
+Prefer `lineup_table` when presenting a roster because it includes starters, bench, and reserve/IR rows with `lineup_status`, `active_roster_spot`, `stash_value`, `status`, `injury_status`, `actual_points`, and `projected_points`. Mention `week`, `current_total`, `projected_starter_total`, `active_bench_count`, and `reserve_count`.
 
 For start/sit changes, add/drop comparisons, watchlist priority, and FAAB hints, call:
 
@@ -142,13 +152,27 @@ Recommended inputs:
 Rules:
 
 - Omit `league_id` and `roster_id` only when MCP default context is configured.
-- Treat FAAB output as a deterministic range hint, not a final bid.
+- Treat FAAB output as a deterministic range hint, not a final bid, and do not invent bids for free agents or unknown market state.
 - Explain recommendations from `projected_gain`, add/drop trend counts, rostered percentage when present, injury status, and league scoring.
 - Use `player_card` for chart-ready evidence when a recommendation needs weekly trajectory.
+
+## Trade Opportunities
+
+For league-wide trade scans, call:
+
+```text
+trade_opportunities
+```
+
+Rules:
+
+- Report every opposing team, even when the tool finds no attractive offer angle.
+- Summarize needs, surplus, top targets, offer angles, trade score, opponent fit, backup risk, bye risk, roster balance after the move, and reasoning.
+- Treat output as a projection-based screen, not a definitive trade-value model.
 
 ## Output Discipline
 
 - Return compact JSON summaries by default.
 - Do not dump full player maps.
 - Keep explanations tied to the requested week range and positions.
-- Do cleanup after containerized workflow checks with `make teardown`.
+- Do cleanup after containerized workflow checks with `make teardown`. After one-off commands that already use Compose `run --rm`, use `make local-down` when only the temporary Compose network needs cleanup.

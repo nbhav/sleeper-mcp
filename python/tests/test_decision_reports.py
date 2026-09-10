@@ -40,31 +40,13 @@ def test_build_waiver_watch_filters_rostered_players_and_sorts_by_projection() -
         trend_type="add",
     )
 
-    assert rows == [
-        {
-            "player_id": "high",
-            "name": "High RB",
-            "team": "LV",
-            "position": "RB",
-            "trend_type": "add",
-            "trend_count": 10,
-            "projected_points": 12,
-            "sleeper_projected_points": 11,
-            "status": "",
-            "injury_status": "",
-        },
-        {
-            "player_id": "low",
-            "name": "Low RB",
-            "team": "KC",
-            "position": "RB",
-            "trend_type": "add",
-            "trend_count": 500,
-            "projected_points": 8,
-            "sleeper_projected_points": 10,
-            "status": "",
-            "injury_status": "",
-        },
+    assert [row["player_id"] for row in rows] == ["high", "low"]
+    assert rows[0]["projected_points"] == 12
+    assert rows[0]["market_type"] == "unknown"
+    assert rows[0]["acquisition_action"] == "watch"
+    assert rows[0]["source_metadata"]["player_context"] == [
+        "sleeper_players",
+        "sleeper_projections",
     ]
 
 

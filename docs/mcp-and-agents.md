@@ -96,24 +96,41 @@ Use `waiver_wire_watch` when the user asks:
 - which waiver players have projection plus recent actual evidence
 - which candidates should be filtered through league scoring
 
+Use `waiver_wire_by_position` when the user asks:
+
+- for top waiver options by position
+- to compare each option against a realistic drop candidate
+- for acquisition action, drop reasoning, and FAAB tier only when the player is known to require a waiver claim
+
 Use `my_lineup` when the user asks:
 
 - who is currently starting this week
 - who is on the bench
+- for a lineup table with starters and bench
 - what the current lineup projects for under league scoring
+- current total, projected total, and week number
 
 Use `lineup_recommendations` when the user asks:
 
 - who to start or sit
 - whether a bench player should replace a starter
 - whether a free agent or waiver player is better than the roster's weakest comparable player
-- how add/drop momentum and rostered percentage should affect watch priority or FAAB range
+- how add/drop momentum and rostered percentage should affect watch priority, urgency, or waiver range
+
+Use `trade_opportunities` when the user asks:
+
+- which teams are good trade partners
+- what each opposing team needs or has in surplus
+- for multiple mutual-fit offer angles, trade score, backup risk, bye risk, and reasoning
+- for projection-based upgrade targets by opposing roster
 
 Use lower-level tools only when the user needs narrower context:
 
 - `resolve_league_context`: setup-time league, owner, and roster ID resolution
-- `my_lineup`: current starters, bench, slots, and projections
+- `my_lineup`: current starters, bench, slots, actual points, status, and projections
 - `lineup_recommendations`: deterministic start/sit and add/drop comparisons
+- `waiver_wire_by_position`: top waiver/free-agent options grouped by position with protected drop, acquisition, and market-aware FAAB context
+- `trade_opportunities`: all opposing teams with needs, surplus, targets, mutual-fit offer scores, roster balance, and reasoning
 - `waiver_watch`: trending unrostered players with projected value
 - `free_agent_watch`: unrostered players ranked by projection
 - `injury_watch`: rostered players with injury or status risk
@@ -147,6 +164,12 @@ containers plus dangling images:
 
 ```bash
 make teardown
+```
+
+For quick live validation of lineup, waiver, and trade workflows:
+
+```bash
+make decision-smoke
 ```
 
 ## Shareable Skill

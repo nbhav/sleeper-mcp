@@ -31,6 +31,7 @@ From this repo:
 ```bash
 make local-up
 make test
+make decision-smoke
 make sleeper ARGS="state"
 ```
 
@@ -129,8 +130,10 @@ For assistant usage, prefer:
 - `resolve_league_context` for setup-time league, owner, and roster ID resolution
 - `weekly_performance_backtest` for historical leaders and week-over-week movement
 - `waiver_wire_watch` for actionable waiver recommendations
-- `my_lineup` for current starters, bench, and league-scored projections
+- `my_lineup` for current starters, bench, actual points, status, and league-scored projections
 - `lineup_recommendations` for start/sit and add/drop comparisons
+- `waiver_wire_by_position` for top waiver/free-agent options grouped by position
+- `trade_opportunities` for league-wide trade partner scans
 - `weekly_briefing`, `opponent_watch`, `league_team_watch`, and `player_card` for supporting context
 
 ## Remote MCP

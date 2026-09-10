@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,21 @@ def clear_default_context_env(monkeypatch) -> None:
     monkeypatch.delenv("SLEEPER_DEFAULT_LEAGUE_ID", raising=False)
     monkeypatch.delenv("SLEEPER_DEFAULT_ROSTER_ID", raising=False)
     monkeypatch.delenv("SLEEPER_DEFAULT_OWNER_ID", raising=False)
+
+
+def test_waiver_tools_default_to_all_standard_positions() -> None:
+    assert (
+        inspect.signature(FantasyToolRunner.waiver_wire_watch)
+        .parameters["positions"]
+        .default
+        == mcp_tools.DEFAULT_POSITIONS
+    )
+    assert (
+        inspect.signature(FantasyToolRunner.free_agent_watch)
+        .parameters["positions"]
+        .default
+        == mcp_tools.DEFAULT_POSITIONS
+    )
 
 
 def test_free_agent_watch_returns_unrostered_projected_players(tmp_path) -> None:
@@ -30,20 +46,17 @@ def test_free_agent_watch_returns_unrostered_projected_players(tmp_path) -> None
         limit=1,
     )
 
-    assert rows == [
-        {
-            "league_id": "league-1",
-            "season": 2026,
-            "week": 1,
-            "player_id": "free-rb",
-            "name": "Free RB",
-            "team": "DEN",
-            "position": "RB",
-            "projected_points": 20,
-            "sleeper_projected_points": 2,
-            "status": "Active",
-            "injury_status": "",
-        }
+    assert rows[0]["league_id"] == "league-1"
+    assert rows[0]["player_id"] == "free-rb"
+    assert rows[0]["name"] == "Free RB"
+    assert rows[0]["market_type"] == "free_agent"
+    assert rows[0]["acquisition_action"] == "add_now"
+    assert "faab_bid_pct" not in rows[0]
+    assert "depth_chart_order" in rows[0]
+    assert "source_metadata" in rows[0]
+    assert rows[0]["source_metadata"]["player_context"] == [
+        "sleeper_players",
+        "sleeper_projections",
     ]
 
 
@@ -216,7 +229,19 @@ def test_my_lineup_returns_slots_starters_bench_and_projections(tmp_path) -> Non
     assert report["roster_id"] == 1
     assert report["team_name"] == "Me"
     assert report["roster_slots"] == ["RB", "FLEX"]
+    assert report["current_total"] == 4
+    assert report["projected_total"] == 67
+    assert report["projected_starter_total"] == 24
     assert report["projected_starter_points"] == 24
+    assert [row["player_id"] for row in report["lineup_table"]] == [
+        "starter-rb",
+        "bench-wr",
+        "bench-rb",
+        "drop-rb",
+        "ir-rb",
+    ]
+    assert report["lineup_table"][0]["actual_points"] == 2
+    assert report["lineup_table"][0]["status"] == "Active"
     assert [row["slot"] for row in report["starters"]] == ["RB", "FLEX"]
     assert [row["player_id"] for row in report["starters"]] == [
         "starter-rb",
@@ -224,6 +249,14 @@ def test_my_lineup_returns_slots_starters_bench_and_projections(tmp_path) -> Non
     ]
     assert [row["player_id"] for row in report["bench"]] == ["bench-rb", "drop-rb"]
     assert report["bench"][0]["projected_points"] == 20
+    assert report["active_bench_count"] == 2
+    assert report["reserve_count"] == 1
+    assert report["reserve"][0]["player_id"] == "ir-rb"
+    assert report["reserve"][0]["slot"] == "IR"
+    assert report["reserve"][0]["lineup_status"] == "reserve"
+    assert report["reserve"][0]["active_roster_spot"] is False
+    assert report["reserve"][0]["stash_value"] is True
+    assert report["reserve"][0]["depth_chart_order"] == 2
 
 
 def test_lineup_recommendations_compares_lineup_and_available_players(tmp_path) -> None:
@@ -266,11 +299,90 @@ def test_lineup_recommendations_compares_lineup_and_available_players(tmp_path) 
     assert waiver_pick["add_player_id"] == "free-rb"
     assert waiver_pick["drop_player_id"] == "drop-rb"
     assert waiver_pick["projected_gain_over_drop"] == 25
-    assert waiver_pick["faab_bid_pct"] == 12
+    assert waiver_pick["drop_lineup_status"] == "bench"
+    assert waiver_pick["drop_reason"] == "lowest risk active roster cut with comparable position coverage"
+    assert waiver_pick["market_type"] == "waiver"
+    assert waiver_pick["acquisition_action"] == "submit_waiver_claim"
+    assert waiver_pick["faab_bid_pct"] == 14
+    assert waiver_pick["faab_tier"] == "aggressive"
+    assert "projects 25.00 points above" in waiver_pick["faab_reasoning"]
+    assert {
+        "player_id": "ir-rb",
+        "name": "IR RB",
+        "position": "RB",
+        "reason": "reserve/IR stash does not consume an active bench spot",
+    } in waiver_pick["rejected_drop_reasoning"]
     watch = report["watchlist"][0]
     assert watch["player_id"] == "free-rb"
     assert watch["net_trend_count"] == 2400
     assert watch["rostered_percent"] == 55.0
+
+
+def test_waiver_wire_by_position_groups_options_with_gain_and_faab(tmp_path) -> None:
+    runner = FantasyToolRunner(
+        client_factory=lambda: FakeLineupClient(),
+        players_cache=tmp_path / "players.json",
+    )
+
+    report = runner.waiver_wire_by_position(
+        league_id="league-1",
+        roster_id=1,
+        season=2026,
+        week=1,
+        positions="RB,WR",
+        per_position_limit=1,
+    )
+
+    assert report["positions"] == ["RB", "WR"]
+    rb_pick = report["by_position"]["RB"][0]
+    assert rb_pick["add_name"] == "Free RB"
+    assert rb_pick["drop_name"] == "Drop RB"
+    assert rb_pick["drop_lineup_status"] == "bench"
+    assert rb_pick["projected_gain_over_drop"] == 25
+    assert rb_pick["faab_tier"] == "aggressive"
+    assert rb_pick["faab_bid_pct"] == 14
+    assert rb_pick["add_trend_count"] == 2500
+    wr_pick = report["by_position"]["WR"][0]
+    assert wr_pick["add_name"] == "Watch WR"
+    assert wr_pick["drop_name"] == "Drop RB"
+    assert wr_pick["drop_lineup_status"] == "bench"
+    assert wr_pick["projected_gain_over_drop"] == 10
+    assert wr_pick["market_type"] == "unknown"
+    assert wr_pick["acquisition_action"] == "watch"
+    assert "faab_tier" not in wr_pick
+
+
+def test_trade_opportunities_includes_every_opponent_with_offer_angles(tmp_path) -> None:
+    runner = FantasyToolRunner(
+        client_factory=lambda: FakeTradeClient(),
+        players_cache=tmp_path / "players.json",
+    )
+
+    report = runner.trade_opportunities(
+        league_id="league-1",
+        roster_id=1,
+        season=2026,
+        week=1,
+        positions="QB,RB,WR,TE",
+        targets_per_team=3,
+        offers_per_team=2,
+    )
+
+    assert [team["team_name"] for team in report["teams"]] == [
+        "WR Rich",
+        "No Fit",
+    ]
+    wr_rich = report["teams"][0]
+    assert "TE" in {need["position"] for need in wr_rich["needs"]}
+    assert wr_rich["targets"][0]["name"] == "Target WR"
+    assert wr_rich["offer_angles"][0]["ask_for"]["name"] == "Target WR"
+    assert wr_rich["offer_angles"][0]["offer"][0]["name"] == "Bench TE"
+    assert wr_rich["offer_angles"][0]["projected_lineup_gain"] == 6
+    assert wr_rich["offer_angles"][0]["my_gain"] == 6
+    assert "TE" in wr_rich["offer_angles"][0]["opponent_need_matched"]
+    assert wr_rich["offer_angles"][0]["trade_score"] > 0
+    assert wr_rich["reasoning"]
+    assert report["teams"][1]["team_name"] == "No Fit"
 
 
 def test_opponent_watch_returns_matchup_context(tmp_path) -> None:
@@ -511,7 +623,8 @@ class FakeLineupClient(FakeMcpClient):
             {
                 "roster_id": 1,
                 "owner_id": "u1",
-                "players": ["starter-rb", "bench-wr", "bench-rb", "drop-rb"],
+                "players": ["starter-rb", "bench-wr", "bench-rb", "drop-rb", "ir-rb"],
+                "reserve": ["ir-rb"],
             },
             {"roster_id": 2, "owner_id": "u2", "players": ["rostered-rb"]},
         ]
@@ -565,6 +678,16 @@ class FakeLineupClient(FakeMcpClient):
                 "fantasy_positions": ["RB"],
                 "status": "Active",
             },
+            "ir-rb": {
+                "full_name": "IR RB",
+                "team": "MIA",
+                "position": "RB",
+                "fantasy_positions": ["RB"],
+                "status": "Inactive",
+                "injury_status": "IR",
+                "depth_chart_order": 2,
+                "depth_chart_position": "RB",
+            },
             "free-rb": {
                 "full_name": "Free RB",
                 "team": "DEN",
@@ -572,6 +695,7 @@ class FakeLineupClient(FakeMcpClient):
                 "fantasy_positions": ["RB"],
                 "status": "Active",
                 "rostered_percent": 55,
+                "market_type": "waiver",
             },
             "watch-wr": {
                 "full_name": "Watch WR",
@@ -604,6 +728,7 @@ class FakeLineupClient(FakeMcpClient):
                 self._row("starter-rb", "Starter RB", "KC", "RB", 1),
                 self._row("bench-rb", "Bench RB", "DEN", "RB", 2),
                 self._row("drop-rb", "Drop RB", "LV", "RB", 0.5),
+                self._row("ir-rb", "IR RB", "MIA", "RB", 1.8),
                 self._row("free-rb", "Free RB", "DEN", "RB", 3),
                 self._row("rostered-rb", "Rostered RB", "BAL", "RB", 4),
             ]
@@ -613,6 +738,100 @@ class FakeLineupClient(FakeMcpClient):
                 self._row("watch-wr", "Watch WR", "SF", "WR", 1.5),
             ]
         return []
+
+
+class FakeTradeClient(FakeLineupClient):
+    def get_league(self, league_id: str) -> dict[str, object]:
+        self.league_ids.append(league_id)
+        return {
+            "roster_positions": ["WR", "TE", "FLEX", "BN", "BN"],
+            "scoring_settings": {"custom_score": 10},
+        }
+
+    def get_league_users(self, league_id: str) -> list[dict[str, object]]:
+        return [
+            {"user_id": "u1", "display_name": "Me", "metadata": {"team_name": "Me"}},
+            {"user_id": "u2", "display_name": "WR Rich", "metadata": {"team_name": "WR Rich"}},
+            {"user_id": "u3", "display_name": "No Fit", "metadata": {"team_name": "No Fit"}},
+        ]
+
+    def get_rosters(self, league_id: str) -> list[dict[str, object]]:
+        return [
+            {
+                "roster_id": 1,
+                "owner_id": "u1",
+                "players": ["my-wr-low", "my-te-start", "my-flex", "bench-te", "bench-rb"],
+            },
+            {
+                "roster_id": 2,
+                "owner_id": "u2",
+                "players": ["target-wr", "other-wr", "third-wr", "bad-te"],
+            },
+            {
+                "roster_id": 3,
+                "owner_id": "u3",
+                "players": ["low-wr", "low-rb", "low-te"],
+            },
+        ]
+
+    def get_matchups(self, league_id: str, week: int) -> list[dict[str, object]]:
+        return [
+            {
+                "roster_id": 1,
+                "matchup_id": 10,
+                "points": 12,
+                "starters": ["my-wr-low", "my-te-start", "my-flex"],
+                "players": ["my-wr-low", "my-te-start", "my-flex", "bench-te", "bench-rb"],
+                "players_points": {"my-wr-low": 4, "my-te-start": 5, "my-flex": 3},
+            }
+        ]
+
+    def get_players(self, *, position=None, active=None, sport="nfl") -> dict[str, dict[str, object]]:
+        return {
+            "my-wr-low": self._player("My Low WR", "WR", "KC"),
+            "my-te-start": self._player("My Start TE", "TE", "DEN"),
+            "my-flex": self._player("My Flex", "RB", "LV"),
+            "bench-te": self._player("Bench TE", "TE", "SEA"),
+            "bench-rb": self._player("Bench RB", "RB", "GB"),
+            "target-wr": self._player("Target WR", "WR", "MIA"),
+            "other-wr": self._player("Other WR", "WR", "BAL"),
+            "third-wr": self._player("Third WR", "WR", "PHI"),
+            "bad-te": self._player("Bad TE", "TE", "NYJ"),
+            "low-wr": self._player("Low WR", "WR", "NE"),
+            "low-rb": self._player("Low RB", "RB", "CHI"),
+            "low-te": self._player("Low TE", "TE", "CAR"),
+        }
+
+    def _player(self, name: str, position: str, team: str) -> dict[str, object]:
+        return {
+            "full_name": name,
+            "team": team,
+            "position": position,
+            "fantasy_positions": [position],
+            "status": "Active",
+            "injury_status": "",
+        }
+
+    def _rows(self, position: str | None, *, projected: bool) -> list[dict[str, object]]:
+        points = {
+            "my-wr-low": ("My Low WR", "KC", "WR", 1.0),
+            "my-te-start": ("My Start TE", "DEN", "TE", 0.9),
+            "my-flex": ("My Flex", "LV", "RB", 0.8),
+            "bench-te": ("Bench TE", "SEA", "TE", 0.8),
+            "bench-rb": ("Bench RB", "GB", "RB", 0.6),
+            "target-wr": ("Target WR", "MIA", "WR", 1.4),
+            "other-wr": ("Other WR", "BAL", "WR", 1.2),
+            "third-wr": ("Third WR", "PHI", "WR", 1.1),
+            "bad-te": ("Bad TE", "NYJ", "TE", 0.3),
+            "low-wr": ("Low WR", "NE", "WR", 0.7),
+            "low-rb": ("Low RB", "CHI", "RB", 0.6),
+            "low-te": ("Low TE", "CAR", "TE", 0.5),
+        }
+        return [
+            self._row(player_id, name, team, pos, custom_score)
+            for player_id, (name, team, pos, custom_score) in points.items()
+            if pos == position
+        ]
 
 
 class FakeBacktestClient:

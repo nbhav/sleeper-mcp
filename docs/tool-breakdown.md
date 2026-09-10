@@ -73,9 +73,11 @@ make sleeper ARGS="waiver-watch --help"
 | `weekly_briefing` | Weekly leaders plus waiver signal. |
 | `weekly_performance_backtest` | Back-test weekly leaders and deterministic week-over-week movers. |
 | `waiver_watch` | Trending unrostered players with projected value. |
-| `my_lineup` | Current starters and bench for the configured roster, with slots and league-scored projections. |
-| `lineup_recommendations` | Start/sit changes plus available-player comparisons against drop candidates and FAAB hints. |
+| `my_lineup` | Current starters and bench for the configured roster, with a unified lineup table, actual points, status, injuries, and league-scored projections. |
+| `lineup_recommendations` | Start/sit changes plus available-player comparisons against protected drop candidates, acquisition action, and market-aware waiver hints. |
 | `waiver_wire_watch` | Actionable waiver shortlist with availability, projections, trends, status, and recent actuals. |
+| `waiver_wire_by_position` | Top waiver and free-agent options by position, with drop candidate, projected gain, status, acquisition action, and FAAB guidance only for known waiver claims. |
+| `trade_opportunities` | Every opposing team with needs, surplus, targets, mutual-fit offer scores, roster-balance risk, and reasoning. |
 | `free_agent_watch` | Unrostered players ranked by projection. |
 | `injury_watch` | Rostered players with injury/status risk. |
 | `opponent_watch` | Weekly opponent starters, projection, and injury flags. |
@@ -100,6 +102,18 @@ League-scored rows include:
 - `sleeper_points`: Sleeper's default points field when present
 - `scoring_rules_matched`: count of scoring keys that contributed non-zero points
 - `scoring_breakdown`: JSON-only contribution details by stat key
+
+Lineup rows include:
+
+- `lineup_status`: starter, bench, or reserve
+- `actual_points`: current week points for that player
+- `projected_points`: league-scored projection
+- `status` and `injury_status`: separate availability fields
+- `active_roster_spot`: false for reserve/IR stashes
+- `stash_value`: true for reserve/IR players that should not be treated as easy cuts
+- `depth_chart_order`, `depth_chart_position`, `bye_week`, and `source_metadata` when Sleeper exposes that context
+
+`my_lineup` also returns `current_total`, `projected_total`, `projected_starter_total`, `season`, and `week`.
 
 Sleeper often omits zero-value stat fields. Scoring code treats missing fields as `0`.
 

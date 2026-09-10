@@ -37,6 +37,7 @@ Keep the MCP tool surface curated and decision-focused. Prefer deterministic too
 make build
 make test
 make integration-test
+make decision-smoke
 make sleeper ARGS="state"
 make mcp
 make worker-install
@@ -49,11 +50,13 @@ make docker-prune
 make teardown
 ```
 
-For direct Python smoke checks, run the project venv inside the container:
+For lineup, waiver, and trade workflow smoke checks, use:
 
 ```bash
-docker compose -f infra/docker/docker-compose.yml run --rm --entrypoint /app/.venv/bin/python sleeper -c '<python code>'
+make decision-smoke
 ```
+
+For ad hoc direct Python checks that do not merit a Make target, run the project venv inside the container.
 
 Useful fantasy checks:
 

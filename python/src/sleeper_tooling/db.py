@@ -127,6 +127,38 @@ class ApiResponseCache:
             ON api_cache(fetched_at)
             """
         )
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS player_context_overrides (
+                player_id TEXT PRIMARY KEY,
+                context_json TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'local_db',
+                updated_at REAL NOT NULL
+            )
+            """
+        )
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS team_schedule_context (
+                season INTEGER NOT NULL,
+                team TEXT NOT NULL,
+                bye_week INTEGER,
+                schedule_json TEXT NOT NULL DEFAULT '{}',
+                source TEXT NOT NULL DEFAULT 'local_db',
+                updated_at REAL NOT NULL,
+                PRIMARY KEY (season, team)
+            )
+            """
+        )
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS context_source_timestamps (
+                source TEXT PRIMARY KEY,
+                fetched_at REAL NOT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '{}'
+            )
+            """
+        )
         self._connection.commit()
 
     def _configure_connection(self) -> None:
