@@ -35,7 +35,7 @@ make decision-smoke
 make sleeper ARGS="state"
 ```
 
-The `state` command returns Sleeper's current NFL season and week. API responses are cached under `./data/`.
+The `state` command returns Sleeper's current NFL season and week. API responses are cached under `./data/`; see `docs/tool-breakdown.md` for the cache data model, query lifecycle, and TTLs.
 
 Configure your default league and roster context from a Sleeper league URL plus
 your Sleeper username, display name, owner ID, roster ID, or team name:

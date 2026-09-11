@@ -118,13 +118,38 @@ Lineup rows include:
 
 Sleeper often omits zero-value stat fields. Scoring code treats missing fields as `0`.
 
-## Caching
+## Data Model And Caching
 
-The Python CLI and stdio MCP server use SQLite:
+The tools mostly use Sleeper as the source of truth and keep a small local cache
+so repeated CLI, MCP, and Worker calls do not refetch the same endpoint over and
+over.
+
+### Python And Stdio MCP
+
+The Python CLI and stdio MCP server use SQLite for HTTP response caching:
 
 ```text
 ./data/sleeper.db
 ```
+
+The cache database contains:
+
+| Table | Purpose | Used Today |
+|---|---|---:|
+| `api_cache` | Cached Sleeper HTTP responses keyed by the full request URL, including query parameters. Stores `cache_key`, `url`, `response_json`, `fetched_at`, and `ttl_seconds`. | Yes |
+| `player_context_overrides` | Local/manual player context overrides for future provider or manual enrichment. Stores `player_id`, `context_json`, `source`, and `updated_at`. | Reserved |
+| `team_schedule_context` | Local/manual team schedule and bye-week context. Stores `season`, `team`, `bye_week`, `schedule_json`, `source`, and `updated_at`. | Reserved |
+| `context_source_timestamps` | Source freshness metadata for local context providers. Stores `source`, `fetched_at`, and `metadata_json`. | Reserved |
+
+On each cached Sleeper request, the Python client builds the request URL, uses it
+as the cache key, and checks `api_cache` unless caching is disabled or
+`--refresh-cache` is set. A fresh row is returned directly. A missing or expired
+row causes a live Sleeper request, then the response is written back with the
+endpoint TTL.
+
+Decision reports enrich player rows from Sleeper player/projection/roster data
+first. The reserved context tables are schema support for future or manual
+context, not the primary source for current recommendations.
 
 The player map is cached separately:
 
@@ -132,15 +157,23 @@ The player map is cached separately:
 ./data/players.json
 ```
 
+The player map file is loaded directly when present. The HTTP endpoint used to
+create or refresh it still uses the 6-hour player-map TTL, but the file itself is
+not currently evicted by age.
+
+The cache path is resolved as `--cache-db`, then `SLEEPER_CACHE_DB`, then
+`${SLEEPER_CACHE_DIR:-/data}/sleeper.db` inside Docker.
+
 Default TTLs:
 
-| Endpoint Type | TTL |
+| URL Pattern Or Data | TTL |
 |---|---:|
-| NFL state | 5 minutes |
-| Trending players | 5 minutes |
-| Stats, projections, matchups, transactions | 15 minutes |
-| League, roster, user, draft metadata | 1 hour |
-| Player map | 6 hours |
+| `/state/nfl` | 5 minutes |
+| `/trending/*` | 5 minutes |
+| `/stats/*`, `/projections/*`, `/matchups/*`, `/transactions/*` | 15 minutes |
+| `/players/nfl` HTTP response | 6 hours |
+| League, roster, user, draft, and other metadata endpoints | 1 hour |
+| `./data/players.json` file | No age-based eviction |
 
 Cache commands:
 
@@ -152,7 +185,16 @@ make sleeper ARGS="--refresh-cache best-week --source projections --output table
 make sleeper ARGS="--no-cache state"
 ```
 
-The Cloudflare Worker uses D1 instead of SQLite because Workers do not have a persistent local filesystem. Very large responses, such as the full Sleeper player map, are served without D1 writes so they do not exceed D1 value limits.
+### Cloudflare Worker
+
+The Cloudflare Worker uses D1 instead of SQLite because Workers do not have a
+persistent local filesystem. D1 stores the `api_response_cache` table with
+`cache_key`, `url`, `response_json`, `expires_at`, and `created_at`.
+
+Worker requests check D1 first and return a row only when `expires_at` is still
+in the future. Cache misses and expired rows hit Sleeper and write a replacement
+row. Very large responses, such as the full Sleeper player map, are served
+without D1 writes so they do not exceed D1 value limits.
 
 ## Output Formats
 
