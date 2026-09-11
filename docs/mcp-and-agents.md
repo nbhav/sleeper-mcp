@@ -131,6 +131,7 @@ Use lower-level tools only when the user needs narrower context:
 - `lineup_recommendations`: deterministic start/sit and add/drop comparisons
 - `waiver_wire_by_position`: top waiver/free-agent options grouped by position with protected drop, acquisition, and market-aware FAAB context
 - `trade_opportunities`: all opposing teams with needs, surplus, targets, mutual-fit offer scores, roster balance, and reasoning
+- `decision_smoke_report`: display-ready Markdown tables for lineup, waiver, and trade smoke validation
 - `waiver_watch`: trending unrostered players with projected value
 - `free_agent_watch`: unrostered players ranked by projection
 - `injury_watch`: rostered players with injury or status risk
@@ -170,6 +171,20 @@ For quick live validation of lineup, waiver, and trade workflows:
 
 ```bash
 make decision-smoke
+```
+
+For MCP clients that need the same validation in a human-readable table, call:
+
+```json
+{
+  "name": "decision_smoke_report",
+  "arguments": {
+    "format": "markdown",
+    "per_position_limit": 3,
+    "targets_per_team": 2,
+    "offers_per_team": 2
+  }
+}
 ```
 
 ## Shareable Skill

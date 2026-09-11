@@ -385,6 +385,28 @@ def test_trade_opportunities_includes_every_opponent_with_offer_angles(tmp_path)
     assert report["teams"][1]["team_name"] == "No Fit"
 
 
+def test_decision_smoke_report_returns_markdown_tables(tmp_path) -> None:
+    runner = FantasyToolRunner(
+        client_factory=lambda: FakeLineupClient(),
+        players_cache=tmp_path / "players.json",
+        default_league_id="league-1",
+        default_roster_id=1,
+    )
+
+    report = runner.decision_smoke_report(
+        season=2026,
+        week=1,
+        positions="RB,WR",
+        per_position_limit=1,
+        format="markdown",
+    )
+
+    assert isinstance(report, str)
+    assert "## Current Lineup" in report
+    assert "| IR | reserve | IR RB | MIA | RB | Inactive | IR | 0.00 | 18.00 | false | true |" in report
+    assert "## Waiver By Position" in report
+
+
 def test_opponent_watch_returns_matchup_context(tmp_path) -> None:
     fake_client = FakeMcpClient()
     runner = FantasyToolRunner(

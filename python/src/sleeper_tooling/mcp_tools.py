@@ -647,6 +647,41 @@ class FantasyToolRunner:
                 offers_per_team=offers_per_team,
             )
 
+    def decision_smoke_report(
+        self,
+        *,
+        league_id: str | None = None,
+        roster_id: int | None = None,
+        season: int | None = None,
+        week: int | None = None,
+        positions: str = DEFAULT_POSITIONS,
+        per_position_limit: int = 3,
+        targets_per_team: int = 2,
+        offers_per_team: int = 2,
+        format: str = "markdown",
+    ) -> dict[str, Any] | str:
+        if format not in {"json", "markdown"}:
+            raise ValueError("format must be 'json' or 'markdown'")
+        from sleeper_tooling.smoke import (
+            build_decision_smoke_report,
+            render_decision_smoke_tables,
+        )
+
+        report = build_decision_smoke_report(
+            self,
+            league_id=league_id,
+            roster_id=roster_id,
+            season=season,
+            week=week,
+            positions=positions,
+            per_position_limit=per_position_limit,
+            targets_per_team=targets_per_team,
+            offers_per_team=offers_per_team,
+        )
+        if format == "markdown":
+            return render_decision_smoke_tables(report)
+        return report
+
     def opponent_watch(
         self,
         *,

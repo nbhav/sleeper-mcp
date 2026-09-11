@@ -158,6 +158,24 @@ TOOLS = [
         },
     },
     {
+        "name": "decision_smoke_report",
+        "description": "Run the compact lineup, waiver, and trade smoke workflow and return display-ready Markdown tables or JSON.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "league_id": {"type": "string"},
+                "roster_id": {"type": "integer"},
+                "season": {"type": "integer"},
+                "week": {"type": "integer"},
+                "positions": {"type": "string", "default": "QB,RB,WR,TE,K,DEF"},
+                "per_position_limit": {"type": "integer", "default": 3},
+                "targets_per_team": {"type": "integer", "default": 2},
+                "offers_per_team": {"type": "integer", "default": 2},
+                "format": {"type": "string", "enum": ["markdown", "json"], "default": "markdown"},
+            },
+        },
+    },
+    {
         "name": "free_agent_watch",
         "description": "Rank currently unrostered players by projection under league scoring.",
         "inputSchema": {
@@ -258,7 +276,9 @@ class McpServer:
             "content": [
                 {
                     "type": "text",
-                    "text": json.dumps(result, indent=2, sort_keys=True),
+                    "text": result
+                    if isinstance(result, str)
+                    else json.dumps(result, indent=2, sort_keys=True),
                 }
             ],
             "isError": False,

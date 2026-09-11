@@ -134,6 +134,7 @@ For assistant usage, prefer:
 - `lineup_recommendations` for start/sit and add/drop comparisons
 - `waiver_wire_by_position` for top waiver/free-agent options grouped by position
 - `trade_opportunities` for league-wide trade partner scans
+- `decision_smoke_report` for display-ready lineup, waiver, and trade smoke tables before review or merge
 - `weekly_briefing`, `opponent_watch`, `league_team_watch`, and `player_card` for supporting context
 
 ## Remote MCP

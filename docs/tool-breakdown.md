@@ -78,6 +78,7 @@ make sleeper ARGS="waiver-watch --help"
 | `waiver_wire_watch` | Actionable waiver shortlist with availability, projections, trends, status, and recent actuals. |
 | `waiver_wire_by_position` | Top waiver and free-agent options by position, with drop candidate, projected gain, status, acquisition action, and FAAB guidance only for known waiver claims. |
 | `trade_opportunities` | Every opposing team with needs, surplus, targets, mutual-fit offer scores, roster-balance risk, and reasoning. |
+| `decision_smoke_report` | Compact lineup, waiver, and trade smoke workflow output as display-ready Markdown tables or JSON. |
 | `free_agent_watch` | Unrostered players ranked by projection. |
 | `injury_watch` | Rostered players with injury/status risk. |
 | `opponent_watch` | Weekly opponent starters, projection, and injury flags. |

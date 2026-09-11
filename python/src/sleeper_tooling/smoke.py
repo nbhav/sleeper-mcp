@@ -10,15 +10,32 @@ from sleeper_tooling.mcp_tools import FantasyToolRunner
 def build_decision_smoke_report(
     runner: FantasyToolRunner,
     *,
+    league_id: str | None = None,
+    roster_id: int | None = None,
+    season: int | None = None,
+    week: int | None = None,
+    positions: str = "QB,RB,WR,TE,K,DEF",
     per_position_limit: int = 3,
     targets_per_team: int = 2,
     offers_per_team: int = 2,
 ) -> dict[str, Any]:
-    lineup = runner.my_lineup()
+    context_args = compact_kwargs(
+        league_id=league_id,
+        roster_id=roster_id,
+        season=season,
+        week=week,
+    )
+    lineup = runner.my_lineup(positions=positions, **context_args)
     waivers = runner.waiver_wire_by_position(
+        positions=positions,
         per_position_limit=per_position_limit,
+        **context_args,
     )
     trades = runner.trade_opportunities(
+        league_id=league_id,
+        roster_id=roster_id,
+        season=season,
+        week=week,
         targets_per_team=targets_per_team,
         offers_per_team=offers_per_team,
     )
@@ -91,6 +108,190 @@ def build_decision_smoke_report(
     }
 
 
+def compact_kwargs(**kwargs: Any) -> dict[str, Any]:
+    return {key: value for key, value in kwargs.items() if value is not None}
+
+
+def render_decision_smoke_tables(report: dict[str, Any]) -> str:
+    lineup = report.get("current_lineup", {})
+    waivers = report.get("waiver_wire_by_position", {})
+    trades = report.get("trade_opportunities", {})
+    sections = [
+        "## Current Lineup",
+        markdown_table(
+            ["Field", "Value"],
+            [
+                ["Team", value_text(lineup.get("team_name"))],
+                ["Season", value_text(lineup.get("season"))],
+                ["Week", value_text(lineup.get("week"))],
+                ["Current Total", value_text(lineup.get("current_total"))],
+                ["Projected Starter Total", value_text(lineup.get("projected_starter_total"))],
+                ["Projected Total", value_text(lineup.get("projected_total"))],
+                ["Active Bench Count", value_text(lineup.get("active_bench_count"))],
+                ["Reserve Count", value_text(lineup.get("reserve_count"))],
+                ["Bye Warnings", warnings_text(lineup.get("bye_week_warnings", []))],
+            ],
+        ),
+        markdown_table(
+            [
+                "Slot",
+                "Status",
+                "Player",
+                "Team",
+                "Pos",
+                "NFL Status",
+                "Injury",
+                "Actual",
+                "Projected",
+                "Active Spot",
+                "Stash",
+            ],
+            [
+                [
+                    row.get("slot"),
+                    row.get("lineup_status"),
+                    row.get("name"),
+                    row.get("team"),
+                    row.get("position"),
+                    row.get("status"),
+                    row.get("injury_status"),
+                    points_text(row.get("actual_points")),
+                    points_text(row.get("projected_points")),
+                    row.get("active_roster_spot"),
+                    row.get("stash_value"),
+                ]
+                for row in lineup.get("lineup_table", [])
+            ],
+        ),
+        "## Waiver By Position",
+        markdown_table(
+            [
+                "Pos",
+                "Add",
+                "Team",
+                "Market",
+                "Action",
+                "Urgency",
+                "Drop",
+                "Drop Status",
+                "Projected",
+                "Gain",
+                "Warnings",
+            ],
+            waiver_table_rows(waivers.get("by_position", {})),
+        ),
+        "## Trade Opportunities",
+        markdown_table(
+            ["Team", "Needs", "Surplus", "Targets", "Offer Angles", "Reasoning"],
+            [
+                [
+                    team.get("team_name"),
+                    list_text(team.get("needs", [])),
+                    list_text(team.get("surplus", [])),
+                    trade_targets_text(team.get("targets", [])),
+                    trade_angles_text(team.get("offer_angles", [])),
+                    list_text(team.get("reasoning", [])),
+                ]
+                for team in trades.get("teams", [])
+            ],
+        ),
+        "## Trade Evidence",
+        markdown_table(["Evidence"], [[item] for item in trades.get("evidence", [])]),
+    ]
+    return "\n\n".join(section for section in sections if section)
+
+
+def waiver_table_rows(by_position: dict[str, Any]) -> list[list[Any]]:
+    rows = []
+    for position, options in by_position.items():
+        for option in options:
+            rows.append(
+                [
+                    position,
+                    option.get("add"),
+                    option.get("team"),
+                    option.get("market_type"),
+                    option.get("acquisition_action"),
+                    option.get("urgency"),
+                    option.get("drop"),
+                    option.get("drop_status"),
+                    points_text(option.get("projected_points")),
+                    points_text(option.get("projected_gain")),
+                    warnings_text(option.get("bye_week_warnings", [])),
+                ]
+            )
+    return rows
+
+
+def trade_targets_text(targets: list[dict[str, Any]]) -> str:
+    if not targets:
+        return "none"
+    return "; ".join(
+        f"{target.get('name')} {target.get('position')} {target.get('team')} {points_text(target.get('projected_points'))}, gain {points_text(target.get('projected_lineup_gain'))} over {target.get('upgrade_over')}"
+        for target in targets
+    )
+
+
+def trade_angles_text(angles: list[dict[str, Any]]) -> str:
+    if not angles:
+        return "none"
+    return "; ".join(
+        f"{angle.get('angle_type')}: ask {angle.get('ask_for')}, offer {list_text(angle.get('offer', []))}, score {value_text(angle.get('trade_score'))}"
+        for angle in angles
+    )
+
+
+def markdown_table(headers: list[str], rows: list[list[Any]]) -> str:
+    if not rows:
+        rows = [["none"] + [""] * (len(headers) - 1)]
+    lines = [
+        "| " + " | ".join(escape_cell(header) for header in headers) + " |",
+        "| " + " | ".join("---" for _ in headers) + " |",
+    ]
+    for row in rows:
+        padded = row + [""] * (len(headers) - len(row))
+        lines.append("| " + " | ".join(escape_cell(value) for value in padded[: len(headers)]) + " |")
+    return "\n".join(lines)
+
+
+def escape_cell(value: Any) -> str:
+    return value_text(value).replace("|", "\\|").replace("\n", "<br>")
+
+
+def value_text(value: Any) -> str:
+    if value is None or value == "":
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def points_text(value: Any) -> str:
+    if value is None or value == "":
+        return ""
+    try:
+        return f"{float(value):.2f}"
+    except (TypeError, ValueError):
+        return value_text(value)
+
+
+def list_text(values: Any) -> str:
+    if not values:
+        return "none"
+    return ", ".join(value_text(value) for value in values)
+
+
+def warnings_text(warnings: Any) -> str:
+    if not warnings:
+        return "none"
+    return "; ".join(
+        warning.get("reason", value_text(warning))
+        if isinstance(warning, dict)
+        else value_text(warning)
+        for warning in warnings
+    )
+
+
 def compact_waiver_row(row: dict[str, Any]) -> dict[str, Any]:
     output = {
         "add": row.get("add_name"),
@@ -161,6 +362,7 @@ def main() -> None:
     parser.add_argument("--per-position-limit", type=int, default=3)
     parser.add_argument("--targets-per-team", type=int, default=2)
     parser.add_argument("--offers-per-team", type=int, default=2)
+    parser.add_argument("--format", choices=["json", "markdown"], default="json")
     args = parser.parse_args()
 
     report = build_decision_smoke_report(
@@ -169,7 +371,10 @@ def main() -> None:
         targets_per_team=args.targets_per_team,
         offers_per_team=args.offers_per_team,
     )
-    print(json.dumps(report, indent=2, sort_keys=True))
+    if args.format == "markdown":
+        print(render_decision_smoke_tables(report))
+    else:
+        print(json.dumps(report, indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":

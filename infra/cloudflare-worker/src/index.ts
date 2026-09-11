@@ -174,6 +174,24 @@ const tools = [
     }
   },
   {
+    name: "decision_smoke_report",
+    description: "Run the compact lineup, waiver, and trade smoke workflow and return display-ready Markdown tables or JSON.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        league_id: { type: "string" },
+        roster_id: { type: "integer" },
+        season: { type: "integer" },
+        week: { type: "integer" },
+        positions: { type: "string", default: DEFAULT_POSITIONS },
+        per_position_limit: { type: "integer", default: 3 },
+        targets_per_team: { type: "integer", default: 2 },
+        offers_per_team: { type: "integer", default: 2 },
+        format: { type: "string", enum: ["markdown", "json"], default: "markdown" }
+      }
+    }
+  },
+  {
     name: "free_agent_watch",
     description: "Rank currently unrostered players by projection under league scoring.",
     inputSchema: {
@@ -291,7 +309,7 @@ async function handleMcpMessage(message: JsonMap, env: Env): Promise<JsonMap | n
     const args = objectValue(params.arguments);
     const result = await callTool(name, args, env);
     return {
-      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      content: [{ type: "text", text: typeof result === "string" ? result : JSON.stringify(result, null, 2) }],
       isError: false
     };
   }
@@ -318,6 +336,8 @@ async function callTool(name: string, args: JsonMap, env: Env): Promise<unknown>
       return waiverWireByPosition(args, env);
     case "trade_opportunities":
       return tradeOpportunities(args, env);
+    case "decision_smoke_report":
+      return decisionSmokeReport(args, env);
     case "free_agent_watch":
       return freeAgentWatch(args, env);
     case "injury_watch":
@@ -690,6 +710,280 @@ async function tradeOpportunities(args: JsonMap, env: Env): Promise<JsonMap> {
     targetsPerTeam,
     offersPerTeam
   });
+}
+
+async function decisionSmokeReport(args: JsonMap, env: Env): Promise<JsonMap | string> {
+  const format = String(args.format || "markdown");
+  if (!["json", "markdown"].includes(format)) {
+    throw new Error("format must be 'json' or 'markdown'");
+  }
+  const positions = stringArg(args, "positions", DEFAULT_POSITIONS);
+  const contextArgs: JsonMap = {
+    ...args,
+    positions
+  };
+  const [lineup, waivers, trades] = await Promise.all([
+    myLineup(contextArgs, env),
+    waiverWireByPosition({
+      ...contextArgs,
+      per_position_limit: numberArg(args, "per_position_limit", 3)
+    }, env),
+    tradeOpportunities({
+      ...args,
+      targets_per_team: numberArg(args, "targets_per_team", 2),
+      offers_per_team: numberArg(args, "offers_per_team", 2)
+    }, env)
+  ]);
+  const report = buildDecisionSmokeReport(lineup, waivers, trades);
+  return format === "markdown" ? renderDecisionSmokeTables(report) : report;
+}
+
+function buildDecisionSmokeReport(lineup: JsonMap, waivers: JsonMap, trades: JsonMap): JsonMap {
+  return {
+    current_lineup: {
+      team_name: lineup.team_name,
+      season: lineup.season,
+      week: lineup.week,
+      current_total: lineup.current_total || lineup.points_so_far || 0,
+      projected_starter_total: lineup.projected_starter_total || lineup.projected_starter_points || 0,
+      projected_total: lineup.projected_total || 0,
+      active_bench_count: lineup.active_bench_count || lineup.bench_count || 0,
+      reserve_count: lineup.reserve_count || 0,
+      bye_week_warnings: lineup.bye_week_warnings || [],
+      lineup_table: arrayValue(lineup.lineup_table).map((row) => ({
+        slot: row.slot,
+        lineup_status: row.lineup_status,
+        name: row.name,
+        team: row.team,
+        position: row.position,
+        status: row.status || "",
+        injury_status: row.injury_status || "",
+        active_roster_spot: row.active_roster_spot !== false,
+        stash_value: row.stash_value === true,
+        actual_points: row.actual_points || 0,
+        projected_points: row.projected_points || 0
+      }))
+    },
+    waiver_wire_by_position: {
+      week: waivers.week,
+      per_position_limit: waivers.per_position_limit,
+      by_position: Object.fromEntries(
+        Object.entries(objectValue(waivers.by_position)).map(([position, rows]) => [
+          position,
+          arrayValue(rows).map((row) => compactWaiverRow(row))
+        ])
+      )
+    },
+    trade_opportunities: {
+      week: trades.week,
+      teams: arrayValue(trades.teams).map((team) => ({
+        team_name: team.team_name,
+        needs: arrayValue(team.needs).map((need) => `${String(need.position || "")} depth`),
+        surplus: arrayValue(team.surplus).map((surplus) => `${String(surplus.position || "")} depth`),
+        targets: arrayValue(team.targets).map((target) => compactTradeTarget(target)),
+        offer_angles: arrayValue(team.offer_angles).map((angle) => compactTradeAngle(angle)),
+        reasoning: listValue(team.reasoning)
+      })),
+      evidence: listValue(trades.evidence)
+    }
+  };
+}
+
+function compactWaiverRow(row: JsonMap): JsonMap {
+  const output: JsonMap = {
+    add: row.add_name,
+    position: row.add_position,
+    team: row.add_team,
+    status: availability(row),
+    projected_points: row.add_projected_points,
+    drop: row.drop_name,
+    drop_status: row.drop_lineup_status,
+    projected_gain: row.projected_gain_over_drop,
+    market_type: row.market_type,
+    acquisition_action: row.acquisition_action,
+    urgency: row.urgency,
+    bye_week_warnings: row.bye_week_warnings || []
+  };
+  if ("faab_tier" in row) {
+    output.faab = {
+      tier: row.faab_tier,
+      bid_pct: row.faab_bid_pct,
+      reasoning: row.faab_reasoning
+    };
+  }
+  return output;
+}
+
+function compactTradeTarget(row: JsonMap): JsonMap {
+  const upgrade = objectValue(row.upgrade_over);
+  return {
+    name: row.name,
+    position: row.position,
+    team: row.team,
+    status: availability(row),
+    projected_points: row.projected_points,
+    projected_lineup_gain: row.projected_lineup_gain,
+    upgrade_over: upgrade.name
+  };
+}
+
+function compactTradeAngle(row: JsonMap): JsonMap {
+  const askFor = objectValue(row.ask_for);
+  return {
+    angle_type: row.angle_type,
+    ask_for: askFor.name,
+    offer: arrayValue(row.offer).map((player) => player.name),
+    offer_projected_points: row.offer_projected_points,
+    projected_lineup_gain: row.projected_lineup_gain,
+    trade_score: row.trade_score,
+    opponent_need_matched: listValue(row.opponent_need_matched),
+    backup_risk: objectValue(row.backup_risk).level,
+    bye_week_risk: objectValue(row.bye_week_risk).level,
+    reasoning: row.reasoning
+  };
+}
+
+function availability(row: JsonMap): string {
+  const status = String(row.status || "");
+  const injuryStatus = String(row.injury_status || "");
+  if (status && injuryStatus) {
+    return `${status} / ${injuryStatus}`;
+  }
+  return status || injuryStatus;
+}
+
+function renderDecisionSmokeTables(report: JsonMap): string {
+  const lineup = objectValue(report.current_lineup);
+  const waivers = objectValue(report.waiver_wire_by_position);
+  const trades = objectValue(report.trade_opportunities);
+  return [
+    "## Current Lineup",
+    markdownTable(
+      ["Field", "Value"],
+      [
+        ["Team", lineup.team_name],
+        ["Season", lineup.season],
+        ["Week", lineup.week],
+        ["Current Total", lineup.current_total],
+        ["Projected Starter Total", lineup.projected_starter_total],
+        ["Projected Total", lineup.projected_total],
+        ["Active Bench Count", lineup.active_bench_count],
+        ["Reserve Count", lineup.reserve_count],
+        ["Bye Warnings", warningsText(lineup.bye_week_warnings)]
+      ]
+    ),
+    markdownTable(
+      ["Slot", "Status", "Player", "Team", "Pos", "NFL Status", "Injury", "Actual", "Projected", "Active Spot", "Stash"],
+      arrayValue(lineup.lineup_table).map((row) => [
+        row.slot,
+        row.lineup_status,
+        row.name,
+        row.team,
+        row.position,
+        row.status,
+        row.injury_status,
+        pointsText(row.actual_points),
+        pointsText(row.projected_points),
+        row.active_roster_spot,
+        row.stash_value
+      ])
+    ),
+    "## Waiver By Position",
+    markdownTable(
+      ["Pos", "Add", "Team", "Market", "Action", "Urgency", "Drop", "Drop Status", "Projected", "Gain", "Warnings"],
+      waiverTableRows(objectValue(waivers.by_position))
+    ),
+    "## Trade Opportunities",
+    markdownTable(
+      ["Team", "Needs", "Surplus", "Targets", "Offer Angles", "Reasoning"],
+      arrayValue(trades.teams).map((team) => [
+        team.team_name,
+        listText(listValue(team.needs)),
+        listText(listValue(team.surplus)),
+        tradeTargetsText(arrayValue(team.targets)),
+        tradeAnglesText(arrayValue(team.offer_angles)),
+        listText(listValue(team.reasoning))
+      ])
+    ),
+    "## Trade Evidence",
+    markdownTable(["Evidence"], listValue(trades.evidence).map((item) => [item]))
+  ].join("\n\n");
+}
+
+function waiverTableRows(byPosition: JsonMap): unknown[][] {
+  const rows: unknown[][] = [];
+  for (const [position, options] of Object.entries(byPosition)) {
+    for (const option of arrayValue(options)) {
+      rows.push([
+        position,
+        option.add,
+        option.team,
+        option.market_type,
+        option.acquisition_action,
+        option.urgency,
+        option.drop,
+        option.drop_status,
+        pointsText(option.projected_points),
+        pointsText(option.projected_gain),
+        warningsText(option.bye_week_warnings)
+      ]);
+    }
+  }
+  return rows;
+}
+
+function tradeTargetsText(targets: JsonMap[]): string {
+  if (!targets.length) return "none";
+  return targets.map((target) =>
+    `${String(target.name || "")} ${String(target.position || "")} ${String(target.team || "")} ${pointsText(target.projected_points)}, gain ${pointsText(target.projected_lineup_gain)} over ${String(target.upgrade_over || "")}`
+  ).join("; ");
+}
+
+function tradeAnglesText(angles: JsonMap[]): string {
+  if (!angles.length) return "none";
+  return angles.map((angle) =>
+    `${String(angle.angle_type || "")}: ask ${String(angle.ask_for || "")}, offer ${listText(listValue(angle.offer))}, score ${valueText(angle.trade_score)}`
+  ).join("; ");
+}
+
+function markdownTable(headers: string[], rows: unknown[][]): string {
+  const outputRows = rows.length ? rows : [["none", ...headers.slice(1).map(() => "")]];
+  return [
+    `| ${headers.map(escapeCell).join(" | ")} |`,
+    `| ${headers.map(() => "---").join(" | ")} |`,
+    ...outputRows.map((row) => {
+      const padded = [...row, ...headers.slice(row.length).map(() => "")].slice(0, headers.length);
+      return `| ${padded.map(escapeCell).join(" | ")} |`;
+    })
+  ].join("\n");
+}
+
+function escapeCell(value: unknown): string {
+  return valueText(value).replaceAll("|", "\\|").replaceAll("\n", "<br>");
+}
+
+function valueText(value: unknown): string {
+  if (value === null || value === undefined || value === "") return "";
+  if (typeof value === "boolean") return value ? "true" : "false";
+  return String(value);
+}
+
+function pointsText(value: unknown): string {
+  const parsed = numberValue(value);
+  return parsed === undefined ? valueText(value) : parsed.toFixed(2);
+}
+
+function listText(values: unknown[]): string {
+  return values.length ? values.map(valueText).join(", ") : "none";
+}
+
+function warningsText(warnings: unknown): string {
+  const rows = Array.isArray(warnings) ? warnings : [];
+  if (!rows.length) return "none";
+  return rows.map((warning) => {
+    const row = objectValue(warning);
+    return row.reason ? String(row.reason) : valueText(warning);
+  }).join("; ");
 }
 
 async function freeAgentWatch(args: JsonMap, env: Env): Promise<JsonMap[]> {

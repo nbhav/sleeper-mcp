@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sleeper_tooling.smoke import build_decision_smoke_report
+from sleeper_tooling.smoke import build_decision_smoke_report, render_decision_smoke_tables
 
 
 def test_build_decision_smoke_report_summarizes_decision_tools() -> None:
@@ -66,11 +66,29 @@ def test_build_decision_smoke_report_summarizes_decision_tools() -> None:
     assert report["trade_opportunities"]["teams"][0]["team_name"] == "Opponent"
 
 
+def test_render_decision_smoke_tables_returns_markdown_tables() -> None:
+    report = build_decision_smoke_report(
+        FakeSmokeRunner(),
+        per_position_limit=2,
+        targets_per_team=1,
+        offers_per_team=1,
+    )
+
+    markdown = render_decision_smoke_tables(report)
+
+    assert "## Current Lineup" in markdown
+    assert "| Slot | Status | Player | Team | Pos | NFL Status | Injury | Actual | Projected | Active Spot | Stash |" in markdown
+    assert "| RB | starter | Starter RB | DEN | RB | Active |  | 7.00 | 14.00 | true | false |" in markdown
+    assert "## Waiver By Position" in markdown
+    assert "| RB | Free RB | DEN | waiver | submit_waiver_claim | medium | Bench RB | bench | 12.00 | 4.00 | none |" in markdown
+    assert "## Trade Opportunities" in markdown
+
+
 class FakeSmokeRunner:
     def __init__(self) -> None:
         self.calls = []
 
-    def my_lineup(self):
+    def my_lineup(self, **_):
         self.calls.append("my_lineup")
         return {
             "team_name": "Me",
@@ -97,7 +115,7 @@ class FakeSmokeRunner:
                 ],
         }
 
-    def waiver_wire_by_position(self, *, per_position_limit: int):
+    def waiver_wire_by_position(self, *, per_position_limit: int, **_):
         self.calls.append(("waiver_wire_by_position", per_position_limit))
         return {
             "week": 1,
@@ -124,7 +142,7 @@ class FakeSmokeRunner:
             },
         }
 
-    def trade_opportunities(self, *, targets_per_team: int, offers_per_team: int):
+    def trade_opportunities(self, *, targets_per_team: int, offers_per_team: int, **_):
         self.calls.append(("trade_opportunities", targets_per_team, offers_per_team))
         return {
             "week": 1,

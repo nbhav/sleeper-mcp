@@ -15,7 +15,7 @@ Use this skill when a user wants historical top players, week-over-week movement
 4. Do not install packages or create a virtualenv on the host.
 5. Use `make local-up` before local Docker workflows when setup is needed.
 6. After Docker workflow runs, use `make teardown` to stop Compose resources and prune stopped containers plus dangling images when appropriate.
-7. Use `make decision-smoke` for live validation of lineup, waiver, and trade workflows.
+7. Use `decision_smoke_report` for display-ready MCP smoke tables, or `make decision-smoke` for local CLI validation.
 
 ## Historical Leaders
 
@@ -169,6 +169,27 @@ Rules:
 - Report every opposing team, even when the tool finds no attractive offer angle.
 - Summarize needs, surplus, top targets, offer angles, trade score, opponent fit, backup risk, bye risk, roster balance after the move, and reasoning.
 - Treat output as a projection-based screen, not a definitive trade-value model.
+
+## Smoke Tables
+
+For pre-merge or reviewer validation of the live lineup, waiver, and trade workflow, call:
+
+```text
+decision_smoke_report
+```
+
+Recommended inputs:
+
+```json
+{
+  "format": "markdown",
+  "per_position_limit": 3,
+  "targets_per_team": 2,
+  "offers_per_team": 2
+}
+```
+
+Use `format: "json"` only when the caller needs machine-readable shape validation instead of tables.
 
 ## Output Discipline
 
