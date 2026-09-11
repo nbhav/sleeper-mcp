@@ -127,6 +127,10 @@ Use `trade_opportunities` when the user asks:
 Use lower-level tools only when the user needs narrower context:
 
 - `resolve_league_context`: setup-time league, owner, and roster ID resolution
+- `decision_data_status`: planned normalized-data freshness check before trendable decisions
+- `sync_decision_data`: planned normalized sync for stale or missing decision data
+- `player_stat_trends`: planned week-over-week player stat trends from normalized tall stat rows
+- `position_stat_leaders`: planned position leaderboards from normalized tall stat rows
 - `my_lineup`: current starters, bench, slots, actual points, status, and projections
 - `lineup_recommendations`: deterministic start/sit and add/drop comparisons
 - `waiver_wire_by_position`: top waiver/free-agent options grouped by position with protected drop, acquisition, and market-aware FAAB context
@@ -138,6 +142,50 @@ Use lower-level tools only when the user needs narrower context:
 - `opponent_watch`: weekly opponent starters and risks
 - `league_team_watch`: completed adds, drops, trades, and other league movement
 - `player_card`: player metadata and chart-ready weekly actual/projection rows
+
+The normalized tools above may not be registered on every branch yet. When they
+are absent, use the existing deterministic decision tools and Dockerized CLI
+fallbacks, and state that the normalized trend workflow is not available in the
+active runtime.
+
+## Normalized Data Freshness
+
+For trendable reads, agents should check normalized decision-data freshness
+before making a recommendation:
+
+```json
+{
+  "name": "decision_data_status",
+  "arguments": {
+    "season": 2026
+  }
+}
+```
+
+If the status says data is missing or stale, sync first when the tool exists:
+
+```json
+{
+  "name": "sync_decision_data",
+  "arguments": {
+    "season": 2026
+  }
+}
+```
+
+Then use normalized trend reads for week-over-week analysis:
+
+```text
+player_stat_trends
+position_stat_leaders
+```
+
+The planned retention default is two seasons: current season plus one prior
+season. The normalized model should automatically coerce numeric Sleeper stat
+values and store weekly stats as tall rows keyed by season, week, source,
+player, and stat key. If normalized data is unavailable after sync, decision
+tools should fall back to live Sleeper reads through the existing HTTP cache and
+include fallback/staleness metadata in their output.
 
 ## Token Discipline
 

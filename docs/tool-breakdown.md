@@ -32,6 +32,19 @@ Most decision workflows follow this shape:
 4. Apply league scoring settings when a league ID is provided.
 5. Return JSON-first output that an LLM or script can consume directly.
 
+The HTTP response cache and the normalized decision database have separate
+responsibilities:
+
+- `api_cache` stores raw Sleeper HTTP responses by request URL. It is an
+  endpoint cache for rate-limit and latency control, not an analytical model.
+- Normalized decision tables are the planned durable read model for trendable
+  fantasy questions. They should store typed players, teams, weekly stats,
+  projections, matchups, roster snapshots, and tall stat rows derived from raw
+  Sleeper payloads.
+- Decision tools should read normalized tables when they are fresh enough, then
+  fall back to live Sleeper reads plus `api_cache` when normalized data is
+  missing or stale.
+
 When a command or MCP tool omits `season`, the tooling uses the current calendar
 year. When `week` is omitted, it asks Sleeper for the current NFL week.
 
@@ -57,6 +70,8 @@ year. When `week` is omitted, it asks Sleeper for the current NFL week.
 | `injury-watch` | Show injury-relevant players currently rostered in a league. |
 | `cache-info` | Show SQLite API response cache stats. |
 | `cache-clear` | Clear SQLite API response cache rows. |
+| `sync-data` | Planned: populate normalized decision tables for the current/default season window. |
+| `sync-status` | Planned: report normalized table coverage, newest synced week, and stale/missing sources. |
 
 Use command help for details:
 
@@ -84,6 +99,10 @@ make sleeper ARGS="waiver-watch --help"
 | `opponent_watch` | Weekly opponent starters, projection, and injury flags. |
 | `league_team_watch` | Completed league transactions for a week. |
 | `player_card` | Player metadata and chart-ready actual vs projected points. |
+| `decision_data_status` | Planned: MCP freshness check for normalized decision data before lineup, waiver, trade, or trend reads. |
+| `sync_decision_data` | Planned: MCP-triggered normalized sync for missing or stale decision data. |
+| `player_stat_trends` | Planned: trendable player stat reads backed by normalized weekly stat rows. |
+| `position_stat_leaders` | Planned: position leader reads backed by normalized weekly stat rows. |
 
 The MCP surface is intentionally decision-shaped. Add new MCP tools when they answer a useful fantasy question, not when they merely expose another raw Sleeper endpoint.
 
@@ -123,6 +142,61 @@ Sleeper often omits zero-value stat fields. Scoring code treats missing fields a
 The tools mostly use Sleeper as the source of truth and keep a small local cache
 so repeated CLI, MCP, and Worker calls do not refetch the same endpoint over and
 over.
+
+### Normalized Decision Data
+
+Normalized decision data is the planned analytical layer above raw Sleeper
+responses. It should be generated from Sleeper state, players, stats,
+projections, league, roster, matchup, transaction, and trending endpoints, then
+stored in SQLite locally and D1 remotely as queryable tables.
+
+Planned responsibilities:
+
+- Convert Sleeper numeric stat values automatically to numeric database fields.
+  Sleeper may omit zero stats or encode values inconsistently across payloads;
+  normalization should coerce parseable stat values to numbers and treat
+  missing stat keys as `0` for scoring and comparisons.
+- Store weekly player stats in a tall trend model: one row per `season`, `week`,
+  `source`, `player_id`, and `stat_key`, with the numeric stat value in a
+  single value column. This makes week-over-week deltas, rolling windows, and
+  arbitrary stat-key leaderboards possible without schema changes for every new
+  Sleeper stat.
+- Keep typed dimension/snapshot tables for players, teams, leagues, rosters,
+  matchups, projections, and source freshness metadata so decision tools can
+  answer without reparsing raw JSON on every call.
+- Retain two seasons by default. Sync jobs should keep the current season plus
+  one prior season unless the caller explicitly requests a wider or narrower
+  retention window.
+- Track freshness at the source/table/window level so agents can know whether a
+  decision read is fresh, stale, missing, or falling back.
+
+Planned CLI workflow:
+
+```bash
+make sleeper ARGS="sync-status --output json"
+make sleeper ARGS="sync-data --season <season> --output json"
+```
+
+Planned MCP workflow:
+
+```text
+decision_data_status
+sync_decision_data
+player_stat_trends
+position_stat_leaders
+```
+
+Agents should call `decision_data_status` before trendable lineup, waiver,
+trade, or historical decisions. If normalized data is missing or stale, they
+should call `sync_decision_data` when available, then retry the decision read.
+If sync is unavailable or still stale, tools should return fallback metadata and
+use the existing live Sleeper plus `api_cache` path rather than failing a
+decision outright.
+
+As of this docs update, these normalized sync and trend tools may still be in
+flight on other issue branches. Treat this section as the target workflow until
+the corresponding CLI commands, MCP registrations, SQLite tables, and Worker D1
+parity are present in the active branch.
 
 ### Python And Stdio MCP
 

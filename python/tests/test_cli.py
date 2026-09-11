@@ -502,6 +502,96 @@ def test_cache_info_and_clear_use_configured_sqlite_db(tmp_path) -> None:
     assert json.loads(clear_result.stdout)["total_entries"] == 0
 
 
+def test_sync_data_outputs_stable_json(monkeypatch) -> None:
+    fake_client = FakeSleeperClient()
+    fake_service = FakeSyncService()
+    monkeypatch.setattr(cli, "SleeperClient", lambda **_: fake_client)
+    monkeypatch.setattr(cli, "build_sync_service", lambda client: fake_service)
+
+    result = runner.invoke(
+        app,
+        [
+            "--no-cache",
+            "sync-data",
+            "--league-id",
+            "league-1",
+            "--seasons",
+            "2025,2026",
+            "--weeks",
+            "1,2",
+            "--output",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == {
+        "error_text": None,
+        "finished_at": 1002.0,
+        "league_id": "league-1",
+        "row_counts": {"players": 2},
+        "run_id": 1,
+        "seasons": [2025, 2026],
+        "started_at": 1001.0,
+        "status": "success",
+        "weeks": [1, 2],
+    }
+    assert fake_service.calls == [
+        ("sync", "league-1", [2025, 2026], [1, 2]),
+    ]
+
+
+def test_sync_status_outputs_repository_json(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(cli, "_CACHE_DB_PATH", tmp_path / "sleeper.db")
+    monkeypatch.setattr(
+        cli,
+        "build_normalized_repository",
+        lambda db_path: FakeSyncRepositoryStatus(db_path),
+    )
+
+    result = runner.invoke(app, ["--cache-db", str(tmp_path / "sleeper.db"), "sync-status"])
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == {
+        "db_path": str(tmp_path / "sleeper.db"),
+        "latest_sync": {"status": "success"},
+        "repository_available": True,
+        "row_counts": {"players": 2},
+    }
+
+
+def test_sync_clear_requires_normalized_only() -> None:
+    result = runner.invoke(app, ["--no-cache", "sync-clear"])
+
+    assert result.exit_code == 2
+    assert "requires --normalized-only" in result.stderr
+
+
+def test_sync_clear_normalized_only_outputs_repository_json(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(
+        cli,
+        "build_normalized_repository",
+        lambda db_path: FakeSyncRepositoryStatus(db_path),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "--cache-db",
+            str(tmp_path / "sleeper.db"),
+            "sync-clear",
+            "--normalized-only",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == {
+        "db_path": str(tmp_path / "sleeper.db"),
+        "deleted": {"players": 2},
+        "repository_available": True,
+    }
+
+
 class FakeSleeperClient:
     team_by_position = {
         "QB": "BUF",
@@ -640,6 +730,56 @@ class FakeSleeperClient:
                 }
             )
         return rows
+
+
+class FakeSyncResult:
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "run_id": 1,
+            "status": "success",
+            "league_id": "league-1",
+            "seasons": [2025, 2026],
+            "weeks": [1, 2],
+            "row_counts": {"players": 2},
+            "started_at": 1001.0,
+            "finished_at": 1002.0,
+            "error_text": None,
+        }
+
+
+class FakeSyncService:
+    def __init__(self) -> None:
+        self.calls: list[tuple[object, ...]] = []
+
+    def sync(
+        self,
+        *,
+        league_id: str | None,
+        seasons: list[int] | None,
+        weeks: list[int] | None,
+    ) -> FakeSyncResult:
+        self.calls.append(("sync", league_id, seasons, weeks))
+        return FakeSyncResult()
+
+
+class FakeSyncRepositoryStatus:
+    def __init__(self, db_path) -> None:
+        self.db_path = db_path
+
+    def sync_status(self) -> dict[str, object]:
+        return {
+            "repository_available": True,
+            "db_path": str(self.db_path),
+            "row_counts": {"players": 2},
+            "latest_sync": {"status": "success"},
+        }
+
+    def clear_normalized(self) -> dict[str, object]:
+        return {
+            "repository_available": True,
+            "db_path": str(self.db_path),
+            "deleted": {"players": 2},
+        }
 
 
 def _team_name(team: str) -> str:

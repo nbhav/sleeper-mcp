@@ -16,7 +16,9 @@ Primary use cases:
 - Pull league metadata, rosters, users, transactions, and weekly matchups.
 - Pull and cache the full NFL player map from `https://api.sleeper.app/v1/players/nfl`.
 - Cache API responses in SQLite to reduce repeated calls and rate-limit risk.
+- Separate raw `api_cache` response caching from the planned normalized decision database used for trendable reads.
 - Pull weekly stats and projections.
+- Normalize numeric stat values automatically for scoring and comparison, and use a planned tall stat model for week-over-week trends.
 - Chain common calls into higher-level reports, including weekly leaders, best player by team, weekly briefing output, and MCP weekly scout output.
 - Prefer decision commands and MCP tools like `weekly_performance_backtest`, `my_lineup`, `lineup_recommendations`, `waiver_wire_watch`, `waiver_wire_by_position`, `trade_opportunities`, `decision_smoke_report`, `waiver-watch`, and `injury-watch` over raw endpoint replication.
 - Apply custom Sleeper league scoring settings with `--league-id`.
@@ -38,6 +40,7 @@ Sleeper API docs: https://docs.sleeper.com/
 - Use the SQLite API response cache by default.
 - Use Cloudflare D1 for the Worker cache.
 - Cache the large player map in `./data`, which is gitignored.
+- Treat normalized decision-data sync and trend reads as the planned analytical layer. Do not describe them as production-ready unless the active branch registers the corresponding CLI commands, MCP tools, SQLite tables, and Worker parity.
 
 ## Where The Tooling Lives
 
@@ -192,6 +195,10 @@ Registered tools:
 
 ```text
 resolve_league_context
+decision_data_status (planned normalized workflow)
+sync_decision_data (planned normalized workflow)
+player_stat_trends (planned normalized workflow)
+position_stat_leaders (planned normalized workflow)
 weekly_briefing
 weekly_performance_backtest
 waiver_watch
@@ -209,6 +216,13 @@ player_card
 ```
 
 Use `resolve_league_context` for setup-time league, owner, and roster ID resolution. It returns `env_text` for local `.env` files and `cloudflare_vars` for hosted Worker configuration; it does not persist settings by itself.
+
+For trendable decision reads, first call `decision_data_status` when it is
+registered. If normalized data is missing or stale, call `sync_decision_data`
+when available, then prefer `player_stat_trends` or `position_stat_leaders` for
+week-over-week analysis. If those normalized tools are absent on the active
+branch, say so and use `weekly_performance_backtest`, `player_card`, or the CLI
+fallbacks instead.
 
 Use `weekly_performance_backtest` for historical leaders and week-over-week movement. Use `my_lineup` for the user's current starters, bench, status, actual points, projected totals, and lineup table. Use `lineup_recommendations` for deterministic start/sit and add/drop comparisons with market-aware waiver hints. Use `waiver_wire_watch` when recommendations must be limited to unrostered waiver targets and backed by projections, trends, status, and recent actuals. Use `waiver_wire_by_position` when the user wants top waiver options per position with protected drop and acquisition reasoning. Use `trade_opportunities` when the user wants every opposing team evaluated with needs, surplus, targets, and mutual-fit offer angles. Use `decision_smoke_report` when a reviewer wants display-ready Markdown tables for the live lineup, waiver, and trade smoke workflow. Keep this tool list curated to avoid token creep.
 
@@ -358,6 +372,13 @@ Rostered injury risk:
 make sleeper ARGS="injury-watch <league_id> --output json"
 ```
 
+Planned normalized decision-data sync and freshness checks:
+
+```bash
+make sleeper ARGS="sync-status --output json"
+make sleeper ARGS="sync-data --season 2026 --output json"
+```
+
 By default, `best-week` and `weekly-briefing` include `QB,RB,WR,TE,K,DEF`.
 
 ## League Scoring
@@ -431,6 +452,19 @@ sleeper-mcp/data/players.json
 ```
 
 That directory is ignored by git.
+
+`api_cache` is only a raw HTTP response cache. The planned normalized decision
+database is a separate read model for trendable decisions. It should store
+typed dimensions and weekly snapshots derived from Sleeper responses, including
+a tall stat table with one numeric stat value per season, week, source, player,
+and stat key. Numeric Sleeper stat values should be coerced automatically, and
+missing stat keys should continue to behave like `0`.
+
+The planned retention default is two seasons: current season plus one previous
+season. Agents should check `decision_data_status` before trendable decisions,
+run `sync_decision_data` or CLI `sync-data` when stale/missing, and expect a
+fallback to live Sleeper reads plus `api_cache` when normalized data is not
+available.
 
 Delete this file to force a refresh:
 

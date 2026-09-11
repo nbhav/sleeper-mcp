@@ -25,6 +25,62 @@ TOOLS = [
         },
     },
     {
+        "name": "decision_data_status",
+        "description": "Report normalized decision data freshness without calling Sleeper.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "season": {"type": "integer"},
+                "max_age_hours": {"type": "number", "default": 24},
+            },
+        },
+    },
+    {
+        "name": "sync_decision_data",
+        "description": "Trigger normalized decision data sync through the configured sync service.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "league_id": {"type": "string"},
+                "season": {"type": "integer"},
+                "week": {"type": "integer"},
+                "force": {"type": "boolean", "default": False},
+            },
+        },
+    },
+    {
+        "name": "player_stat_trends",
+        "description": "Return graph-friendly normalized player stat rows for one stat key over a week range.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["season", "player_id", "stat_key", "start_week"],
+            "properties": {
+                "season": {"type": "integer"},
+                "player_id": {"type": "string"},
+                "stat_key": {"type": "string"},
+                "start_week": {"type": "integer"},
+                "end_week": {"type": "integer"},
+                "source": {"type": "string", "enum": ["stats", "projections"], "default": "stats"},
+            },
+        },
+    },
+    {
+        "name": "position_stat_leaders",
+        "description": "Return graph-friendly normalized stat leaders for a position, week, and stat key.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["season", "week", "position", "stat_key"],
+            "properties": {
+                "season": {"type": "integer"},
+                "week": {"type": "integer"},
+                "position": {"type": "string"},
+                "stat_key": {"type": "string"},
+                "source": {"type": "string", "enum": ["stats", "projections"], "default": "stats"},
+                "limit": {"type": "integer", "default": 10},
+            },
+        },
+    },
+    {
         "name": "weekly_briefing",
         "description": "League-aware weekly leaders plus waiver signal for the current or requested week.",
         "inputSchema": {

@@ -88,6 +88,144 @@ def test_resolve_league_context_returns_env_and_cloudflare_vars(tmp_path) -> Non
     assert "SLEEPER_DEFAULT_ROSTER_ID=1" in context["env_text"]
 
 
+def test_decision_data_status_does_not_call_sleeper_client() -> None:
+    class FailingClient:
+        def __enter__(self):
+            raise AssertionError("decision_data_status must not call Sleeper")
+
+    runner = FantasyToolRunner(
+        client_factory=lambda: FailingClient(),
+        trend_repository=FakeStatusRepository(
+            {
+                "row_count": 8,
+                "last_synced_at": 9999999999,
+                "latest_stats_week": 2,
+                "latest_projections_week": 3,
+                "sources": ["stats", "projections"],
+            }
+        ),
+    )
+
+    status = runner.decision_data_status(season=2026, max_age_hours=1)
+
+    assert status["status"] == "fresh"
+    assert status["fresh"] is True
+    assert status["row_count"] == 8
+    assert status["latest_stats_week"] == 2
+
+
+def test_decision_data_status_reports_stale_and_missing() -> None:
+    stale_runner = FantasyToolRunner(
+        trend_repository=FakeStatusRepository({"row_count": 8, "last_synced_at": 1})
+    )
+    missing_runner = FantasyToolRunner(
+        trend_repository=FakeStatusRepository({"row_count": 0, "last_synced_at": 1})
+    )
+
+    assert stale_runner.decision_data_status(max_age_hours=1)["status"] == "stale"
+    assert missing_runner.decision_data_status(max_age_hours=1)["status"] == "missing"
+
+
+def test_sync_decision_data_delegates_to_configured_sync_service() -> None:
+    service = FakeSyncService()
+    runner = FantasyToolRunner(
+        sync_service=service,
+        default_league_id="default-league",
+    )
+
+    report = runner.sync_decision_data(season=2026, week=1, force=True)
+
+    assert report == {
+        "synced": True,
+        "league_id": "default-league",
+        "season": 2026,
+        "week": 1,
+        "force": True,
+    }
+    assert service.calls == [
+        {
+            "league_id": "default-league",
+            "season": 2026,
+            "week": 1,
+            "force": True,
+        }
+    ]
+
+
+def test_player_stat_trends_returns_compact_graph_shape() -> None:
+    repo = FakeTrendRepository()
+    runner = FantasyToolRunner(trend_repository=repo)
+
+    report = runner.player_stat_trends(
+        season=2026,
+        player_id="rb-1",
+        stat_key="rush_att",
+        start_week=1,
+        end_week=2,
+    )
+
+    assert report["shape"] == [
+        "season",
+        "week",
+        "player_id",
+        "name",
+        "team",
+        "position",
+        "stat_key",
+        "stat_value",
+    ]
+    assert report["rows"] == [
+        {
+            "season": 2026,
+            "week": 1,
+            "player_id": "rb-1",
+            "name": "Runner One",
+            "team": "DEN",
+            "position": "RB",
+            "stat_key": "rush_att",
+            "stat_value": 10,
+        },
+        {
+            "season": 2026,
+            "week": 2,
+            "player_id": "rb-1",
+            "name": "Runner One",
+            "team": "DEN",
+            "position": "RB",
+            "stat_key": "rush_att",
+            "stat_value": 12,
+        },
+    ]
+    assert repo.calls[0]["source"] == "stats"
+
+
+def test_position_stat_leaders_returns_graph_friendly_leaders() -> None:
+    runner = FantasyToolRunner(trend_repository=FakeTrendRepository())
+
+    report = runner.position_stat_leaders(
+        season=2026,
+        week=2,
+        position="rb",
+        stat_key="rush_att",
+        limit=1,
+    )
+
+    assert report["position"] == "RB"
+    assert report["leaders"] == [
+        {
+            "position_rank": 1,
+            "season": 2026,
+            "week": 2,
+            "player_id": "rb-2",
+            "name": "Runner Two",
+            "team": "KC",
+            "position": "RB",
+            "stat_key": "rush_att",
+            "stat_value": 18,
+        }
+    ]
+
+
 def test_tools_use_default_league_id_when_argument_is_omitted(tmp_path) -> None:
     fake_client = FakeMcpClient()
     runner = FantasyToolRunner(
@@ -513,6 +651,99 @@ def test_player_card_returns_chart_ready_points(tmp_path) -> None:
         {"week": 1, "actual_points": 10, "projected_points": 20},
         {"week": 2, "actual_points": 10, "projected_points": 20},
     ]
+
+
+class FakeStatusRepository:
+    def __init__(self, status: dict[str, object]) -> None:
+        self.status = status
+
+    def decision_data_status(self, *, season=None):
+        return {"season": season, **self.status}
+
+
+class FakeSyncService:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def sync_decision_data(self, *, league_id=None, season=None, week=None, force=False):
+        call = {
+            "league_id": league_id,
+            "season": season,
+            "week": week,
+            "force": force,
+        }
+        self.calls.append(call)
+        return {"synced": True, **call}
+
+
+class FakeTrendRepository:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def query_numeric_stat_rows(
+        self,
+        *,
+        source,
+        season,
+        start_week,
+        end_week,
+        stat_keys=None,
+        player_ids=None,
+        positions=None,
+    ):
+        self.calls.append(
+            {
+                "source": source,
+                "season": season,
+                "start_week": start_week,
+                "end_week": end_week,
+                "stat_keys": stat_keys,
+                "player_ids": player_ids,
+                "positions": positions,
+            }
+        )
+        return [
+            {
+                "season": 2026,
+                "week": 1,
+                "player_id": "rb-1",
+                "name": "Runner One",
+                "team": "DEN",
+                "position": "RB",
+                "stat_key": "rush_att",
+                "stat_value": 10,
+            },
+            {
+                "season": 2026,
+                "week": 2,
+                "player_id": "rb-1",
+                "name": "Runner One",
+                "team": "DEN",
+                "position": "RB",
+                "stat_key": "rush_att",
+                "stat_value": 12,
+            },
+            {
+                "season": 2026,
+                "week": 2,
+                "player_id": "rb-2",
+                "name": "Runner Two",
+                "team": "KC",
+                "position": "RB",
+                "stat_key": "rush_att",
+                "stat_value": 18,
+            },
+            {
+                "season": 2026,
+                "week": 2,
+                "player_id": "wr-1",
+                "name": "Wide One",
+                "team": "LV",
+                "position": "WR",
+                "stat_key": "targets",
+                "stat_value": 9,
+            },
+        ]
 
 
 class FakeMcpClient:

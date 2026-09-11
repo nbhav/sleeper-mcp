@@ -26,6 +26,13 @@ from sleeper_tooling.league_context import (
 from sleeper_tooling.reports import flatten_player_rows, top_players_by_position
 from sleeper_tooling.scoring import flatten_scored_player_rows
 from sleeper_tooling.season import current_season_year
+from sleeper_tooling.sync import SleeperSyncService, build_normalized_repository
+from sleeper_tooling.trend_queries import (
+    GRAPH_ROW_FIELDS,
+    decision_data_status as build_decision_data_status,
+    player_stat_trends as build_player_stat_trends,
+    position_stat_leaders as build_position_stat_leaders,
+)
 
 StatSource = Literal["stats", "projections"]
 DEFAULT_POSITIONS = "QB,RB,WR,TE,K,DEF"
@@ -42,8 +49,12 @@ class FantasyToolRunner:
         default_roster_id: int | None = None,
         cache_enabled: bool = True,
         refresh_cache: bool = False,
+        trend_repository: Any | None = None,
+        sync_service: Any | None = None,
     ) -> None:
         self._client_factory = client_factory
+        self._trend_repository = trend_repository
+        self._sync_service = sync_service
         self.cache_db = cache_db or resolve_cache_db_path()
         self.players_cache = players_cache or Path(
             os.environ.get("SLEEPER_PLAYERS_CACHE", "/data/players.json")
@@ -82,6 +93,131 @@ class FantasyToolRunner:
                     "Cloudflare Workers cannot mutate runtime vars; set cloudflare_vars before deploy or through the Cloudflare dashboard",
                 ],
             }
+
+    def decision_data_status(
+        self,
+        *,
+        season: int | None = None,
+        max_age_hours: float = 24,
+    ) -> dict[str, Any]:
+        if max_age_hours <= 0:
+            raise ValueError("max_age_hours must be greater than zero")
+        return build_decision_data_status(
+            self._require_trend_repository(),
+            season=season,
+            max_age_seconds=int(max_age_hours * 3600),
+        )
+
+    def sync_decision_data(
+        self,
+        *,
+        league_id: str | None = None,
+        season: int | None = None,
+        week: int | None = None,
+        force: bool = False,
+    ) -> dict[str, Any]:
+        resolved_league_id = self._resolve_optional_league_id(league_id)
+        if self._sync_service is not None:
+            service = self._sync_service
+            if hasattr(service, "sync_decision_data"):
+                return service.sync_decision_data(
+                    league_id=resolved_league_id,
+                    season=season,
+                    week=week,
+                    force=force,
+                )
+            if callable(service):
+                return service(
+                    league_id=resolved_league_id,
+                    season=season,
+                    week=week,
+                    force=force,
+                )
+            if hasattr(service, "sync"):
+                return service.sync(
+                    league_id=resolved_league_id,
+                    seasons=[season] if season is not None else None,
+                    weeks=[week] if week is not None else None,
+                ).to_dict()
+            raise ValueError("configured sync service is not callable")
+
+        repository = build_normalized_repository(self.cache_db)
+        try:
+            with self._client(refresh_cache=force) as client:
+                result = SleeperSyncService(
+                    client=client,
+                    repository=repository,
+                ).sync(
+                    league_id=resolved_league_id,
+                    seasons=[season] if season is not None else None,
+                    weeks=[week] if week is not None else None,
+                )
+                return result.to_dict()
+        finally:
+            close = getattr(repository, "close", None)
+            if callable(close):
+                close()
+
+    def player_stat_trends(
+        self,
+        *,
+        season: int,
+        player_id: str,
+        stat_key: str,
+        start_week: int,
+        end_week: int | None = None,
+        source: StatSource = "stats",
+    ) -> dict[str, Any]:
+        resolved_end_week = end_week if end_week is not None else start_week
+        rows = build_player_stat_trends(
+            self._require_trend_repository(),
+            season=season,
+            player_id=player_id,
+            stat_key=stat_key,
+            start_week=start_week,
+            end_week=resolved_end_week,
+            source=source,
+        )
+        return {
+            "season": season,
+            "start_week": start_week,
+            "end_week": resolved_end_week,
+            "player_id": player_id,
+            "stat_key": stat_key,
+            "source": source,
+            "shape": list(GRAPH_ROW_FIELDS),
+            "rows": rows,
+        }
+
+    def position_stat_leaders(
+        self,
+        *,
+        season: int,
+        week: int,
+        position: str,
+        stat_key: str,
+        source: StatSource = "stats",
+        limit: int = 10,
+    ) -> dict[str, Any]:
+        rows = build_position_stat_leaders(
+            self._require_trend_repository(),
+            season=season,
+            week=week,
+            position=position,
+            stat_key=stat_key,
+            source=source,
+            limit=limit,
+        )
+        return {
+            "season": season,
+            "week": week,
+            "position": position.upper(),
+            "stat_key": stat_key,
+            "source": source,
+            "limit": limit,
+            "shape": list(GRAPH_ROW_FIELDS),
+            "leaders": rows,
+        }
 
     def weekly_briefing(
         self,
@@ -819,11 +955,26 @@ class FantasyToolRunner:
             )
         return resolved
 
-    def _client(self) -> Any:
+    def _client(self, *, refresh_cache: bool | None = None) -> Any:
         if self._client_factory is not None:
             return self._client_factory()
         cache = ApiResponseCache(self.cache_db) if self.cache_enabled else None
-        return SleeperClient(cache=cache, refresh_cache=self.refresh_cache)
+        return SleeperClient(
+            cache=cache,
+            refresh_cache=self.refresh_cache if refresh_cache is None else refresh_cache,
+        )
+
+    def _require_trend_repository(self) -> Any:
+        if self._trend_repository is None:
+            self._trend_repository = build_normalized_repository(self.cache_db)
+        return self._trend_repository
+
+    def _require_sync_service(self) -> Any:
+        if self._sync_service is None:
+            raise ValueError(
+                "sync service is required; provide an object with sync_decision_data"
+            )
+        return self._sync_service
 
 
 def resolve_cache_db_path() -> Path:

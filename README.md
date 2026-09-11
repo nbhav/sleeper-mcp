@@ -35,7 +35,7 @@ make decision-smoke
 make sleeper ARGS="state"
 ```
 
-The `state` command returns Sleeper's current NFL season and week. API responses are cached under `./data/`; see `docs/tool-breakdown.md` for the cache data model, query lifecycle, and TTLs.
+The `state` command returns Sleeper's current NFL season and week. API responses are cached under `./data/`; see `docs/tool-breakdown.md` for the cache data model, normalized decision-data workflow, query lifecycle, and TTLs.
 
 Configure your default league and roster context from a Sleeper league URL plus
 your Sleeper username, display name, owner ID, roster ID, or team name:
@@ -69,6 +69,16 @@ Pull player performance:
 ```bash
 make sleeper ARGS="best-week --season 2025 --week 1 --source stats --limit 5 --output table"
 make sleeper ARGS="best-by-team --season 2026 --week 1 --source projections --position RB --output table"
+```
+
+Normalized decision-data sync commands are planned for trendable reads. Until
+those commands land on the active branch, use the existing `stats`,
+`projections`, `best-week`, and MCP decision tools as the production surface.
+The planned workflow is:
+
+```bash
+make sleeper ARGS="sync-status --output json"
+make sleeper ARGS="sync-data --season 2026 --output json"
 ```
 
 When `--season` is omitted, scripts use the current calendar year. When `--week`
