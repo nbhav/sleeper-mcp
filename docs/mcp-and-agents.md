@@ -127,10 +127,10 @@ Use `trade_opportunities` when the user asks:
 Use lower-level tools only when the user needs narrower context:
 
 - `resolve_league_context`: setup-time league, owner, and roster ID resolution
-- `decision_data_status`: planned normalized-data freshness check before trendable decisions
-- `sync_decision_data`: planned normalized sync for stale or missing decision data
-- `player_stat_trends`: planned week-over-week player stat trends from normalized tall stat rows
-- `position_stat_leaders`: planned position leaderboards from normalized tall stat rows
+- `decision_data_status`: normalized-data freshness check before trendable decisions
+- `sync_decision_data`: normalized sync for stale or missing decision data
+- `player_stat_trends`: week-over-week player stat trends from normalized tall stat rows
+- `position_stat_leaders`: position leaderboards from normalized tall stat rows
 - `my_lineup`: current starters, bench, slots, actual points, status, and projections
 - `lineup_recommendations`: deterministic start/sit and add/drop comparisons
 - `waiver_wire_by_position`: top waiver/free-agent options grouped by position with protected drop, acquisition, and market-aware FAAB context
@@ -143,10 +143,8 @@ Use lower-level tools only when the user needs narrower context:
 - `league_team_watch`: completed adds, drops, trades, and other league movement
 - `player_card`: player metadata and chart-ready weekly actual/projection rows
 
-The normalized tools above may not be registered on every branch yet. When they
-are absent, use the existing deterministic decision tools and Dockerized CLI
-fallbacks, and state that the normalized trend workflow is not available in the
-active runtime.
+The normalized tools above are available in the Python stdio MCP runtime. Worker
+D1 parity is planned separately.
 
 ## Normalized Data Freshness
 

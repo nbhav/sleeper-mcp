@@ -19,11 +19,8 @@ Use this skill when a user wants historical top players, week-over-week movement
 8. After Docker workflow runs, use `make teardown` to stop Compose resources and prune stopped containers plus dangling images when appropriate.
 9. Use `decision_smoke_report` for display-ready MCP smoke tables, or `make decision-smoke` for local CLI validation.
 
-The normalized decision-data tools are part of the planned workflow and may not
-exist on every active branch. If `decision_data_status`, `sync_decision_data`,
-`player_stat_trends`, or `position_stat_leaders` are not registered, say the
-normalized trend workflow is unavailable and use the existing deterministic
-tools below.
+The normalized decision-data tools are available in the Python stdio MCP
+runtime. Worker D1 parity is planned separately.
 
 ## Historical Leaders
 
@@ -69,7 +66,7 @@ position_stat_leaders
 ```
 
 Before using them, check `decision_data_status`. If stale or missing, sync with
-`sync_decision_data`. The planned normalized model stores numeric Sleeper stats
+`sync_decision_data`. The normalized model stores numeric Sleeper stats
 as tall weekly rows keyed by season, week, source, player, and stat key, with a
 two-season default retention window.
 
@@ -130,7 +127,7 @@ CLI fallback:
 make sleeper ARGS="waiver-watch <league_id> --positions RB,WR,TE --limit 25 --output json"
 ```
 
-Planned normalized CLI freshness fallback:
+Normalized CLI freshness fallback:
 
 ```bash
 make sleeper ARGS="sync-status --output json"

@@ -23,6 +23,12 @@ from sleeper_tooling.league_context import (
     render_context_env,
     resolve_league_context as build_league_context,
 )
+from sleeper_tooling.normalized_decision_reads import (
+    DEFAULT_MAX_AGE_SECONDS as NORMALIZED_DECISION_MAX_AGE_SECONDS,
+    NormalizedDecisionInputs,
+    NormalizedDecisionRead,
+    NormalizedDecisionReader,
+)
 from sleeper_tooling.reports import flatten_player_rows, top_players_by_position
 from sleeper_tooling.scoring import flatten_scored_player_rows
 from sleeper_tooling.season import current_season_year
@@ -50,10 +56,12 @@ class FantasyToolRunner:
         cache_enabled: bool = True,
         refresh_cache: bool = False,
         trend_repository: Any | None = None,
+        decision_repository: Any | None = None,
         sync_service: Any | None = None,
     ) -> None:
         self._client_factory = client_factory
         self._trend_repository = trend_repository
+        self._decision_repository = decision_repository
         self._sync_service = sync_service
         self.cache_db = cache_db or resolve_cache_db_path()
         self.players_cache = players_cache or Path(
@@ -397,11 +405,63 @@ class FantasyToolRunner:
     ) -> dict[str, Any]:
         resolved_league_id = self._require_league_id(league_id)
         resolved_roster_id = self._require_roster_id(roster_id)
+        position_list = parse_positions(positions)
+        if season is not None and week is not None:
+            normalized = self._normalized_decision_read(
+                league_id=resolved_league_id,
+                roster_id=resolved_roster_id,
+                season=season,
+                week=week,
+                positions=position_list,
+            )
+            if normalized.fresh and normalized.inputs is not None:
+                return self._with_decision_metadata(
+                    build_my_lineup(
+                        league_id=resolved_league_id,
+                        roster_id=resolved_roster_id,
+                        season=season,
+                        week=week,
+                        league=normalized.inputs.league,
+                        users=normalized.inputs.users,
+                        rosters=normalized.inputs.rosters,
+                        matchups=normalized.inputs.matchups,
+                        players=normalized.inputs.players,
+                        projection_rows=normalized.inputs.projection_rows,
+                    ),
+                    normalized,
+                    fallback_used=False,
+                )
+        else:
+            normalized = None
         with self._client() as client:
             resolved_season, resolved_week = resolve_season_week(client, season, week)
+            if normalized is None:
+                normalized = self._normalized_decision_read(
+                    league_id=resolved_league_id,
+                    roster_id=resolved_roster_id,
+                    season=resolved_season,
+                    week=resolved_week,
+                    positions=position_list,
+                )
+                if normalized.fresh and normalized.inputs is not None:
+                    return self._with_decision_metadata(
+                        build_my_lineup(
+                            league_id=resolved_league_id,
+                            roster_id=resolved_roster_id,
+                            season=resolved_season,
+                            week=resolved_week,
+                            league=normalized.inputs.league,
+                            users=normalized.inputs.users,
+                            rosters=normalized.inputs.rosters,
+                            matchups=normalized.inputs.matchups,
+                            players=normalized.inputs.players,
+                            projection_rows=normalized.inputs.projection_rows,
+                        ),
+                        normalized,
+                        fallback_used=False,
+                    )
             league = client.get_league(resolved_league_id)
             scoring_settings = league.get("scoring_settings") or {}
-            position_list = parse_positions(positions)
             projection_rows = fetch_rows_for_positions(
                 client,
                 season=resolved_season,
@@ -410,17 +470,21 @@ class FantasyToolRunner:
                 source="projections",
                 scoring_settings=scoring_settings,
             )
-            return build_my_lineup(
-                league_id=resolved_league_id,
-                roster_id=resolved_roster_id,
-                season=resolved_season,
-                week=resolved_week,
-                league=league,
-                users=client.get_league_users(resolved_league_id),
-                rosters=client.get_rosters(resolved_league_id),
-                matchups=client.get_matchups(resolved_league_id, resolved_week),
-                players=load_or_fetch_players(client, cache_path=self.players_cache),
-                projection_rows=projection_rows,
+            return self._with_decision_metadata(
+                build_my_lineup(
+                    league_id=resolved_league_id,
+                    roster_id=resolved_roster_id,
+                    season=resolved_season,
+                    week=resolved_week,
+                    league=league,
+                    users=client.get_league_users(resolved_league_id),
+                    rosters=client.get_rosters(resolved_league_id),
+                    matchups=client.get_matchups(resolved_league_id, resolved_week),
+                    players=load_or_fetch_players(client, cache_path=self.players_cache),
+                    projection_rows=projection_rows,
+                ),
+                normalized,
+                fallback_used=True,
             )
 
     def lineup_recommendations(
@@ -443,11 +507,55 @@ class FantasyToolRunner:
 
         resolved_league_id = self._require_league_id(league_id)
         resolved_roster_id = self._require_roster_id(roster_id)
+        position_list = parse_positions(positions)
+        if season is not None and week is not None:
+            normalized = self._normalized_decision_read(
+                league_id=resolved_league_id,
+                roster_id=resolved_roster_id,
+                season=season,
+                week=week,
+                positions=position_list,
+            )
+            if normalized.fresh and normalized.inputs is not None:
+                return self._lineup_recommendations_from_inputs(
+                    inputs=normalized.inputs,
+                    normalized=normalized,
+                    league_id=resolved_league_id,
+                    roster_id=resolved_roster_id,
+                    season=season,
+                    week=week,
+                    positions=position_list,
+                    min_delta=min_delta,
+                    limit=limit,
+                    fallback_used=False,
+                )
+        else:
+            normalized = None
         with self._client() as client:
             resolved_season, resolved_week = resolve_season_week(client, season, week)
+            if normalized is None:
+                normalized = self._normalized_decision_read(
+                    league_id=resolved_league_id,
+                    roster_id=resolved_roster_id,
+                    season=resolved_season,
+                    week=resolved_week,
+                    positions=position_list,
+                )
+                if normalized.fresh and normalized.inputs is not None:
+                    return self._lineup_recommendations_from_inputs(
+                        inputs=normalized.inputs,
+                        normalized=normalized,
+                        league_id=resolved_league_id,
+                        roster_id=resolved_roster_id,
+                        season=resolved_season,
+                        week=resolved_week,
+                        positions=position_list,
+                        min_delta=min_delta,
+                        limit=limit,
+                        fallback_used=False,
+                    )
             league = client.get_league(resolved_league_id)
             scoring_settings = league.get("scoring_settings") or {}
-            position_list = parse_positions(positions)
             projection_rows = fetch_rows_for_positions(
                 client,
                 season=resolved_season,
@@ -471,24 +579,28 @@ class FantasyToolRunner:
                 players=players,
                 projection_rows=projection_rows,
             )
-            return build_lineup_recommendations(
-                lineup=lineup,
-                rosters=rosters,
-                players=players,
-                projection_rows=projection_rows,
-                add_trends=client.get_trending_players(
-                    "add",
-                    lookback_hours=lookback_hours,
-                    limit=trend_limit,
+            return self._with_decision_metadata(
+                build_lineup_recommendations(
+                    lineup=lineup,
+                    rosters=rosters,
+                    players=players,
+                    projection_rows=projection_rows,
+                    add_trends=client.get_trending_players(
+                        "add",
+                        lookback_hours=lookback_hours,
+                        limit=trend_limit,
+                    ),
+                    drop_trends=client.get_trending_players(
+                        "drop",
+                        lookback_hours=lookback_hours,
+                        limit=trend_limit,
+                    ),
+                    positions=position_list,
+                    min_delta=min_delta,
+                    limit=limit,
                 ),
-                drop_trends=client.get_trending_players(
-                    "drop",
-                    lookback_hours=lookback_hours,
-                    limit=trend_limit,
-                ),
-                positions=position_list,
-                min_delta=min_delta,
-                limit=limit,
+                normalized,
+                fallback_used=True,
             )
 
     def waiver_wire_watch(
@@ -509,10 +621,106 @@ class FantasyToolRunner:
             raise ValueError("recent_weeks must be at least 0")
 
         resolved_league_id = self._require_league_id(league_id)
+        position_list = parse_positions(positions)
+        if season is not None and week is not None:
+            normalized = self._normalized_decision_read(
+                league_id=resolved_league_id,
+                roster_id=0,
+                season=season,
+                week=week,
+                positions=position_list,
+                recent_weeks=recent_weeks,
+            )
+            if normalized.fresh and normalized.inputs is not None:
+                candidates = build_waiver_watch(
+                    trends=normalized.inputs.add_trends,
+                    players=normalized.inputs.players,
+                    projection_rows=normalized.inputs.projection_rows,
+                    rosters=normalized.inputs.rosters,
+                    positions=position_list,
+                    trend_type="add",
+                )
+                enriched = enrich_waiver_candidates(
+                    candidates,
+                    drop_trends=normalized.inputs.drop_trends,
+                    recent_rows=normalized.inputs.recent_actuals,
+                )
+                return self._with_decision_metadata(
+                    {
+                        "season": season,
+                        "week": week,
+                        "league_id": resolved_league_id,
+                        "positions": position_list,
+                        "lookback_hours": lookback_hours,
+                        "scoring_source": resolved_league_id,
+                        "candidates": with_context(
+                            enriched[:limit],
+                            league_id=resolved_league_id,
+                            season=season,
+                            week=week,
+                        ),
+                        "evidence": [
+                            "candidates are unrostered in the league",
+                            "projected_points use league scoring",
+                            "recent_actual_points uses completed stats for prior weeks",
+                            "drop_trend_count is included to down-rank noisy add trends",
+                        ],
+                    },
+                    normalized,
+                    fallback_used=False,
+                )
+        else:
+            normalized = None
         with self._client() as client:
             resolved_season, resolved_week = resolve_season_week(client, season, week)
+            if normalized is None:
+                normalized = self._normalized_decision_read(
+                    league_id=resolved_league_id,
+                    roster_id=0,
+                    season=resolved_season,
+                    week=resolved_week,
+                    positions=position_list,
+                    recent_weeks=recent_weeks,
+                )
+                if normalized.fresh and normalized.inputs is not None:
+                    candidates = build_waiver_watch(
+                        trends=normalized.inputs.add_trends,
+                        players=normalized.inputs.players,
+                        projection_rows=normalized.inputs.projection_rows,
+                        rosters=normalized.inputs.rosters,
+                        positions=position_list,
+                        trend_type="add",
+                    )
+                    enriched = enrich_waiver_candidates(
+                        candidates,
+                        drop_trends=normalized.inputs.drop_trends,
+                        recent_rows=normalized.inputs.recent_actuals,
+                    )
+                    return self._with_decision_metadata(
+                        {
+                            "season": resolved_season,
+                            "week": resolved_week,
+                            "league_id": resolved_league_id,
+                            "positions": position_list,
+                            "lookback_hours": lookback_hours,
+                            "scoring_source": resolved_league_id,
+                            "candidates": with_context(
+                                enriched[:limit],
+                                league_id=resolved_league_id,
+                                season=resolved_season,
+                                week=resolved_week,
+                            ),
+                            "evidence": [
+                                "candidates are unrostered in the league",
+                                "projected_points use league scoring",
+                                "recent_actual_points uses completed stats for prior weeks",
+                                "drop_trend_count is included to down-rank noisy add trends",
+                            ],
+                        },
+                        normalized,
+                        fallback_used=False,
+                    )
             scoring_settings = get_league_scoring_settings(client, resolved_league_id)
-            position_list = parse_positions(positions)
             projection_rows = fetch_rows_for_positions(
                 client,
                 season=resolved_season,
@@ -553,26 +761,30 @@ class FantasyToolRunner:
                     weeks_back=recent_weeks,
                 ),
             )
-            return {
-                "season": resolved_season,
-                "week": resolved_week,
-                "league_id": resolved_league_id,
-                "positions": position_list,
-                "lookback_hours": lookback_hours,
-                "scoring_source": resolved_league_id,
-                "candidates": with_context(
-                    enriched[:limit],
-                    league_id=resolved_league_id,
-                    season=resolved_season,
-                    week=resolved_week,
-                ),
-                "evidence": [
-                    "candidates are unrostered in the league",
-                    "projected_points use league scoring",
-                    "recent_actual_points uses completed stats for prior weeks",
-                    "drop_trend_count is included to down-rank noisy add trends",
-                ],
-            }
+            return self._with_decision_metadata(
+                {
+                    "season": resolved_season,
+                    "week": resolved_week,
+                    "league_id": resolved_league_id,
+                    "positions": position_list,
+                    "lookback_hours": lookback_hours,
+                    "scoring_source": resolved_league_id,
+                    "candidates": with_context(
+                        enriched[:limit],
+                        league_id=resolved_league_id,
+                        season=resolved_season,
+                        week=resolved_week,
+                    ),
+                    "evidence": [
+                        "candidates are unrostered in the league",
+                        "projected_points use league scoring",
+                        "recent_actual_points uses completed stats for prior weeks",
+                        "drop_trend_count is included to down-rank noisy add trends",
+                    ],
+                },
+                normalized,
+                fallback_used=True,
+            )
 
     def waiver_wire_by_position(
         self,
@@ -591,11 +803,53 @@ class FantasyToolRunner:
 
         resolved_league_id = self._require_league_id(league_id)
         resolved_roster_id = self._require_roster_id(roster_id)
+        position_list = parse_positions(positions)
+        if season is not None and week is not None:
+            normalized = self._normalized_decision_read(
+                league_id=resolved_league_id,
+                roster_id=resolved_roster_id,
+                season=season,
+                week=week,
+                positions=position_list,
+            )
+            if normalized.fresh and normalized.inputs is not None:
+                return self._waiver_by_position_from_inputs(
+                    inputs=normalized.inputs,
+                    normalized=normalized,
+                    league_id=resolved_league_id,
+                    roster_id=resolved_roster_id,
+                    season=season,
+                    week=week,
+                    positions=position_list,
+                    per_position_limit=per_position_limit,
+                    fallback_used=False,
+                )
+        else:
+            normalized = None
         with self._client() as client:
             resolved_season, resolved_week = resolve_season_week(client, season, week)
+            if normalized is None:
+                normalized = self._normalized_decision_read(
+                    league_id=resolved_league_id,
+                    roster_id=resolved_roster_id,
+                    season=resolved_season,
+                    week=resolved_week,
+                    positions=position_list,
+                )
+                if normalized.fresh and normalized.inputs is not None:
+                    return self._waiver_by_position_from_inputs(
+                        inputs=normalized.inputs,
+                        normalized=normalized,
+                        league_id=resolved_league_id,
+                        roster_id=resolved_roster_id,
+                        season=resolved_season,
+                        week=resolved_week,
+                        positions=position_list,
+                        per_position_limit=per_position_limit,
+                        fallback_used=False,
+                    )
             league = client.get_league(resolved_league_id)
             scoring_settings = league.get("scoring_settings") or {}
-            position_list = parse_positions(positions)
             projection_rows = fetch_rows_for_positions(
                 client,
                 season=resolved_season,
@@ -656,25 +910,29 @@ class FantasyToolRunner:
                 for row in lineup["lineup_table"]
                 if row.get("player_id") != "0"
             ]
-            return {
-                "season": resolved_season,
-                "week": resolved_week,
-                "league_id": resolved_league_id,
-                "roster_id": resolved_roster_id,
-                "positions": position_list,
-                "per_position_limit": per_position_limit,
-                "by_position": group_waiver_options_by_position(
-                    candidates=available_candidates,
-                    roster_players=roster_players,
-                    positions=position_list,
-                    per_position_limit=per_position_limit,
-                ),
-                "evidence": [
-                    "options are grouped by position and exclude rostered players",
-                    "projected_gain_over_drop compares against an unprotected active roster drop candidate",
-                    "FAAB hints are included only when the acquisition market is known to be waiver",
-                ],
-            }
+            return self._with_decision_metadata(
+                {
+                    "season": resolved_season,
+                    "week": resolved_week,
+                    "league_id": resolved_league_id,
+                    "roster_id": resolved_roster_id,
+                    "positions": position_list,
+                    "per_position_limit": per_position_limit,
+                    "by_position": group_waiver_options_by_position(
+                        candidates=available_candidates,
+                        roster_players=roster_players,
+                        positions=position_list,
+                        per_position_limit=per_position_limit,
+                    ),
+                    "evidence": [
+                        "options are grouped by position and exclude rostered players",
+                        "projected_gain_over_drop compares against an unprotected active roster drop candidate",
+                        "FAAB hints are included only when the acquisition market is known to be waiver",
+                    ],
+                },
+                normalized,
+                fallback_used=True,
+            )
 
     def free_agent_watch(
         self,
@@ -739,11 +997,55 @@ class FantasyToolRunner:
 
         resolved_league_id = self._require_league_id(league_id)
         resolved_roster_id = self._require_roster_id(roster_id)
+        position_list = parse_positions(positions)
+        if season is not None and week is not None:
+            normalized = self._normalized_decision_read(
+                league_id=resolved_league_id,
+                roster_id=resolved_roster_id,
+                season=season,
+                week=week,
+                positions=position_list,
+            )
+            if normalized.fresh and normalized.inputs is not None:
+                return self._trade_opportunities_from_inputs(
+                    inputs=normalized.inputs,
+                    normalized=normalized,
+                    league_id=resolved_league_id,
+                    roster_id=resolved_roster_id,
+                    season=season,
+                    week=week,
+                    positions=position_list,
+                    targets_per_team=targets_per_team,
+                    offers_per_team=offers_per_team,
+                    fallback_used=False,
+                )
+        else:
+            normalized = None
         with self._client() as client:
             resolved_season, resolved_week = resolve_season_week(client, season, week)
+            if normalized is None:
+                normalized = self._normalized_decision_read(
+                    league_id=resolved_league_id,
+                    roster_id=resolved_roster_id,
+                    season=resolved_season,
+                    week=resolved_week,
+                    positions=position_list,
+                )
+                if normalized.fresh and normalized.inputs is not None:
+                    return self._trade_opportunities_from_inputs(
+                        inputs=normalized.inputs,
+                        normalized=normalized,
+                        league_id=resolved_league_id,
+                        roster_id=resolved_roster_id,
+                        season=resolved_season,
+                        week=resolved_week,
+                        positions=position_list,
+                        targets_per_team=targets_per_team,
+                        offers_per_team=offers_per_team,
+                        fallback_used=False,
+                    )
             league = client.get_league(resolved_league_id)
             scoring_settings = league.get("scoring_settings") or {}
-            position_list = parse_positions(positions)
             projection_rows = fetch_rows_for_positions(
                 client,
                 season=resolved_season,
@@ -768,19 +1070,23 @@ class FantasyToolRunner:
                 players=players,
                 projection_rows=projection_rows,
             )
-            return build_trade_opportunities(
-                league_id=resolved_league_id,
-                roster_id=resolved_roster_id,
-                season=resolved_season,
-                week=resolved_week,
-                lineup=lineup,
-                users=users,
-                rosters=rosters,
-                players=players,
-                projection_rows=projection_rows,
-                positions=position_list,
-                targets_per_team=targets_per_team,
-                offers_per_team=offers_per_team,
+            return self._with_decision_metadata(
+                build_trade_opportunities(
+                    league_id=resolved_league_id,
+                    roster_id=resolved_roster_id,
+                    season=resolved_season,
+                    week=resolved_week,
+                    lineup=lineup,
+                    users=users,
+                    rosters=rosters,
+                    players=players,
+                    projection_rows=projection_rows,
+                    positions=position_list,
+                    targets_per_team=targets_per_team,
+                    offers_per_team=offers_per_team,
+                ),
+                normalized,
+                fallback_used=True,
             )
 
     def decision_smoke_report(
@@ -936,6 +1242,219 @@ class FantasyToolRunner:
                 ],
             }
 
+    def _lineup_recommendations_from_inputs(
+        self,
+        *,
+        inputs: NormalizedDecisionInputs,
+        normalized: NormalizedDecisionRead,
+        league_id: str,
+        roster_id: int,
+        season: int,
+        week: int,
+        positions: list[str],
+        min_delta: float,
+        limit: int,
+        fallback_used: bool,
+    ) -> dict[str, Any]:
+        lineup = build_my_lineup(
+            league_id=league_id,
+            roster_id=roster_id,
+            season=season,
+            week=week,
+            league=inputs.league,
+            users=inputs.users,
+            rosters=inputs.rosters,
+            matchups=inputs.matchups,
+            players=inputs.players,
+            projection_rows=inputs.projection_rows,
+        )
+        return self._with_decision_metadata(
+            build_lineup_recommendations(
+                lineup=lineup,
+                rosters=inputs.rosters,
+                players=inputs.players,
+                projection_rows=inputs.projection_rows,
+                add_trends=inputs.add_trends,
+                drop_trends=inputs.drop_trends,
+                positions=positions,
+                min_delta=min_delta,
+                limit=limit,
+            ),
+            normalized,
+            fallback_used=fallback_used,
+        )
+
+    def _waiver_by_position_from_inputs(
+        self,
+        *,
+        inputs: NormalizedDecisionInputs,
+        normalized: NormalizedDecisionRead,
+        league_id: str,
+        roster_id: int,
+        season: int,
+        week: int,
+        positions: list[str],
+        per_position_limit: int,
+        fallback_used: bool,
+    ) -> dict[str, Any]:
+        projection_candidates = build_free_agent_watch(
+            projection_rows=inputs.projection_rows,
+            rosters=inputs.rosters,
+            players=inputs.players,
+            positions=positions,
+        )
+        trend_candidates = build_waiver_watch(
+            trends=inputs.add_trends,
+            players=inputs.players,
+            projection_rows=inputs.projection_rows,
+            rosters=inputs.rosters,
+            positions=positions,
+            trend_type="add",
+        )
+        available_candidates = merge_available_candidates(
+            projection_candidates=projection_candidates,
+            trend_candidates=trend_candidates,
+            players=inputs.players,
+            add_trends=inputs.add_trends,
+            drop_trends=inputs.drop_trends,
+        )
+        lineup = build_my_lineup(
+            league_id=league_id,
+            roster_id=roster_id,
+            season=season,
+            week=week,
+            league=inputs.league,
+            users=inputs.users,
+            rosters=inputs.rosters,
+            matchups=inputs.matchups,
+            players=inputs.players,
+            projection_rows=inputs.projection_rows,
+        )
+        roster_players = [
+            row
+            for row in lineup["lineup_table"]
+            if row.get("player_id") != "0"
+        ]
+        return self._with_decision_metadata(
+            {
+                "season": season,
+                "week": week,
+                "league_id": league_id,
+                "roster_id": roster_id,
+                "positions": positions,
+                "per_position_limit": per_position_limit,
+                "by_position": group_waiver_options_by_position(
+                    candidates=available_candidates,
+                    roster_players=roster_players,
+                    positions=positions,
+                    per_position_limit=per_position_limit,
+                ),
+                "evidence": [
+                    "options are grouped by position and exclude rostered players",
+                    "projected_gain_over_drop compares against an unprotected active roster drop candidate",
+                    "FAAB hints are included only when the acquisition market is known to be waiver",
+                ],
+            },
+            normalized,
+            fallback_used=fallback_used,
+        )
+
+    def _trade_opportunities_from_inputs(
+        self,
+        *,
+        inputs: NormalizedDecisionInputs,
+        normalized: NormalizedDecisionRead,
+        league_id: str,
+        roster_id: int,
+        season: int,
+        week: int,
+        positions: list[str],
+        targets_per_team: int,
+        offers_per_team: int,
+        fallback_used: bool,
+    ) -> dict[str, Any]:
+        lineup = build_my_lineup(
+            league_id=league_id,
+            roster_id=roster_id,
+            season=season,
+            week=week,
+            league=inputs.league,
+            users=inputs.users,
+            rosters=inputs.rosters,
+            matchups=inputs.matchups,
+            players=inputs.players,
+            projection_rows=inputs.projection_rows,
+        )
+        return self._with_decision_metadata(
+            build_trade_opportunities(
+                league_id=league_id,
+                roster_id=roster_id,
+                season=season,
+                week=week,
+                lineup=lineup,
+                users=inputs.users,
+                rosters=inputs.rosters,
+                players=inputs.players,
+                projection_rows=inputs.projection_rows,
+                positions=positions,
+                targets_per_team=targets_per_team,
+                offers_per_team=offers_per_team,
+            ),
+            normalized,
+            fallback_used=fallback_used,
+        )
+
+    def _normalized_decision_read(
+        self,
+        *,
+        league_id: str,
+        roster_id: int,
+        season: int,
+        week: int,
+        positions: list[str],
+        recent_weeks: int = 0,
+    ) -> NormalizedDecisionRead:
+        return NormalizedDecisionReader(
+            self._require_decision_repository(),
+            max_age_seconds=NORMALIZED_DECISION_MAX_AGE_SECONDS,
+        ).read_inputs(
+            league_id=league_id,
+            roster_id=roster_id,
+            season=season,
+            week=week,
+            positions=positions,
+            recent_weeks=recent_weeks,
+        )
+
+    def _with_decision_metadata(
+        self,
+        report: dict[str, Any],
+        normalized: NormalizedDecisionRead | None,
+        *,
+        fallback_used: bool,
+    ) -> dict[str, Any]:
+        if normalized is None:
+            freshness = {
+                "status": "not_checked",
+                "fresh": False,
+                "last_synced_at": None,
+                "max_age_seconds": NORMALIZED_DECISION_MAX_AGE_SECONDS,
+                "missing_inputs": [],
+                "warnings": [
+                    "normalized decision data was not checked before fallback"
+                ],
+                "latest_sync": None,
+            }
+        else:
+            freshness = normalized.freshness
+        return {
+            **report,
+            "data_source": "sleeper_fallback" if fallback_used else "normalized_db",
+            "freshness": freshness,
+            "fallback_used": fallback_used,
+            "sync_recommended": fallback_used or freshness.get("status") != "fresh",
+        }
+
     def _resolve_optional_league_id(self, league_id: str | None) -> str | None:
         return league_id or self.default_league_id
 
@@ -968,6 +1487,11 @@ class FantasyToolRunner:
         if self._trend_repository is None:
             self._trend_repository = build_normalized_repository(self.cache_db)
         return self._trend_repository
+
+    def _require_decision_repository(self) -> Any:
+        if self._decision_repository is None:
+            self._decision_repository = build_normalized_repository(self.cache_db)
+        return self._decision_repository
 
     def _require_sync_service(self) -> Any:
         if self._sync_service is None:

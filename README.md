@@ -71,10 +71,8 @@ make sleeper ARGS="best-week --season 2025 --week 1 --source stats --limit 5 --o
 make sleeper ARGS="best-by-team --season 2026 --week 1 --source projections --position RB --output table"
 ```
 
-Normalized decision-data sync commands are planned for trendable reads. Until
-those commands land on the active branch, use the existing `stats`,
-`projections`, `best-week`, and MCP decision tools as the production surface.
-The planned workflow is:
+Normalized decision-data sync commands populate the local SQLite read model for
+trendable reads:
 
 ```bash
 make sleeper ARGS="sync-status --output json"

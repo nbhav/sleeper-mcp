@@ -145,12 +145,12 @@ over.
 
 ### Normalized Decision Data
 
-Normalized decision data is the planned analytical layer above raw Sleeper
-responses. It should be generated from Sleeper state, players, stats,
-projections, league, roster, matchup, transaction, and trending endpoints, then
-stored in SQLite locally and D1 remotely as queryable tables.
+Normalized decision data is the analytical layer above raw Sleeper responses.
+It is generated from Sleeper state, players, stats, projections, league, roster,
+matchup, transaction, and trending endpoints, then stored in SQLite locally as
+queryable tables. Cloudflare D1 parity is planned as a follow-up.
 
-Planned responsibilities:
+Responsibilities:
 
 - Convert Sleeper numeric stat values automatically to numeric database fields.
   Sleeper may omit zero stats or encode values inconsistently across payloads;
@@ -170,14 +170,14 @@ Planned responsibilities:
 - Track freshness at the source/table/window level so agents can know whether a
   decision read is fresh, stale, missing, or falling back.
 
-Planned CLI workflow:
+CLI workflow:
 
 ```bash
 make sleeper ARGS="sync-status --output json"
 make sleeper ARGS="sync-data --season <season> --output json"
 ```
 
-Planned MCP workflow:
+MCP workflow:
 
 ```text
 decision_data_status
@@ -193,10 +193,8 @@ If sync is unavailable or still stale, tools should return fallback metadata and
 use the existing live Sleeper plus `api_cache` path rather than failing a
 decision outright.
 
-As of this docs update, these normalized sync and trend tools may still be in
-flight on other issue branches. Treat this section as the target workflow until
-the corresponding CLI commands, MCP registrations, SQLite tables, and Worker D1
-parity are present in the active branch.
+The Python CLI and stdio MCP tools are available on this branch. Worker D1
+normalized tables and cron parity are still planned separately.
 
 ### Python And Stdio MCP
 
