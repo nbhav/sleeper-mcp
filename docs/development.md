@@ -9,6 +9,7 @@ All development commands run through Docker or Docker Compose. Do not install Py
 | `make build` | Build the Python Docker image. |
 | `make test` | Run offline unit tests inside Docker. |
 | `make integration-test` | Run live Sleeper API integration tests inside Docker. |
+| `make decision-smoke` | Run a compact live lineup, waiver, and trade workflow smoke check inside Docker. |
 | `make sleeper ARGS="..."` | Run the Sleeper CLI inside Docker. |
 | `make mcp` | Run the stdio MCP server inside Docker. |
 | `make worker-build` | Build the Cloudflare Worker Docker image. |
@@ -56,6 +57,11 @@ After local Docker workflow checks:
 ```bash
 make teardown
 ```
+
+After simple one-off commands that already use Compose `run --rm`, `make local-down`
+is enough when only the temporary Compose network needs cleanup. Use
+`make teardown` after builds or checks where pruning stopped containers and
+dangling images is useful.
 
 CI and deploy workflows use:
 

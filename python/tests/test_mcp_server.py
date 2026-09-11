@@ -27,6 +27,9 @@ def test_mcp_tools_list_exposes_curated_decision_tools() -> None:
         "my_lineup",
         "lineup_recommendations",
         "waiver_wire_watch",
+        "waiver_wire_by_position",
+        "trade_opportunities",
+        "decision_smoke_report",
         "free_agent_watch",
         "injury_watch",
         "opponent_watch",
@@ -38,10 +41,43 @@ def test_mcp_tools_list_exposes_curated_decision_tools() -> None:
     assert "required" not in tools_by_name["waiver_watch"]["inputSchema"]
     assert "required" not in tools_by_name["my_lineup"]["inputSchema"]
     assert "required" not in tools_by_name["lineup_recommendations"]["inputSchema"]
+    assert "required" not in tools_by_name["waiver_wire_by_position"]["inputSchema"]
+    assert "required" not in tools_by_name["trade_opportunities"]["inputSchema"]
+    assert "required" not in tools_by_name["decision_smoke_report"]["inputSchema"]
     assert "required" not in tools_by_name["free_agent_watch"]["inputSchema"]
     assert "required" not in tools_by_name["injury_watch"]["inputSchema"]
     assert "required" not in tools_by_name["opponent_watch"]["inputSchema"]
     assert "required" not in tools_by_name["league_team_watch"]["inputSchema"]
+    assert (
+        tools_by_name["waiver_wire_by_position"]["inputSchema"]["properties"][
+            "per_position_limit"
+        ]["default"]
+        == 10
+    )
+    assert (
+        tools_by_name["waiver_wire_watch"]["inputSchema"]["properties"][
+            "positions"
+        ]["default"]
+        == "QB,RB,WR,TE,K,DEF"
+    )
+    assert (
+        tools_by_name["free_agent_watch"]["inputSchema"]["properties"][
+            "positions"
+        ]["default"]
+        == "QB,RB,WR,TE,K,DEF"
+    )
+    assert (
+        tools_by_name["trade_opportunities"]["inputSchema"]["properties"][
+            "offers_per_team"
+        ]["default"]
+        == 3
+    )
+    assert (
+        tools_by_name["decision_smoke_report"]["inputSchema"]["properties"]["format"][
+            "default"
+        ]
+        == "markdown"
+    )
 
 
 def test_mcp_tool_call_returns_json_text_content() -> None:
@@ -64,6 +100,29 @@ def test_mcp_tool_call_returns_json_text_content() -> None:
     content = response["result"]["content"][0]
     assert content["type"] == "text"
     assert json.loads(content["text"]) == [{"league_id": "league-1", "player": "Hurt RB"}]
+
+
+def test_mcp_tool_call_returns_raw_markdown_text_content() -> None:
+    class Runner:
+        def decision_smoke_report(self, *, format: str = "markdown"):
+            return "| Field | Value |\n| --- | --- |\n| Format | " + format + " |"
+
+    response = McpServer(Runner()).handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "tools/call",
+            "params": {
+                "name": "decision_smoke_report",
+                "arguments": {"format": "markdown"},
+            },
+        }
+    )
+
+    content = response["result"]["content"][0]
+    assert content["type"] == "text"
+    assert content["text"].startswith("| Field | Value |")
+    assert not content["text"].startswith('"')
 
 
 def test_mcp_unknown_tool_returns_protocol_error() -> None:

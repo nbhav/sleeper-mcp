@@ -261,6 +261,21 @@ def test_api_response_cache_expires_and_clears_rows(tmp_path) -> None:
     cache.close()
 
 
+def test_api_response_cache_migrates_context_tables(tmp_path) -> None:
+    cache = ApiResponseCache(tmp_path / "sleeper.db")
+
+    rows = cache._connection.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table'"
+    ).fetchall()
+
+    assert {
+        "player_context_overrides",
+        "team_schedule_context",
+        "context_source_timestamps",
+    }.issubset({row["name"] for row in rows})
+    cache.close()
+
+
 def test_cache_ttl_for_url_uses_endpoint_specific_defaults() -> None:
     assert cache_ttl_for_url("https://api.sleeper.app/v1/state/nfl") == 300
     assert cache_ttl_for_url("https://api.sleeper.app/v1/players/nfl") == 21600

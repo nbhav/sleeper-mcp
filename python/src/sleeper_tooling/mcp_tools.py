@@ -14,7 +14,10 @@ from sleeper_tooling.decision_reports import (
     build_lineup_recommendations,
     build_my_lineup,
     build_opponent_watch,
+    build_trade_opportunities,
     build_waiver_watch,
+    group_waiver_options_by_position,
+    merge_available_candidates,
 )
 from sleeper_tooling.league_context import (
     render_context_env,
@@ -358,7 +361,7 @@ class FantasyToolRunner:
         league_id: str | None = None,
         season: int | None = None,
         week: int | None = None,
-        positions: str = "RB,WR,TE",
+        positions: str = DEFAULT_POSITIONS,
         lookback_hours: int = 24,
         trend_limit: int = 100,
         limit: int = 25,
@@ -435,13 +438,115 @@ class FantasyToolRunner:
                 ],
             }
 
+    def waiver_wire_by_position(
+        self,
+        *,
+        league_id: str | None = None,
+        roster_id: int | None = None,
+        season: int | None = None,
+        week: int | None = None,
+        positions: str = DEFAULT_POSITIONS,
+        lookback_hours: int = 24,
+        trend_limit: int = 100,
+        per_position_limit: int = 10,
+    ) -> dict[str, Any]:
+        if per_position_limit < 1:
+            raise ValueError("per_position_limit must be at least 1")
+
+        resolved_league_id = self._require_league_id(league_id)
+        resolved_roster_id = self._require_roster_id(roster_id)
+        with self._client() as client:
+            resolved_season, resolved_week = resolve_season_week(client, season, week)
+            league = client.get_league(resolved_league_id)
+            scoring_settings = league.get("scoring_settings") or {}
+            position_list = parse_positions(positions)
+            projection_rows = fetch_rows_for_positions(
+                client,
+                season=resolved_season,
+                week=resolved_week,
+                positions=position_list,
+                source="projections",
+                scoring_settings=scoring_settings,
+            )
+            users = client.get_league_users(resolved_league_id)
+            rosters = client.get_rosters(resolved_league_id)
+            matchups = client.get_matchups(resolved_league_id, resolved_week)
+            players = load_or_fetch_players(client, cache_path=self.players_cache)
+            add_trends = client.get_trending_players(
+                "add",
+                lookback_hours=lookback_hours,
+                limit=trend_limit,
+            )
+            drop_trends = client.get_trending_players(
+                "drop",
+                lookback_hours=lookback_hours,
+                limit=trend_limit,
+            )
+            projection_candidates = build_free_agent_watch(
+                projection_rows=projection_rows,
+                rosters=rosters,
+                players=players,
+                positions=position_list,
+            )
+            trend_candidates = build_waiver_watch(
+                trends=add_trends,
+                players=players,
+                projection_rows=projection_rows,
+                rosters=rosters,
+                positions=position_list,
+                trend_type="add",
+            )
+            available_candidates = merge_available_candidates(
+                projection_candidates=projection_candidates,
+                trend_candidates=trend_candidates,
+                players=players,
+                add_trends=add_trends,
+                drop_trends=drop_trends,
+            )
+            lineup = build_my_lineup(
+                league_id=resolved_league_id,
+                roster_id=resolved_roster_id,
+                season=resolved_season,
+                week=resolved_week,
+                league=league,
+                users=users,
+                rosters=rosters,
+                matchups=matchups,
+                players=players,
+                projection_rows=projection_rows,
+            )
+            roster_players = [
+                row
+                for row in lineup["lineup_table"]
+                if row.get("player_id") != "0"
+            ]
+            return {
+                "season": resolved_season,
+                "week": resolved_week,
+                "league_id": resolved_league_id,
+                "roster_id": resolved_roster_id,
+                "positions": position_list,
+                "per_position_limit": per_position_limit,
+                "by_position": group_waiver_options_by_position(
+                    candidates=available_candidates,
+                    roster_players=roster_players,
+                    positions=position_list,
+                    per_position_limit=per_position_limit,
+                ),
+                "evidence": [
+                    "options are grouped by position and exclude rostered players",
+                    "projected_gain_over_drop compares against an unprotected active roster drop candidate",
+                    "FAAB hints are included only when the acquisition market is known to be waiver",
+                ],
+            }
+
     def free_agent_watch(
         self,
         *,
         league_id: str | None = None,
         season: int | None = None,
         week: int | None = None,
-        positions: str = "RB,WR,TE",
+        positions: str = DEFAULT_POSITIONS,
         limit: int = 25,
     ) -> list[dict[str, Any]]:
         resolved_league_id = self._require_league_id(league_id)
@@ -479,6 +584,103 @@ class FantasyToolRunner:
                 players=load_or_fetch_players(client, cache_path=self.players_cache),
             )
             return with_context(rows, league_id=resolved_league_id)
+
+    def trade_opportunities(
+        self,
+        *,
+        league_id: str | None = None,
+        roster_id: int | None = None,
+        season: int | None = None,
+        week: int | None = None,
+        positions: str = "QB,RB,WR,TE",
+        targets_per_team: int = 5,
+        offers_per_team: int = 3,
+    ) -> dict[str, Any]:
+        if targets_per_team < 1:
+            raise ValueError("targets_per_team must be at least 1")
+        if offers_per_team < 1:
+            raise ValueError("offers_per_team must be at least 1")
+
+        resolved_league_id = self._require_league_id(league_id)
+        resolved_roster_id = self._require_roster_id(roster_id)
+        with self._client() as client:
+            resolved_season, resolved_week = resolve_season_week(client, season, week)
+            league = client.get_league(resolved_league_id)
+            scoring_settings = league.get("scoring_settings") or {}
+            position_list = parse_positions(positions)
+            projection_rows = fetch_rows_for_positions(
+                client,
+                season=resolved_season,
+                week=resolved_week,
+                positions=position_list,
+                source="projections",
+                scoring_settings=scoring_settings,
+            )
+            users = client.get_league_users(resolved_league_id)
+            rosters = client.get_rosters(resolved_league_id)
+            matchups = client.get_matchups(resolved_league_id, resolved_week)
+            players = load_or_fetch_players(client, cache_path=self.players_cache)
+            lineup = build_my_lineup(
+                league_id=resolved_league_id,
+                roster_id=resolved_roster_id,
+                season=resolved_season,
+                week=resolved_week,
+                league=league,
+                users=users,
+                rosters=rosters,
+                matchups=matchups,
+                players=players,
+                projection_rows=projection_rows,
+            )
+            return build_trade_opportunities(
+                league_id=resolved_league_id,
+                roster_id=resolved_roster_id,
+                season=resolved_season,
+                week=resolved_week,
+                lineup=lineup,
+                users=users,
+                rosters=rosters,
+                players=players,
+                projection_rows=projection_rows,
+                positions=position_list,
+                targets_per_team=targets_per_team,
+                offers_per_team=offers_per_team,
+            )
+
+    def decision_smoke_report(
+        self,
+        *,
+        league_id: str | None = None,
+        roster_id: int | None = None,
+        season: int | None = None,
+        week: int | None = None,
+        positions: str = DEFAULT_POSITIONS,
+        per_position_limit: int = 3,
+        targets_per_team: int = 2,
+        offers_per_team: int = 2,
+        format: str = "markdown",
+    ) -> dict[str, Any] | str:
+        if format not in {"json", "markdown"}:
+            raise ValueError("format must be 'json' or 'markdown'")
+        from sleeper_tooling.smoke import (
+            build_decision_smoke_report,
+            render_decision_smoke_tables,
+        )
+
+        report = build_decision_smoke_report(
+            self,
+            league_id=league_id,
+            roster_id=roster_id,
+            season=season,
+            week=week,
+            positions=positions,
+            per_position_limit=per_position_limit,
+            targets_per_team=targets_per_team,
+            offers_per_team=offers_per_team,
+        )
+        if format == "markdown":
+            return render_decision_smoke_tables(report)
+        return report
 
     def opponent_watch(
         self,

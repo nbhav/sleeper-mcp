@@ -31,10 +31,11 @@ From this repo:
 ```bash
 make local-up
 make test
+make decision-smoke
 make sleeper ARGS="state"
 ```
 
-The `state` command returns Sleeper's current NFL season and week. API responses are cached under `./data/`.
+The `state` command returns Sleeper's current NFL season and week. API responses are cached under `./data/`; see `docs/tool-breakdown.md` for the cache data model, query lifecycle, and TTLs.
 
 Configure your default league and roster context from a Sleeper league URL plus
 your Sleeper username, display name, owner ID, roster ID, or team name:
@@ -129,8 +130,11 @@ For assistant usage, prefer:
 - `resolve_league_context` for setup-time league, owner, and roster ID resolution
 - `weekly_performance_backtest` for historical leaders and week-over-week movement
 - `waiver_wire_watch` for actionable waiver recommendations
-- `my_lineup` for current starters, bench, and league-scored projections
+- `my_lineup` for current starters, bench, actual points, status, and league-scored projections
 - `lineup_recommendations` for start/sit and add/drop comparisons
+- `waiver_wire_by_position` for top waiver/free-agent options grouped by position
+- `trade_opportunities` for league-wide trade partner scans
+- `decision_smoke_report` for display-ready lineup, waiver, and trade smoke tables before review or merge
 - `weekly_briefing`, `opponent_watch`, `league_team_watch`, and `player_card` for supporting context
 
 ## Remote MCP

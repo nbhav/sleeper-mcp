@@ -18,7 +18,7 @@ Primary use cases:
 - Cache API responses in SQLite to reduce repeated calls and rate-limit risk.
 - Pull weekly stats and projections.
 - Chain common calls into higher-level reports, including weekly leaders, best player by team, weekly briefing output, and MCP weekly scout output.
-- Prefer decision commands and MCP tools like `weekly_performance_backtest`, `my_lineup`, `lineup_recommendations`, `waiver_wire_watch`, `waiver-watch`, and `injury-watch` over raw endpoint replication.
+- Prefer decision commands and MCP tools like `weekly_performance_backtest`, `my_lineup`, `lineup_recommendations`, `waiver_wire_watch`, `waiver_wire_by_position`, `trade_opportunities`, `decision_smoke_report`, `waiver-watch`, and `injury-watch` over raw endpoint replication.
 - Apply custom Sleeper league scoring settings with `--league-id`.
 - Export data as JSON, CSV, or terminal tables.
 - Expose curated decision tools through a stdio MCP server.
@@ -198,16 +198,19 @@ waiver_watch
 my_lineup
 lineup_recommendations
 waiver_wire_watch
+waiver_wire_by_position
 free_agent_watch
 injury_watch
 opponent_watch
 league_team_watch
+trade_opportunities
+decision_smoke_report
 player_card
 ```
 
 Use `resolve_league_context` for setup-time league, owner, and roster ID resolution. It returns `env_text` for local `.env` files and `cloudflare_vars` for hosted Worker configuration; it does not persist settings by itself.
 
-Use `weekly_performance_backtest` for historical leaders and week-over-week movement. Use `my_lineup` for the user's current starters and bench. Use `lineup_recommendations` for deterministic start/sit and add/drop comparisons with FAAB hints. Use `waiver_wire_watch` when recommendations must be limited to unrostered waiver targets and backed by projections, trends, status, and recent actuals. Keep this tool list curated to avoid token creep.
+Use `weekly_performance_backtest` for historical leaders and week-over-week movement. Use `my_lineup` for the user's current starters, bench, status, actual points, projected totals, and lineup table. Use `lineup_recommendations` for deterministic start/sit and add/drop comparisons with market-aware waiver hints. Use `waiver_wire_watch` when recommendations must be limited to unrostered waiver targets and backed by projections, trends, status, and recent actuals. Use `waiver_wire_by_position` when the user wants top waiver options per position with protected drop and acquisition reasoning. Use `trade_opportunities` when the user wants every opposing team evaluated with needs, surplus, targets, and mutual-fit offer angles. Use `decision_smoke_report` when a reviewer wants display-ready Markdown tables for the live lineup, waiver, and trade smoke workflow. Keep this tool list curated to avoid token creep.
 
 ## Remote MCP On Cloudflare
 

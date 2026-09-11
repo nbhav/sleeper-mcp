@@ -5,6 +5,7 @@ const DEFAULT_POSITIONS = "QB,RB,WR,TE,K,DEF";
 const DEFAULT_STARTER_SLOTS = ["QB", "RB", "RB", "WR", "WR", "WR", "TE", "FLEX", "K", "DEF"];
 const NON_STARTER_SLOTS = new Set(["BN", "BE", "IR", "TAXI"]);
 const POSITION_SLOTS = new Set(["QB", "RB", "WR", "TE", "K", "DEF", "DL", "LB", "DB", "IDP"]);
+const KNOWN_MARKET_TYPES = new Set(["free_agent", "waiver", "unknown"]);
 const FLEX_SLOT_POSITIONS: Record<string, string[]> = {
   FLEX: ["RB", "WR", "TE"],
   "W/R/T": ["RB", "WR", "TE"],
@@ -131,11 +132,62 @@ const tools = [
         league_id: { type: "string" },
         season: { type: "integer" },
         week: { type: "integer" },
-        positions: { type: "string", default: "RB,WR,TE" },
+        positions: { type: "string", default: DEFAULT_POSITIONS },
         lookback_hours: { type: "integer", default: 24 },
         trend_limit: { type: "integer", default: 100 },
         limit: { type: "integer", default: 25 },
         recent_weeks: { type: "integer", default: 3 }
+      }
+    }
+  },
+  {
+    name: "waiver_wire_by_position",
+    description: "Return top waiver and free-agent options grouped by position with status, drop candidate, gain, and FAAB guidance.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        league_id: { type: "string" },
+        roster_id: { type: "integer" },
+        season: { type: "integer" },
+        week: { type: "integer" },
+        positions: { type: "string", default: DEFAULT_POSITIONS },
+        lookback_hours: { type: "integer", default: 24 },
+        trend_limit: { type: "integer", default: 100 },
+        per_position_limit: { type: "integer", default: 10 }
+      }
+    }
+  },
+  {
+    name: "trade_opportunities",
+    description: "Show every opposing team with needs, surplus, trade targets, multiple offer angles, and reasoning.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        league_id: { type: "string" },
+        roster_id: { type: "integer" },
+        season: { type: "integer" },
+        week: { type: "integer" },
+        positions: { type: "string", default: "QB,RB,WR,TE" },
+        targets_per_team: { type: "integer", default: 5 },
+        offers_per_team: { type: "integer", default: 3 }
+      }
+    }
+  },
+  {
+    name: "decision_smoke_report",
+    description: "Run the compact lineup, waiver, and trade smoke workflow and return display-ready Markdown tables or JSON.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        league_id: { type: "string" },
+        roster_id: { type: "integer" },
+        season: { type: "integer" },
+        week: { type: "integer" },
+        positions: { type: "string", default: DEFAULT_POSITIONS },
+        per_position_limit: { type: "integer", default: 3 },
+        targets_per_team: { type: "integer", default: 2 },
+        offers_per_team: { type: "integer", default: 2 },
+        format: { type: "string", enum: ["markdown", "json"], default: "markdown" }
       }
     }
   },
@@ -148,7 +200,7 @@ const tools = [
         league_id: { type: "string" },
         season: { type: "integer" },
         week: { type: "integer" },
-        positions: { type: "string", default: "RB,WR,TE" },
+        positions: { type: "string", default: DEFAULT_POSITIONS },
         limit: { type: "integer", default: 25 }
       }
     }
@@ -257,7 +309,7 @@ async function handleMcpMessage(message: JsonMap, env: Env): Promise<JsonMap | n
     const args = objectValue(params.arguments);
     const result = await callTool(name, args, env);
     return {
-      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      content: [{ type: "text", text: typeof result === "string" ? result : JSON.stringify(result, null, 2) }],
       isError: false
     };
   }
@@ -280,6 +332,12 @@ async function callTool(name: string, args: JsonMap, env: Env): Promise<unknown>
       return lineupRecommendations(args, env);
     case "waiver_wire_watch":
       return waiverWireWatch(args, env);
+    case "waiver_wire_by_position":
+      return waiverWireByPosition(args, env);
+    case "trade_opportunities":
+      return tradeOpportunities(args, env);
+    case "decision_smoke_report":
+      return decisionSmokeReport(args, env);
     case "free_agent_watch":
       return freeAgentWatch(args, env);
     case "injury_watch":
@@ -508,7 +566,7 @@ async function lineupRecommendations(args: JsonMap, env: Env): Promise<JsonMap> 
 async function waiverWireWatch(args: JsonMap, env: Env): Promise<JsonMap> {
   const leagueId = requireLeagueId(args, env);
   const [season, week] = await resolveSeasonWeek(args, env);
-  const positions = parsePositions(stringArg(args, "positions", "RB,WR,TE"));
+  const positions = parsePositions(stringArg(args, "positions", DEFAULT_POSITIONS));
   const limit = numberArg(args, "limit", 25);
   const recentWeeks = numberArg(args, "recent_weeks", 3);
   if (limit < 1) throw new Error("limit must be at least 1");
@@ -544,10 +602,394 @@ async function waiverWireWatch(args: JsonMap, env: Env): Promise<JsonMap> {
   };
 }
 
+async function waiverWireByPosition(args: JsonMap, env: Env): Promise<JsonMap> {
+  const leagueId = requireLeagueId(args, env);
+  const rosterId = requireRosterId(args, env);
+  const [season, week] = await resolveSeasonWeek(args, env);
+  const positions = parsePositions(stringArg(args, "positions", DEFAULT_POSITIONS));
+  const perPositionLimit = numberArg(args, "per_position_limit", 10);
+  if (perPositionLimit < 1) throw new Error("per_position_limit must be at least 1");
+
+  const league = objectValue(await getApp(`/league/${leagueId}`, env));
+  const scoring = objectValue(league.scoring_settings);
+  const projectionRows = await fetchRowsForPositions(season, week, positions, "projections", scoring, env);
+  const lookbackHours = numberArg(args, "lookback_hours", 24);
+  const trendLimit = numberArg(args, "trend_limit", 100);
+  const [users, rosters, matchups, players, addTrends, dropTrends] = await Promise.all([
+    getApp(`/league/${leagueId}/users`, env),
+    getApp(`/league/${leagueId}/rosters`, env),
+    getApp(`/league/${leagueId}/matchups/${week}`, env),
+    getPlayers(env),
+    getTrending("add", lookbackHours, trendLimit, env),
+    getTrending("drop", lookbackHours, trendLimit, env)
+  ]);
+  const rosterRows = arrayValue(rosters);
+  const playerMap = recordValue(players);
+  const projectionCandidates = buildFreeAgentWatch(projectionRows, rosterRows, playerMap, positions);
+  const trendCandidates = buildWaiverWatch(addTrends, playerMap, projectionRows, rosterRows, positions, "add");
+  const availableCandidates = mergeAvailableCandidates({
+    projectionCandidates,
+    trendCandidates,
+    players: playerMap,
+    addTrends,
+    dropTrends
+  });
+  const lineup = buildMyLineup({
+    leagueId,
+    rosterId,
+    season,
+    week,
+    league,
+    users: arrayValue(users),
+    rosters: rosterRows,
+    matchups: arrayValue(matchups),
+    players: playerMap,
+    projectionRows
+  });
+  const rosterPlayers = arrayValue(lineup.lineup_table).filter((row) => row.player_id !== "0");
+  return {
+    season,
+    week,
+    league_id: leagueId,
+    roster_id: rosterId,
+    positions,
+    per_position_limit: perPositionLimit,
+    by_position: groupWaiverOptionsByPosition(availableCandidates, rosterPlayers, positions, perPositionLimit),
+    evidence: [
+      "options are grouped by position and exclude rostered players",
+      "projected_gain_over_drop compares against an unprotected active roster drop candidate",
+      "FAAB hints are included only when the acquisition market is known to be waiver"
+    ]
+  };
+}
+
+async function tradeOpportunities(args: JsonMap, env: Env): Promise<JsonMap> {
+  const leagueId = requireLeagueId(args, env);
+  const rosterId = requireRosterId(args, env);
+  const [season, week] = await resolveSeasonWeek(args, env);
+  const positions = parsePositions(stringArg(args, "positions", "QB,RB,WR,TE"));
+  const targetsPerTeam = numberArg(args, "targets_per_team", 5);
+  const offersPerTeam = numberArg(args, "offers_per_team", 3);
+  if (targetsPerTeam < 1) throw new Error("targets_per_team must be at least 1");
+  if (offersPerTeam < 1) throw new Error("offers_per_team must be at least 1");
+
+  const league = objectValue(await getApp(`/league/${leagueId}`, env));
+  const scoring = objectValue(league.scoring_settings);
+  const projectionRows = await fetchRowsForPositions(season, week, positions, "projections", scoring, env);
+  const [users, rosters, matchups, players] = await Promise.all([
+    getApp(`/league/${leagueId}/users`, env),
+    getApp(`/league/${leagueId}/rosters`, env),
+    getApp(`/league/${leagueId}/matchups/${week}`, env),
+    getPlayers(env)
+  ]);
+  const rosterRows = arrayValue(rosters);
+  const playerMap = recordValue(players);
+  const lineup = buildMyLineup({
+    leagueId,
+    rosterId,
+    season,
+    week,
+    league,
+    users: arrayValue(users),
+    rosters: rosterRows,
+    matchups: arrayValue(matchups),
+    players: playerMap,
+    projectionRows
+  });
+  return buildTradeOpportunities({
+    leagueId,
+    rosterId,
+    season,
+    week,
+    lineup,
+    users: arrayValue(users),
+    rosters: rosterRows,
+    players: playerMap,
+    projectionRows,
+    positions,
+    targetsPerTeam,
+    offersPerTeam
+  });
+}
+
+async function decisionSmokeReport(args: JsonMap, env: Env): Promise<JsonMap | string> {
+  const format = String(args.format || "markdown");
+  if (!["json", "markdown"].includes(format)) {
+    throw new Error("format must be 'json' or 'markdown'");
+  }
+  const positions = stringArg(args, "positions", DEFAULT_POSITIONS);
+  const contextArgs: JsonMap = {
+    ...args,
+    positions
+  };
+  const [lineup, waivers, trades] = await Promise.all([
+    myLineup(contextArgs, env),
+    waiverWireByPosition({
+      ...contextArgs,
+      per_position_limit: numberArg(args, "per_position_limit", 3)
+    }, env),
+    tradeOpportunities({
+      ...args,
+      targets_per_team: numberArg(args, "targets_per_team", 2),
+      offers_per_team: numberArg(args, "offers_per_team", 2)
+    }, env)
+  ]);
+  const report = buildDecisionSmokeReport(lineup, waivers, trades);
+  return format === "markdown" ? renderDecisionSmokeTables(report) : report;
+}
+
+function buildDecisionSmokeReport(lineup: JsonMap, waivers: JsonMap, trades: JsonMap): JsonMap {
+  return {
+    current_lineup: {
+      team_name: lineup.team_name,
+      season: lineup.season,
+      week: lineup.week,
+      current_total: lineup.current_total || lineup.points_so_far || 0,
+      projected_starter_total: lineup.projected_starter_total || lineup.projected_starter_points || 0,
+      projected_total: lineup.projected_total || 0,
+      active_bench_count: lineup.active_bench_count || lineup.bench_count || 0,
+      reserve_count: lineup.reserve_count || 0,
+      bye_week_warnings: lineup.bye_week_warnings || [],
+      lineup_table: arrayValue(lineup.lineup_table).map((row) => ({
+        slot: row.slot,
+        lineup_status: row.lineup_status,
+        name: row.name,
+        team: row.team,
+        position: row.position,
+        status: row.status || "",
+        injury_status: row.injury_status || "",
+        active_roster_spot: row.active_roster_spot !== false,
+        stash_value: row.stash_value === true,
+        actual_points: row.actual_points || 0,
+        projected_points: row.projected_points || 0
+      }))
+    },
+    waiver_wire_by_position: {
+      week: waivers.week,
+      per_position_limit: waivers.per_position_limit,
+      by_position: Object.fromEntries(
+        Object.entries(objectValue(waivers.by_position)).map(([position, rows]) => [
+          position,
+          arrayValue(rows).map((row) => compactWaiverRow(row))
+        ])
+      )
+    },
+    trade_opportunities: {
+      week: trades.week,
+      teams: arrayValue(trades.teams).map((team) => ({
+        team_name: team.team_name,
+        needs: arrayValue(team.needs).map((need) => `${String(need.position || "")} depth`),
+        surplus: arrayValue(team.surplus).map((surplus) => `${String(surplus.position || "")} depth`),
+        targets: arrayValue(team.targets).map((target) => compactTradeTarget(target)),
+        offer_angles: arrayValue(team.offer_angles).map((angle) => compactTradeAngle(angle)),
+        reasoning: listValue(team.reasoning)
+      })),
+      evidence: listValue(trades.evidence)
+    }
+  };
+}
+
+function compactWaiverRow(row: JsonMap): JsonMap {
+  const output: JsonMap = {
+    add: row.add_name,
+    position: row.add_position,
+    team: row.add_team,
+    status: availability(row),
+    projected_points: row.add_projected_points,
+    drop: row.drop_name,
+    drop_status: row.drop_lineup_status,
+    projected_gain: row.projected_gain_over_drop,
+    market_type: row.market_type,
+    acquisition_action: row.acquisition_action,
+    urgency: row.urgency,
+    bye_week_warnings: row.bye_week_warnings || []
+  };
+  if ("faab_tier" in row) {
+    output.faab = {
+      tier: row.faab_tier,
+      bid_pct: row.faab_bid_pct,
+      reasoning: row.faab_reasoning
+    };
+  }
+  return output;
+}
+
+function compactTradeTarget(row: JsonMap): JsonMap {
+  const upgrade = objectValue(row.upgrade_over);
+  return {
+    name: row.name,
+    position: row.position,
+    team: row.team,
+    status: availability(row),
+    projected_points: row.projected_points,
+    projected_lineup_gain: row.projected_lineup_gain,
+    upgrade_over: upgrade.name
+  };
+}
+
+function compactTradeAngle(row: JsonMap): JsonMap {
+  const askFor = objectValue(row.ask_for);
+  return {
+    angle_type: row.angle_type,
+    ask_for: askFor.name,
+    offer: arrayValue(row.offer).map((player) => player.name),
+    offer_projected_points: row.offer_projected_points,
+    projected_lineup_gain: row.projected_lineup_gain,
+    trade_score: row.trade_score,
+    opponent_need_matched: listValue(row.opponent_need_matched),
+    backup_risk: objectValue(row.backup_risk).level,
+    bye_week_risk: objectValue(row.bye_week_risk).level,
+    reasoning: row.reasoning
+  };
+}
+
+function availability(row: JsonMap): string {
+  const status = String(row.status || "");
+  const injuryStatus = String(row.injury_status || "");
+  if (status && injuryStatus) {
+    return `${status} / ${injuryStatus}`;
+  }
+  return status || injuryStatus;
+}
+
+function renderDecisionSmokeTables(report: JsonMap): string {
+  const lineup = objectValue(report.current_lineup);
+  const waivers = objectValue(report.waiver_wire_by_position);
+  const trades = objectValue(report.trade_opportunities);
+  return [
+    "## Current Lineup",
+    markdownTable(
+      ["Field", "Value"],
+      [
+        ["Team", lineup.team_name],
+        ["Season", lineup.season],
+        ["Week", lineup.week],
+        ["Current Total", lineup.current_total],
+        ["Projected Starter Total", lineup.projected_starter_total],
+        ["Projected Total", lineup.projected_total],
+        ["Active Bench Count", lineup.active_bench_count],
+        ["Reserve Count", lineup.reserve_count],
+        ["Bye Warnings", warningsText(lineup.bye_week_warnings)]
+      ]
+    ),
+    markdownTable(
+      ["Slot", "Status", "Player", "Team", "Pos", "NFL Status", "Injury", "Actual", "Projected", "Active Spot", "Stash"],
+      arrayValue(lineup.lineup_table).map((row) => [
+        row.slot,
+        row.lineup_status,
+        row.name,
+        row.team,
+        row.position,
+        row.status,
+        row.injury_status,
+        pointsText(row.actual_points),
+        pointsText(row.projected_points),
+        row.active_roster_spot,
+        row.stash_value
+      ])
+    ),
+    "## Waiver By Position",
+    markdownTable(
+      ["Pos", "Add", "Team", "Market", "Action", "Urgency", "Drop", "Drop Status", "Projected", "Gain", "Warnings"],
+      waiverTableRows(objectValue(waivers.by_position))
+    ),
+    "## Trade Opportunities",
+    markdownTable(
+      ["Team", "Needs", "Surplus", "Targets", "Offer Angles", "Reasoning"],
+      arrayValue(trades.teams).map((team) => [
+        team.team_name,
+        listText(listValue(team.needs)),
+        listText(listValue(team.surplus)),
+        tradeTargetsText(arrayValue(team.targets)),
+        tradeAnglesText(arrayValue(team.offer_angles)),
+        listText(listValue(team.reasoning))
+      ])
+    ),
+    "## Trade Evidence",
+    markdownTable(["Evidence"], listValue(trades.evidence).map((item) => [item]))
+  ].join("\n\n");
+}
+
+function waiverTableRows(byPosition: JsonMap): unknown[][] {
+  const rows: unknown[][] = [];
+  for (const [position, options] of Object.entries(byPosition)) {
+    for (const option of arrayValue(options)) {
+      rows.push([
+        position,
+        option.add,
+        option.team,
+        option.market_type,
+        option.acquisition_action,
+        option.urgency,
+        option.drop,
+        option.drop_status,
+        pointsText(option.projected_points),
+        pointsText(option.projected_gain),
+        warningsText(option.bye_week_warnings)
+      ]);
+    }
+  }
+  return rows;
+}
+
+function tradeTargetsText(targets: JsonMap[]): string {
+  if (!targets.length) return "none";
+  return targets.map((target) =>
+    `${String(target.name || "")} ${String(target.position || "")} ${String(target.team || "")} ${pointsText(target.projected_points)}, gain ${pointsText(target.projected_lineup_gain)} over ${String(target.upgrade_over || "")}`
+  ).join("; ");
+}
+
+function tradeAnglesText(angles: JsonMap[]): string {
+  if (!angles.length) return "none";
+  return angles.map((angle) =>
+    `${String(angle.angle_type || "")}: ask ${String(angle.ask_for || "")}, offer ${listText(listValue(angle.offer))}, score ${valueText(angle.trade_score)}`
+  ).join("; ");
+}
+
+function markdownTable(headers: string[], rows: unknown[][]): string {
+  const outputRows = rows.length ? rows : [["none", ...headers.slice(1).map(() => "")]];
+  return [
+    `| ${headers.map(escapeCell).join(" | ")} |`,
+    `| ${headers.map(() => "---").join(" | ")} |`,
+    ...outputRows.map((row) => {
+      const padded = [...row, ...headers.slice(row.length).map(() => "")].slice(0, headers.length);
+      return `| ${padded.map(escapeCell).join(" | ")} |`;
+    })
+  ].join("\n");
+}
+
+function escapeCell(value: unknown): string {
+  return valueText(value).replaceAll("|", "\\|").replaceAll("\n", "<br>");
+}
+
+function valueText(value: unknown): string {
+  if (value === null || value === undefined || value === "") return "";
+  if (typeof value === "boolean") return value ? "true" : "false";
+  return String(value);
+}
+
+function pointsText(value: unknown): string {
+  const parsed = numberValue(value);
+  return parsed === undefined ? valueText(value) : parsed.toFixed(2);
+}
+
+function listText(values: unknown[]): string {
+  return values.length ? values.map(valueText).join(", ") : "none";
+}
+
+function warningsText(warnings: unknown): string {
+  const rows = Array.isArray(warnings) ? warnings : [];
+  if (!rows.length) return "none";
+  return rows.map((warning) => {
+    const row = objectValue(warning);
+    return row.reason ? String(row.reason) : valueText(warning);
+  }).join("; ");
+}
+
 async function freeAgentWatch(args: JsonMap, env: Env): Promise<JsonMap[]> {
   const leagueId = requireLeagueId(args, env);
   const [season, week] = await resolveSeasonWeek(args, env);
-  const positions = parsePositions(stringArg(args, "positions", "RB,WR,TE"));
+  const positions = parsePositions(stringArg(args, "positions", DEFAULT_POSITIONS));
   const scoring = await leagueScoringSettings(leagueId, env);
   const rows = await fetchRowsForPositions(season, week, positions, "projections", scoring, env);
   const [players, rosters] = await Promise.all([
@@ -770,14 +1212,17 @@ function buildWaiverWatch(
       return [{
         player_id: playerId,
         name: playerName(player, playerId),
-        team: String(player.team || projection.team || ""),
+        ...playerContext(playerId, {
+          players,
+          projection,
+          marketHint: inferMarketType(player, trend, "unknown")
+        }),
         position,
         trend_type: trendType,
         trend_count: trend.count || 0,
+        acquisition_action: "watch",
         projected_points: projection.points || 0,
-        sleeper_projected_points: projection.sleeper_points || "",
-        status: String(player.status || ""),
-        injury_status: String(player.injury_status || "")
+        sleeper_projected_points: projection.sleeper_points || ""
       }];
     })
     .sort((a, b) => sortNumber(b.projected_points, a.projected_points) || sortNumber(b.trend_count, a.trend_count));
@@ -805,12 +1250,15 @@ function buildFreeAgentWatch(
       return [{
         player_id: playerId,
         name: playerName(player, playerId),
-        team: String(player.team || projection.team || ""),
+        ...playerContext(playerId, {
+          players,
+          projection,
+          marketHint: inferMarketType(player, projection, "free_agent")
+        }),
         position,
+        acquisition_action: "add_now",
         projected_points: projection.points || 0,
-        sleeper_projected_points: projection.sleeper_points || "",
-        status: String(player.status || ""),
-        injury_status: String(player.injury_status || "")
+        sleeper_projected_points: projection.sleeper_points || ""
       }];
     })
     .sort((a, b) => sortNumber(b.projected_points, a.projected_points));
@@ -836,11 +1284,14 @@ function buildMyLineup(input: {
   const projectionsByPlayer = Object.fromEntries(input.projectionRows.map((row) => [String(row.player_id || ""), row]));
   const playerPoints = objectValue(matchup.players_points);
   const starterIds = listValue(matchup.starters).map((playerId) => String(playerId));
-  const rosterPlayerIds = listValue(matchup.players).length
-    ? listValue(matchup.players).map((playerId) => String(playerId))
-    : listValue(roster.players).map((playerId) => String(playerId));
+  const reserveIds = orderedPlayerIds(listValue(roster.reserve));
+  const primaryPlayerIds = listValue(matchup.players).length
+    ? listValue(matchup.players)
+    : listValue(roster.players);
+  const rosterPlayerIds = orderedPlayerIds([...primaryPlayerIds, ...listValue(roster.players), ...reserveIds]);
   const starterIdSet = new Set(starterIds);
-  const benchIds = rosterPlayerIds.filter((playerId) => !starterIdSet.has(playerId));
+  const reserveIdSet = new Set(reserveIds);
+  const benchIds = rosterPlayerIds.filter((playerId) => !starterIdSet.has(playerId) && !reserveIdSet.has(playerId));
   const starters = starterIds.map((playerId, index) =>
     playerLineupSummary(playerId, {
       players: input.players,
@@ -859,6 +1310,21 @@ function buildMyLineup(input: {
       lineupStatus: "bench"
     })
   );
+  const reserve = reserveIds
+    .filter((playerId) => !starterIdSet.has(playerId))
+    .map((playerId) =>
+      playerLineupSummary(playerId, {
+        players: input.players,
+        projectionsByPlayer,
+        playerPoints,
+        slot: "IR",
+        lineupStatus: "reserve"
+      })
+    );
+  const lineupTable = [...starters, ...bench, ...reserve];
+  const currentTotal = matchup.points || 0;
+  const projectedStarterTotal = round(starters.reduce((sum, row) => sum + (numberValue(row.projected_points) || 0), 0), 2);
+  const projectedTotal = round(lineupTable.reduce((sum, row) => sum + (numberValue(row.projected_points) || 0), 0), 2);
 
   return {
     league_id: input.leagueId,
@@ -871,10 +1337,18 @@ function buildMyLineup(input: {
     roster_slots: slots,
     starter_count: starters.length,
     bench_count: bench.length,
-    points_so_far: matchup.points || 0,
-    projected_starter_points: round(starters.reduce((sum, row) => sum + (numberValue(row.projected_points) || 0), 0), 2),
+    active_bench_count: bench.length,
+    reserve_count: reserve.length,
+    current_total: currentTotal,
+    points_so_far: currentTotal,
+    projected_total: projectedTotal,
+    projected_starter_total: projectedStarterTotal,
+    projected_starter_points: projectedStarterTotal,
+    bye_week_warnings: byePressureWarnings(lineupTable),
+    lineup_table: lineupTable,
     starters,
-    bench
+    bench,
+    reserve
   };
 }
 
@@ -890,8 +1364,9 @@ function buildLineupRecommendations(input: {
   limit: number;
 }): JsonMap {
   const starters = arrayValue(input.lineup.starters).filter((row) => row.player_id !== "0");
-  const bench = arrayValue(input.lineup.bench).filter((row) => row.player_id !== "0");
-  const rosterPlayers = [...starters, ...bench];
+  const bench = arrayValue(input.lineup.bench).filter((row) => row.player_id !== "0" && row.active_roster_spot !== false);
+  const reserve = arrayValue(input.lineup.reserve).filter((row) => row.player_id !== "0");
+  const rosterPlayers = [...starters, ...bench, ...reserve];
   const projectionCandidates = buildFreeAgentWatch(input.projectionRows, input.rosters, input.players, input.positions);
   const trendCandidates = buildWaiverWatch(input.addTrends, input.players, input.projectionRows, input.rosters, input.positions, "add");
   const availableCandidates = mergeAvailableCandidates({
@@ -907,6 +1382,7 @@ function buildLineupRecommendations(input: {
     .slice(0, input.limit);
   const waiverComparisons = availableCandidates
     .map((candidate) => compareAvailablePlayer(candidate, rosterPlayers))
+    .filter((row) => (numberValue(row.projected_gain_over_drop) || 0) > 0)
     .sort((a, b) =>
       sortNumber(b.priority_score, a.priority_score)
       || sortNumber(b.projected_gain_over_drop, a.projected_gain_over_drop)
@@ -1244,6 +1720,89 @@ function starterSlots(league: JsonMap): string[] {
   return configured.length ? configured : DEFAULT_STARTER_SLOTS;
 }
 
+function orderedPlayerIds(playerIds: unknown[]): string[] {
+  const ordered: string[] = [];
+  const seen = new Set<string>();
+  for (const playerId of playerIds) {
+    if (playerId === null || playerId === undefined) {
+      continue;
+    }
+    const normalized = String(playerId);
+    if (seen.has(normalized)) {
+      continue;
+    }
+    ordered.push(normalized);
+    seen.add(normalized);
+  }
+  return ordered;
+}
+
+function playerContext(
+  playerId: string,
+  input: {
+    players: Record<string, JsonMap>;
+    projection?: JsonMap;
+    marketHint?: string;
+  }
+): JsonMap {
+  const player = objectValue(input.players[playerId]);
+  const projection = objectValue(input.projection);
+  const byeWeek = firstPresent(player, "bye_week", "bye");
+  const contextSources = ["sleeper_players", ...(Object.keys(projection).length ? ["sleeper_projections"] : [])];
+  return {
+    team: String(player.team || projection.team || ""),
+    position: String(player.position || projection.position || ""),
+    fantasy_positions: listValue(player.fantasy_positions),
+    status: String(player.status || ""),
+    injury_status: String(player.injury_status || ""),
+    depth_chart_order: firstPresent(player, "depth_chart_order"),
+    depth_chart_position: firstPresent(player, "depth_chart_position"),
+    bye_week: byeWeek,
+    market_type: normalizeMarketType(input.marketHint),
+    context_sources: contextSources,
+    source_metadata: {
+      player_context: contextSources,
+      market: KNOWN_MARKET_TYPES.has(String(input.marketHint || "")) && input.marketHint !== "unknown" ? "sleeper_explicit" : "unknown",
+      bye_week: byeWeek === "" ? "missing" : "sleeper_players"
+    }
+  };
+}
+
+function firstPresent(row: JsonMap, ...keys: string[]): unknown {
+  for (const key of keys) {
+    const value = row[key];
+    if (value !== null && value !== undefined && value !== "") {
+      return value;
+    }
+  }
+  return "";
+}
+
+function inferMarketType(player: JsonMap, row: JsonMap, fallback: string): string {
+  for (const source of [row, player]) {
+    const explicit = firstPresent(source, "market_type", "acquisition_market", "acquisition_type");
+    const normalized = normalizeMarketType(explicit);
+    if (normalized !== "unknown") {
+      return normalized;
+    }
+    if (source.waiver === true || source.is_waiver === true) {
+      return "waiver";
+    }
+    if (source.waiver === false || source.is_waiver === false) {
+      return "free_agent";
+    }
+  }
+  return normalizeMarketType(fallback);
+}
+
+function normalizeMarketType(value: unknown): string {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (["fa", "free-agent", "free agent", "free_agent"].includes(normalized)) return "free_agent";
+  if (["waiver", "waivers", "claim"].includes(normalized)) return "waiver";
+  if (KNOWN_MARKET_TYPES.has(normalized)) return normalized;
+  return "unknown";
+}
+
 function playerLineupSummary(
   playerId: string,
   input: {
@@ -1254,22 +1813,27 @@ function playerLineupSummary(
     lineupStatus: string;
   }
 ): JsonMap {
-  const player = objectValue(input.players[playerId]);
   const projection = objectValue(input.projectionsByPlayer[playerId]);
+  const actualPoints = input.playerPoints[playerId] || 0;
+  const player = objectValue(input.players[playerId]);
+  const activeRosterSpot = ["starter", "bench"].includes(input.lineupStatus);
   return {
     slot: input.slot,
     lineup_status: input.lineupStatus,
     player_id: playerId,
     name: playerName(player, playerId),
-    team: String(player.team || projection.team || ""),
-    position: String(player.position || projection.position || ""),
-    fantasy_positions: listValue(player.fantasy_positions),
-    points_so_far: input.playerPoints[playerId] || 0,
+    ...playerContext(playerId, {
+      players: input.players,
+      projection,
+      marketHint: inferMarketType(player, projection, "unknown")
+    }),
+    actual_points: actualPoints,
+    points_so_far: actualPoints,
     projected_points: projection.points || 0,
     sleeper_projected_points: projection.sleeper_points || "",
-    status: String(player.status || ""),
-    injury_status: String(player.injury_status || ""),
-    rostered_percent: rosteredPercent(player)
+    rostered_percent: rosteredPercent(player),
+    active_roster_spot: activeRosterSpot,
+    stash_value: input.lineupStatus === "reserve"
   };
 }
 
@@ -1336,47 +1900,71 @@ function mergeAvailableCandidates(input: {
     if (rosteredPct !== undefined) {
       priorityScore += rosteredPct / 20;
     }
+    const marketType = inferMarketType(player, row, addCount ? "unknown" : "free_agent");
     return {
       ...row,
       add_trend_count: addCount,
       drop_trend_count: dropCount,
       net_trend_count: addCount - dropCount,
       rostered_percent: rosteredPct,
-      market_type: addCount ? "waiver_trending" : "free_agent_projection",
+      market_type: marketType,
+      acquisition_action: acquisitionAction(marketType, 0),
       priority_score: round(priorityScore, 2)
     };
   });
 }
 
 function compareAvailablePlayer(candidate: JsonMap, rosterPlayers: JsonMap[]): JsonMap {
-  const comparableRosterPlayers = rosterPlayers.filter((row) => samePositionFamily(candidate, row));
-  const dropCandidate = [...(comparableRosterPlayers.length ? comparableRosterPlayers : rosterPlayers)]
-    .sort((a, b) => sortNumber(a.projected_points, b.projected_points))[0] || {};
+  const [dropCandidate, dropReason, rejectedDrops] = bestDropCandidate(candidate, rosterPlayers);
   const projectedPoints = numberValue(candidate.projected_points) || 0;
   const dropPoints = numberValue(dropCandidate.projected_points) || 0;
   const projectedGain = round(projectedPoints - dropPoints, 2);
-  const priorityScore = round((numberValue(candidate.priority_score) || 0) + Math.max(projectedGain, 0) * 1.5, 2);
-  return {
-    action: projectedGain > 0 ? "add" : "watch",
+  const marketType = normalizeMarketType(candidate.market_type);
+  const action = acquisitionAction(marketType, projectedGain);
+  const byeWarnings = moveByeWarnings(candidate, dropCandidate, rosterPlayers);
+  const priorityScore = round((numberValue(candidate.priority_score) || 0) + Math.max(projectedGain, 0) * 1.5 - (2 * byeWarnings.length), 2);
+  const row: JsonMap = {
+    action,
+    acquisition_action: action,
     add_player_id: candidate.player_id,
     add_name: candidate.name,
     add_position: candidate.position,
     add_team: candidate.team,
     add_projected_points: projectedPoints,
+    add_status: candidate.status || "",
+    add_injury_status: candidate.injury_status || "",
+    depth_chart_order: candidate.depth_chart_order || "",
+    depth_chart_position: candidate.depth_chart_position || "",
+    bye_week: candidate.bye_week || "",
     drop_player_id: dropCandidate.player_id || "",
     drop_name: dropCandidate.name || "",
     drop_position: dropCandidate.position || "",
     drop_team: dropCandidate.team || "",
+    drop_lineup_status: dropCandidate.lineup_status || "",
     drop_projected_points: dropPoints,
+    drop_reason: dropReason,
+    drop_reasoning: dropReason,
+    selected_drop_reasoning: dropReason,
+    rejected_drop_reasoning: rejectedDrops,
     projected_gain_over_drop: projectedGain,
-    market_type: candidate.market_type,
+    market_type: marketType,
     add_trend_count: candidate.add_trend_count || 0,
     drop_trend_count: candidate.drop_trend_count || 0,
     net_trend_count: candidate.net_trend_count || 0,
     rostered_percent: candidate.rostered_percent,
-    faab_bid_pct: faabBidPct(projectedGain, candidate),
+    urgency: addUrgency(projectedGain, candidate),
+    add_reasoning: addReasoning(candidate, projectedGain),
+    bye_week_warnings: byeWarnings,
+    source_metadata: candidate.source_metadata || {},
     priority_score: priorityScore
   };
+  if (marketType === "waiver") {
+    const faabHint = buildFaabHint(projectedGain, candidate);
+    row.faab_bid_pct = faabHint.bid_pct;
+    row.faab_tier = faabHint.tier;
+    row.faab_reasoning = faabHint.reasoning;
+  }
+  return row;
 }
 
 function watchlistRow(candidate: JsonMap): JsonMap {
@@ -1391,9 +1979,15 @@ function watchlistRow(candidate: JsonMap): JsonMap {
     net_trend_count: candidate.net_trend_count || 0,
     rostered_percent: candidate.rostered_percent,
     market_type: candidate.market_type,
+    acquisition_action: candidate.acquisition_action || acquisitionAction(candidate.market_type, 0),
+    urgency: addUrgency(0, candidate),
     priority_score: candidate.priority_score || 0,
     status: candidate.status || "",
-    injury_status: candidate.injury_status || ""
+    injury_status: candidate.injury_status || "",
+    depth_chart_order: candidate.depth_chart_order || "",
+    depth_chart_position: candidate.depth_chart_position || "",
+    bye_week: candidate.bye_week || "",
+    source_metadata: candidate.source_metadata || {}
   };
 }
 
@@ -1412,6 +2006,74 @@ function samePositionFamily(left: JsonMap, right: JsonMap): boolean {
     return true;
   }
   return ["RB", "WR", "TE"].includes(leftPosition) && ["RB", "WR", "TE"].includes(rightPosition);
+}
+
+function bestDropCandidate(candidate: JsonMap, rosterPlayers: JsonMap[]): [JsonMap, string, JsonMap[]] {
+  const selectedPool: JsonMap[] = [];
+  const rejected: JsonMap[] = [];
+  for (const row of rosterPlayers) {
+    const protectedReason = dropProtectionReason(row, rosterPlayers);
+    if (protectedReason) {
+      rejected.push({
+        player_id: row.player_id || "",
+        name: row.name || "",
+        position: row.position || "",
+        reason: protectedReason
+      });
+      continue;
+    }
+    selectedPool.push(row);
+  }
+  const dropCandidate = [...selectedPool]
+    .sort((a, b) =>
+      sortNumber(dropEaseScore(candidate, a, rosterPlayers), dropEaseScore(candidate, b, rosterPlayers))
+      || sortNumber(a.projected_points, b.projected_points)
+    )[0] || {};
+  if (!Object.keys(dropCandidate).length) return [{}, "no unprotected drop candidate", rejected];
+  if (samePositionFamily(candidate, dropCandidate)) {
+    return [dropCandidate, "lowest risk active roster cut with comparable position coverage", rejected];
+  }
+  return [dropCandidate, "lowest risk active roster cut across positions", rejected];
+}
+
+function dropProtectionReason(row: JsonMap, rosterPlayers: JsonMap[]): string {
+  if (!row.player_id || row.player_id === "0") return "placeholder roster row";
+  if (row.active_roster_spot === false || String(row.lineup_status || "").toLowerCase() === "reserve") {
+    return "reserve/IR stash does not consume an active bench spot";
+  }
+  if (String(row.lineup_status || "").toLowerCase() === "starter") return "current starter";
+  const position = String(row.position || "").toUpperCase();
+  if (!position) return "";
+  const activePositionRows = rosterPlayers.filter(
+    (player) => String(player.position || "").toUpperCase() === position && player.active_roster_spot !== false
+  );
+  const playableCount = activePositionRows.filter(
+    (player) => (numberValue(player.projected_points) || 0) >= playableThreshold(position)
+  ).length;
+  if (playableCount <= desiredDepth(position) && (numberValue(row.projected_points) || 0) >= playableThreshold(position)) {
+    return "last playable backup at position";
+  }
+  const riskyStarters = rosterPlayers.filter(
+    (player) =>
+      String(player.lineup_status || "").toLowerCase() === "starter"
+      && samePositionFamily(row, player)
+      && isAvailabilityRisk(player)
+  );
+  if (riskyStarters.length && (numberValue(row.projected_points) || 0) > 0) {
+    return "coverage for questionable starter";
+  }
+  return "";
+}
+
+function dropEaseScore(candidate: JsonMap, row: JsonMap, rosterPlayers: JsonMap[]): number {
+  let score = numberValue(row.projected_points) || 0;
+  if (!samePositionFamily(candidate, row)) score += 1.5;
+  const position = String(row.position || "").toUpperCase();
+  const positionCount = rosterPlayers.filter(
+    (player) => String(player.position || "").toUpperCase() === position && player.active_roster_spot !== false
+  ).length;
+  if (positionCount <= desiredDepth(position)) score += 4;
+  return score;
 }
 
 function isPlayerEligibleForSlot(player: JsonMap, slot: string): boolean {
@@ -1441,14 +2103,536 @@ function rosteredPercent(player: JsonMap): number | undefined {
 }
 
 function faabBidPct(projectedGain: number, candidate: JsonMap): number {
+  return numberValue(buildFaabHint(projectedGain, candidate).bid_pct) || 0;
+}
+
+function buildFaabHint(projectedGain: number, candidate: JsonMap): JsonMap {
   const netTrendCount = numberValue(candidate.net_trend_count) || 0;
   const rosteredPct = numberValue(candidate.rostered_percent) || 0;
-  if (projectedGain >= 6) return 12;
-  if (projectedGain >= 3) return 7;
-  if (projectedGain >= 1) return 3;
-  if (netTrendCount >= 1000 || rosteredPct >= 40) return 3;
-  if (netTrendCount > 0) return 1;
-  return 0;
+  const projectedPoints = numberValue(candidate.projected_points) || 0;
+  let bidPct = 0;
+  let tier = "pass";
+  if (projectedGain >= 8 || (projectedGain >= 5 && netTrendCount >= 1000)) {
+    bidPct = 14;
+    tier = "aggressive";
+  } else if (projectedGain >= 4) {
+    bidPct = 9;
+    tier = "standard";
+  } else if (projectedGain >= 1.5) {
+    bidPct = 5;
+    tier = "speculative";
+  } else if (projectedGain > 0 || netTrendCount >= 1000 || rosteredPct >= 40) {
+    bidPct = 2;
+    tier = "watch";
+  }
+
+  const reasons = [projectedGain > 0
+    ? `projects ${projectedGain.toFixed(2)} points above the drop candidate`
+    : "does not project above the drop candidate"];
+  if (netTrendCount > 0) reasons.push(`net add trend is +${netTrendCount}`);
+  if (netTrendCount < 0) reasons.push(`net add trend is ${netTrendCount}`);
+  if (rosteredPct) reasons.push(`rostered percentage signal is ${rosteredPct.toFixed(1)}`);
+  if (projectedPoints <= 0) reasons.push("projection is currently zero");
+  return { bid_pct: bidPct, tier, reasoning: reasons.join("; ") };
+}
+
+function groupWaiverOptionsByPosition(
+  candidates: JsonMap[],
+  rosterPlayers: JsonMap[],
+  positions: string[],
+  perPositionLimit: number
+): JsonMap {
+  const grouped: Record<string, JsonMap[]> = Object.fromEntries(positions.map((position) => [position, []]));
+  for (const candidate of candidates) {
+    const position = String(candidate.position || "").toUpperCase();
+    if (!Object.hasOwn(grouped, position)) {
+      continue;
+    }
+    const row = compareAvailablePlayer(candidate, rosterPlayers);
+    if ((numberValue(row.projected_gain_over_drop) || 0) > 0) {
+      grouped[position].push(row);
+    }
+  }
+  return Object.fromEntries(Object.entries(grouped).map(([position, rows]) => [
+    position,
+    rows
+      .sort((a, b) =>
+        sortNumber(b.priority_score, a.priority_score)
+        || sortNumber(b.projected_gain_over_drop, a.projected_gain_over_drop)
+      )
+      .slice(0, perPositionLimit)
+  ]));
+}
+
+function acquisitionAction(marketType: unknown, projectedGain: number): string {
+  const normalized = normalizeMarketType(marketType);
+  if (projectedGain <= 0) return "watch";
+  if (normalized === "waiver") return "submit_waiver_claim";
+  if (normalized === "free_agent") return "add_now";
+  return "watch";
+}
+
+function addUrgency(projectedGain: number, candidate: JsonMap): string {
+  const netTrendCount = numberValue(candidate.net_trend_count) || 0;
+  if (projectedGain >= 6 || netTrendCount >= 1500) return "high";
+  if (projectedGain >= 2 || netTrendCount >= 250) return "medium";
+  return "low";
+}
+
+function addReasoning(candidate: JsonMap, projectedGain: number): string {
+  const reasons = [projectedGain > 0
+    ? `projects ${projectedGain.toFixed(2)} points above the selected drop`
+    : "does not project above an unprotected drop"];
+  if (candidate.depth_chart_order !== undefined && candidate.depth_chart_order !== "") {
+    reasons.push(`depth chart ${String(candidate.depth_chart_position || candidate.position || "")} ${String(candidate.depth_chart_order)}`);
+  }
+  if (candidate.injury_status) {
+    reasons.push(`injury status is ${String(candidate.injury_status)}`);
+  }
+  return reasons.join("; ");
+}
+
+function isAvailabilityRisk(row: JsonMap): boolean {
+  if (row.injury_status) return true;
+  const status = String(row.status || "").trim().toLowerCase();
+  return Boolean(status && status !== "active");
+}
+
+function byePressureWarnings(rows: JsonMap[]): JsonMap[] {
+  const counts: Record<number, number> = {};
+  for (const row of rows) {
+    const bye = numberValue(row.bye_week);
+    if (bye === undefined || row.active_roster_spot === false) {
+      continue;
+    }
+    counts[bye] = (counts[bye] || 0) + 1;
+  }
+  return Object.entries(counts)
+    .map(([week, count]) => ({ week: Number(week), player_count: count }))
+    .filter((row) => row.player_count >= 4)
+    .sort((a, b) => sortNumber(a.week, b.week))
+    .map((row) => ({
+      ...row,
+      severity: row.player_count >= 5 ? "high" : "medium",
+      reason: `${row.player_count} active roster players share a bye week`
+    }));
+}
+
+function moveByeWarnings(candidate: JsonMap, dropCandidate: JsonMap, rosterPlayers: JsonMap[]): JsonMap[] {
+  const candidateBye = numberValue(candidate.bye_week);
+  if (candidateBye === undefined) return [];
+  const after = rosterPlayers.filter((row) => row.player_id !== dropCandidate.player_id);
+  after.push(candidate);
+  return byePressureWarnings(after).filter((warning) => warning.week === candidateBye);
+}
+
+function buildTradeOpportunities(input: {
+  leagueId: string;
+  rosterId: number;
+  season: number;
+  week: number;
+  lineup: JsonMap;
+  users: JsonMap[];
+  rosters: JsonMap[];
+  players: Record<string, JsonMap>;
+  projectionRows: JsonMap[];
+  positions: string[];
+  targetsPerTeam: number;
+  offersPerTeam: number;
+}): JsonMap {
+  const usersById = Object.fromEntries(input.users.map((user) => [String(user.user_id || ""), user]));
+  const projectionsByPlayer = Object.fromEntries(input.projectionRows.map((row) => [String(row.player_id || ""), row]));
+  const lineupRows = arrayValue(input.lineup.lineup_table).length
+    ? arrayValue(input.lineup.lineup_table)
+    : [...arrayValue(input.lineup.starters), ...arrayValue(input.lineup.bench)];
+  const myRosterPlayers = lineupRows.filter((row) => String(row.player_id || "") !== "0");
+  const myStarters = myRosterPlayers.filter((row) => String(row.lineup_status || "").toLowerCase() === "starter");
+  const myBench = myRosterPlayers.filter((row) => String(row.lineup_status || "").toLowerCase() === "bench" && row.active_roster_spot !== false);
+  const myOfferChips = tradeOfferChips(myRosterPlayers);
+  const allowed = new Set(input.positions.map((position) => position.toUpperCase()));
+  const myUpgradeSlots = myStarters
+    .filter((row) => allowed.has(String(row.position || "").toUpperCase()))
+    .sort((a, b) => sortNumber(a.projected_points, b.projected_points));
+
+  const teams = input.rosters
+    .filter((roster) => Number(roster.roster_id) !== input.rosterId)
+    .map((roster) => {
+      const owner = objectValue(usersById[String(roster.owner_id || "")]);
+      const rosterRows = rosterProjectionRows(listValue(roster.players), input.players, projectionsByPlayer, input.positions);
+      const needs = rosterNeeds(rosterRows, input.positions);
+      const surplus = rosterSurplus(rosterRows, input.positions);
+      const targets = tradeTargets(rosterRows, myUpgradeSlots, surplus, input.targetsPerTeam);
+      const offerAngles: JsonMap[] = [];
+      for (const target of targets) {
+        offerAngles.push(...buildOfferAngles({
+          target,
+          myOfferChips,
+          myBench,
+          myRosterPlayers,
+          opponentNeeds: needs,
+          offersPerTeam: input.offersPerTeam
+        }));
+        if (offerAngles.length >= input.offersPerTeam) {
+          break;
+        }
+      }
+      return {
+        roster_id: roster.roster_id,
+        team_name: ownerDisplayName(owner),
+        needs,
+        surplus,
+        targets,
+        offer_angles: offerAngles
+          .sort((a, b) =>
+            sortNumber(b.trade_score, a.trade_score)
+            || sortNumber(b.opponent_fit_score, a.opponent_fit_score)
+            || sortNumber(b.my_gain, a.my_gain)
+          )
+          .slice(0, input.offersPerTeam),
+        reasoning: tradeReasoning(needs, surplus, offerAngles)
+      };
+    });
+
+  return {
+    league_id: input.leagueId,
+    roster_id: input.rosterId,
+    team_name: input.lineup.team_name,
+    season: input.season,
+    week: input.week,
+    teams,
+    evidence: [
+      "trade opportunities are projection-based screens, not trade value rankings",
+      "each opposing roster is included even when no attractive offer angle is found",
+      "offer angles must match an opponent need and prefer bench or surplus players before core starters",
+      "projected lineup gain compares the target to the lowest projected comparable starter"
+    ]
+  };
+}
+
+function rosterProjectionRows(
+  playerIds: unknown[],
+  players: Record<string, JsonMap>,
+  projectionsByPlayer: Record<string, JsonMap>,
+  positions: string[]
+): JsonMap[] {
+  const allowed = new Set(positions.map((position) => position.toUpperCase()));
+  return playerIds
+    .map((playerId) => playerProjectionSummary(String(playerId), players, projectionsByPlayer))
+    .filter((row) => row.position && allowed.has(String(row.position).toUpperCase()))
+    .sort((a, b) => sortNumber(b.projected_points, a.projected_points));
+}
+
+function rosterNeeds(rows: JsonMap[], positions: string[]): JsonMap[] {
+  const needs: JsonMap[] = [];
+  for (const position of positions) {
+    const positionRows = rows.filter((row) => String(row.position || "").toUpperCase() === position);
+    const topProjection = Math.max(0, ...positionRows.map((row) => numberValue(row.projected_points) || 0));
+    const playableCount = positionRows.filter((row) => (numberValue(row.projected_points) || 0) >= playableThreshold(position)).length;
+    if (playableCount < desiredDepth(position) || topProjection < playableThreshold(position)) {
+      needs.push({
+        position,
+        playable_count: playableCount,
+        top_projected_points: round(topProjection, 2),
+        reason: "thin playable depth"
+      });
+    }
+  }
+  return needs;
+}
+
+function rosterSurplus(rows: JsonMap[], positions: string[]): JsonMap[] {
+  const surplus: JsonMap[] = [];
+  for (const position of positions) {
+    const playable = rows.filter(
+      (row) =>
+        String(row.position || "").toUpperCase() === position
+        && (numberValue(row.projected_points) || 0) >= playableThreshold(position)
+    );
+    if (playable.length > desiredDepth(position)) {
+      surplus.push({
+        position,
+        playable_count: playable.length,
+        top_names: playable.slice(0, 3).map((row) => row.name)
+      });
+    }
+  }
+  return surplus;
+}
+
+function tradeTargets(rosterRows: JsonMap[], myUpgradeSlots: JsonMap[], opponentSurplus: JsonMap[], targetsPerTeam: number): JsonMap[] {
+  const surplusPositions = new Set(opponentSurplus.map((row) => String(row.position || "").toUpperCase()));
+  return rosterRows
+    .flatMap((player): JsonMap[] => {
+      if (surplusPositions.size && !surplusPositions.has(String(player.position || "").toUpperCase())) {
+        return [];
+      }
+      const replaced = comparableUpgradeSlot(player, myUpgradeSlots);
+      if (!replaced) {
+        return [];
+      }
+      const gain = round((numberValue(player.projected_points) || 0) - (numberValue(replaced.projected_points) || 0), 2);
+      if (gain <= 0) {
+        return [];
+      }
+      return [{
+        ...player,
+        projected_lineup_gain: gain,
+        upgrade_over: {
+          player_id: replaced.player_id,
+          name: replaced.name,
+          position: replaced.position,
+          team: replaced.team,
+          projected_points: replaced.projected_points,
+          status: replaced.status || "",
+          injury_status: replaced.injury_status || ""
+        },
+        opponent_surplus_position: surplusPositions.has(String(player.position || "").toUpperCase())
+      }];
+    })
+    .sort((a, b) =>
+      sortNumber(b.projected_lineup_gain, a.projected_lineup_gain)
+      || sortNumber(b.projected_points, a.projected_points)
+    )
+    .slice(0, targetsPerTeam);
+}
+
+function comparableUpgradeSlot(target: JsonMap, myUpgradeSlots: JsonMap[]): JsonMap | undefined {
+  const comparable = myUpgradeSlots.filter((row) => samePositionFamily(target, row));
+  return [...comparable].sort((a, b) => sortNumber(a.projected_points, b.projected_points))[0];
+}
+
+function buildOfferAngles(input: {
+  target: JsonMap;
+  myOfferChips: JsonMap[];
+  myBench: JsonMap[];
+  myRosterPlayers: JsonMap[];
+  opponentNeeds: JsonMap[];
+  offersPerTeam: number;
+}): JsonMap[] {
+  const needPositions = new Set(input.opponentNeeds.map((row) => String(row.position || "").toUpperCase()));
+  const angles: JsonMap[] = [];
+  const direct = input.myOfferChips.filter(
+    (chip) => needPositions.has(String(chip.position || "").toUpperCase()) && (numberValue(chip.projected_points) || 0) > 0
+  );
+  const packagePool = [...input.myBench]
+    .filter((chip) => needPositions.has(String(chip.position || "").toUpperCase()) && (numberValue(chip.projected_points) || 0) > 0)
+    .sort((a, b) => sortNumber(b.projected_points, a.projected_points));
+
+  for (const chip of direct.slice(0, input.offersPerTeam)) {
+    angles.push(tradeAngle({
+      target: input.target,
+      offer: [chip],
+      angleType: "need_fit",
+      reasoning: `${String(chip.name || "")} addresses their ${String(chip.position || "")} need.`,
+      opponentNeeds: input.opponentNeeds,
+      myRosterPlayers: input.myRosterPlayers
+    }));
+  }
+  if (packagePool.length >= 2 && new Set(packagePool.slice(0, 2).map((chip) => chip.player_id)).size === 2) {
+    angles.push(tradeAngle({
+      target: input.target,
+      offer: packagePool.slice(0, 2),
+      angleType: "need_fit_package",
+      reasoning: "Package addresses an opponent need while consolidating your depth into a starter upgrade.",
+      opponentNeeds: input.opponentNeeds,
+      myRosterPlayers: input.myRosterPlayers
+    }));
+  }
+  return angles
+    .sort((a, b) => sortNumber(b.trade_score, a.trade_score))
+    .slice(0, input.offersPerTeam);
+}
+
+function tradeAngle(input: {
+  target: JsonMap;
+  offer: JsonMap[];
+  angleType: string;
+  reasoning: string;
+  opponentNeeds: JsonMap[];
+  myRosterPlayers: JsonMap[];
+}): JsonMap {
+  const needPositions = new Set(input.opponentNeeds.map((row) => String(row.position || "").toUpperCase()));
+  const matchedNeeds = [...new Set(input.offer
+    .map((row) => String(row.position || "").toUpperCase())
+    .filter((position) => needPositions.has(position)))]
+    .sort();
+  const myGain = numberValue(input.target.projected_lineup_gain) || 0;
+  const opponentFitScore = opponentTradeFitScore(input.offer, matchedNeeds);
+  const backupRisk = tradeBackupRisk(input.offer, input.myRosterPlayers);
+  const byeWeekRisk = tradeByeWeekRisk(input.target, input.offer, input.myRosterPlayers);
+  const rosterBalanceAfter = rosterBalanceAfterTrade(input.target, input.offer, input.myRosterPlayers);
+  const tradeScore = round(
+    myGain * 10
+    + opponentFitScore
+    - (numberValue(backupRisk.penalty) || 0)
+    - (numberValue(byeWeekRisk.penalty) || 0)
+    - (numberValue(rosterBalanceAfter.penalty) || 0),
+    2
+  );
+  return {
+    angle_type: input.angleType,
+    ask_for: input.target,
+    offer: input.offer.map((row) => ({
+      player_id: row.player_id,
+      name: row.name,
+      position: row.position,
+      team: row.team,
+      projected_points: row.projected_points,
+      status: row.status || "",
+      injury_status: row.injury_status || ""
+    })),
+    offer_projected_points: round(input.offer.reduce((sum, row) => sum + (numberValue(row.projected_points) || 0), 0), 2),
+    projected_lineup_gain: input.target.projected_lineup_gain || 0,
+    my_gain: myGain,
+    opponent_fit_score: opponentFitScore,
+    opponent_need_matched: matchedNeeds,
+    backup_risk: backupRisk,
+    bye_week_risk: byeWeekRisk,
+    roster_balance_after: rosterBalanceAfter,
+    trade_score: tradeScore,
+    reasoning: input.reasoning
+  };
+}
+
+function tradeOfferChips(rosterPlayers: JsonMap[]): JsonMap[] {
+  const byPosition: Record<string, JsonMap[]> = {};
+  for (const row of rosterPlayers) {
+    const position = String(row.position || "").toUpperCase();
+    byPosition[position] = [...(byPosition[position] || []), row];
+  }
+  const chips: JsonMap[] = [];
+  for (const [position, rows] of Object.entries(byPosition)) {
+    [...rows]
+      .sort((a, b) => sortNumber(b.projected_points, a.projected_points))
+      .slice(desiredDepth(position))
+      .filter((row) => (numberValue(row.projected_points) || 0) > 0 && !dropProtectionReason(row, rosterPlayers))
+      .forEach((row) => chips.push(row));
+  }
+  rosterPlayers
+    .filter((row) =>
+      String(row.lineup_status || "").toLowerCase() === "bench"
+      && (numberValue(row.projected_points) || 0) > 0
+      && !dropProtectionReason(row, rosterPlayers)
+      && !chips.includes(row)
+    )
+    .forEach((row) => chips.push(row));
+  return chips.sort((a, b) => sortNumber(b.projected_points, a.projected_points));
+}
+
+function opponentTradeFitScore(offer: JsonMap[], opponentNeedMatched: string[]): number {
+  const offerPoints = offer.reduce((sum, row) => sum + (numberValue(row.projected_points) || 0), 0);
+  return round(opponentNeedMatched.length * 35 + Math.min(offerPoints, 30), 2);
+}
+
+function tradeBackupRisk(offer: JsonMap[], rosterPlayers: JsonMap[]): JsonMap {
+  const reasons: string[] = [];
+  let penalty = 0;
+  for (const row of offer) {
+    const reason = dropProtectionReason(row, rosterPlayers);
+    if (reason) {
+      reasons.push(`${String(row.name || "")} is protected: ${reason}`);
+      penalty += 25;
+    }
+    const position = String(row.position || "").toUpperCase();
+    const remainingPlayable = rosterPlayers.filter(
+      (player) =>
+        player.player_id !== row.player_id
+        && String(player.position || "").toUpperCase() === position
+        && player.active_roster_spot !== false
+        && (numberValue(player.projected_points) || 0) >= playableThreshold(position)
+    );
+    if (remainingPlayable.length < desiredDepth(position)) {
+      reasons.push(`${position} depth would fall below desired playable coverage`);
+      penalty += 10;
+    }
+  }
+  return {
+    level: penalty >= 25 ? "high" : penalty ? "medium" : "low",
+    penalty,
+    reasons
+  };
+}
+
+function tradeByeWeekRisk(target: JsonMap, offer: JsonMap[], rosterPlayers: JsonMap[]): JsonMap {
+  const outgoingIds = new Set(offer.map((row) => row.player_id));
+  const after = rosterPlayers.filter((row) => !outgoingIds.has(row.player_id));
+  after.push(target);
+  const counts: Record<number, number> = {};
+  for (const row of after) {
+    const bye = numberValue(row.bye_week);
+    if (bye === undefined || row.active_roster_spot === false) continue;
+    counts[bye] = (counts[bye] || 0) + 1;
+  }
+  const clusteredByes = Object.fromEntries(
+    Object.entries(counts).filter(([, count]) => count >= 4)
+  );
+  const penalty = Object.values(clusteredByes).reduce((sum, count) => sum + (Number(count) - 3) * 4, 0);
+  return {
+    level: penalty ? "medium" : "low",
+    penalty,
+    clustered_byes: clusteredByes,
+    incoming_bye_week: target.bye_week || "",
+    outgoing_bye_weeks: offer.map((row) => row.bye_week || "")
+  };
+}
+
+function rosterBalanceAfterTrade(target: JsonMap, offer: JsonMap[], rosterPlayers: JsonMap[]): JsonMap {
+  const outgoingIds = new Set(offer.map((row) => row.player_id));
+  const counts: Record<string, number> = {};
+  for (const row of [...rosterPlayers.filter((player) => !outgoingIds.has(player.player_id)), target]) {
+    const position = String(row.position || "").toUpperCase();
+    if (!position) continue;
+    counts[position] = (counts[position] || 0) + 1;
+  }
+  const warnings: string[] = [];
+  let penalty = 0;
+  for (const [position, count] of Object.entries(counts)) {
+    if (count < desiredDepth(position)) {
+      warnings.push(`${position} depth below desired roster balance`);
+      penalty += 8;
+    }
+  }
+  return {
+    position_counts: Object.fromEntries(Object.entries(counts).sort(([left], [right]) => left.localeCompare(right))),
+    warnings,
+    penalty
+  };
+}
+
+function tradeReasoning(needs: JsonMap[], surplus: JsonMap[], offerAngles: JsonMap[]): string[] {
+  const reasons: string[] = [];
+  if (needs.length) {
+    reasons.push(`Needs: ${needs.slice(0, 3).map((row) => `${String(row.position)} depth`).join(", ")}`);
+  }
+  if (surplus.length) {
+    reasons.push(`Surplus: ${surplus.slice(0, 3).map((row) => `${String(row.position)} depth`).join(", ")}`);
+  }
+  reasons.push(offerAngles.length
+    ? "At least one offer angle matches an opponent need and creates a projected lineup upgrade for you."
+    : "No clear mutual-fit offer angle from current roster depth.");
+  return reasons;
+}
+
+function playableThreshold(position: string): number {
+  return {
+    QB: 14,
+    RB: 8,
+    WR: 8,
+    TE: 6,
+    K: 5,
+    DEF: 5
+  }[position.toUpperCase()] || 6;
+}
+
+function desiredDepth(position: string): number {
+  return {
+    QB: 1,
+    RB: 3,
+    WR: 4,
+    TE: 1,
+    K: 1,
+    DEF: 1
+  }[position.toUpperCase()] || 1;
 }
 
 function trendPriorityBoost(netTrendCount: number): number {
@@ -1482,11 +2666,12 @@ function playerProjectionSummary(playerId: string, players: Record<string, JsonM
   return {
     player_id: playerId,
     name: playerName(player, playerId),
-    team: String(player.team || projection.team || ""),
-    position: String(player.position || projection.position || ""),
+    ...playerContext(playerId, {
+      players,
+      projection,
+      marketHint: inferMarketType(player, projection, "unknown")
+    }),
     projected_points: projection.points || 0,
-    status: String(player.status || ""),
-    injury_status: String(player.injury_status || "")
   };
 }
 

@@ -116,11 +116,62 @@ TOOLS = [
                 "league_id": {"type": "string"},
                 "season": {"type": "integer"},
                 "week": {"type": "integer"},
-                "positions": {"type": "string", "default": "RB,WR,TE"},
+                "positions": {"type": "string", "default": "QB,RB,WR,TE,K,DEF"},
                 "lookback_hours": {"type": "integer", "default": 24},
                 "trend_limit": {"type": "integer", "default": 100},
                 "limit": {"type": "integer", "default": 25},
                 "recent_weeks": {"type": "integer", "default": 3},
+            },
+        },
+    },
+    {
+        "name": "waiver_wire_by_position",
+        "description": "Return top waiver and free-agent options grouped by position with status, drop candidate, gain, and FAAB guidance.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "league_id": {"type": "string"},
+                "roster_id": {"type": "integer"},
+                "season": {"type": "integer"},
+                "week": {"type": "integer"},
+                "positions": {"type": "string", "default": "QB,RB,WR,TE,K,DEF"},
+                "lookback_hours": {"type": "integer", "default": 24},
+                "trend_limit": {"type": "integer", "default": 100},
+                "per_position_limit": {"type": "integer", "default": 10},
+            },
+        },
+    },
+    {
+        "name": "trade_opportunities",
+        "description": "Show every opposing team with needs, surplus, trade targets, multiple offer angles, and reasoning.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "league_id": {"type": "string"},
+                "roster_id": {"type": "integer"},
+                "season": {"type": "integer"},
+                "week": {"type": "integer"},
+                "positions": {"type": "string", "default": "QB,RB,WR,TE"},
+                "targets_per_team": {"type": "integer", "default": 5},
+                "offers_per_team": {"type": "integer", "default": 3},
+            },
+        },
+    },
+    {
+        "name": "decision_smoke_report",
+        "description": "Run the compact lineup, waiver, and trade smoke workflow and return display-ready Markdown tables or JSON.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "league_id": {"type": "string"},
+                "roster_id": {"type": "integer"},
+                "season": {"type": "integer"},
+                "week": {"type": "integer"},
+                "positions": {"type": "string", "default": "QB,RB,WR,TE,K,DEF"},
+                "per_position_limit": {"type": "integer", "default": 3},
+                "targets_per_team": {"type": "integer", "default": 2},
+                "offers_per_team": {"type": "integer", "default": 2},
+                "format": {"type": "string", "enum": ["markdown", "json"], "default": "markdown"},
             },
         },
     },
@@ -133,7 +184,7 @@ TOOLS = [
                 "league_id": {"type": "string"},
                 "season": {"type": "integer"},
                 "week": {"type": "integer"},
-                "positions": {"type": "string", "default": "RB,WR,TE"},
+                "positions": {"type": "string", "default": "QB,RB,WR,TE,K,DEF"},
                 "limit": {"type": "integer", "default": 25},
             },
         },
@@ -225,7 +276,9 @@ class McpServer:
             "content": [
                 {
                     "type": "text",
-                    "text": json.dumps(result, indent=2, sort_keys=True),
+                    "text": result
+                    if isinstance(result, str)
+                    else json.dumps(result, indent=2, sort_keys=True),
                 }
             ],
             "isError": False,

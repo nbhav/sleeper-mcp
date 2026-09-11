@@ -359,19 +359,15 @@ def test_waiver_watch_chains_trends_projections_rosters_and_player_cache(monkeyp
     )
 
     assert result.exit_code == 0
-    assert json.loads(result.stdout) == [
-        {
-            "injury_status": "",
-            "name": "Trending RB",
-            "player_id": "trend-rb",
-            "position": "RB",
-            "projected_points": 30,
-            "sleeper_projected_points": 1,
-            "status": "Active",
-            "team": "DEN",
-            "trend_count": 99,
-            "trend_type": "add",
-        }
+    rows = json.loads(result.stdout)
+    assert rows[0]["player_id"] == "trend-rb"
+    assert rows[0]["projected_points"] == 30
+    assert rows[0]["market_type"] == "unknown"
+    assert rows[0]["acquisition_action"] == "watch"
+    assert "faab_bid_pct" not in rows[0]
+    assert rows[0]["source_metadata"]["player_context"] == [
+        "sleeper_players",
+        "sleeper_projections",
     ]
     assert fake_client.calls == [
         ("league", "league-1"),
