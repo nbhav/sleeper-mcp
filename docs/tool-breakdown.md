@@ -18,6 +18,7 @@ The Docker and Compose files live under `infra/docker/`. The main Makefile at th
 | `python/src/sleeper_tooling/league_context.py` | Resolve default league, owner, and roster IDs from a league URL plus team/user name. |
 | `python/src/sleeper_tooling/mcp_server.py` | Stdio MCP protocol server. |
 | `python/src/sleeper_tooling/mcp_tools.py` | MCP tool implementations over the decision engine. |
+| `python/src/sleeper_tooling/player_values.py` | Deterministic player value model for week, near-term, season, and replacement-aware decision scores. |
 | `python/src/sleeper_tooling/reports.py` | Helpers that join raw API objects into fantasy-friendly rows. |
 | `python/src/sleeper_tooling/scoring.py` | League-specific fantasy point calculation. |
 | `python/src/sleeper_tooling/output.py` | JSON, CSV, and terminal table rendering. |
@@ -91,9 +92,12 @@ make sleeper ARGS="waiver-watch --help"
 | `my_lineup` | Current starters and bench for the configured roster, with a unified lineup table, actual points, status, injuries, and league-scored projections. |
 | `lineup_recommendations` | Start/sit changes plus available-player comparisons against protected drop candidates, acquisition action, and market-aware waiver hints. |
 | `waiver_wire_watch` | Actionable waiver shortlist with availability, projections, trends, status, and recent actuals. |
-| `waiver_wire_by_position` | Top waiver and free-agent options by position, with drop candidate, projected gain, status, acquisition action, and FAAB guidance only for known waiver claims. |
-| `trade_opportunities` | Every opposing team with needs, surplus, targets, mutual-fit offer scores, roster-balance risk, and reasoning. |
-| `decision_smoke_report` | Compact lineup, waiver, and trade smoke workflow output as display-ready Markdown tables or JSON. |
+| `waiver_wire_by_position` | Top waiver and free-agent options by position, with recommendation, move score, value deltas, protected drop reasoning, acquisition action, and FAAB guidance only for known waiver claims. |
+| `trade_opportunities` | Every opposing team with needs, surplus, targets, mutual-fit package matrices, trade score, recommendation, roster-balance risk, and reasoning summary. |
+| `player_values` | Deterministic player value rankings with week, three-week, season, decision, and replacement-aware scores. |
+| `roster_analysis` | One-roster strengths, weaknesses, protected players, movable players, balance score, trade posture, and waiver posture. |
+| `league_roster_analysis` | League-wide roster analysis for team needs, surplus, risk, and trade posture. |
+| `decision_smoke_report` | Compact lineup, waiver, and trade smoke workflow output as display-ready Markdown tables or JSON, including waiver move-matrix and trade package columns. |
 | `free_agent_watch` | Unrostered players ranked by projection. |
 | `injury_watch` | Rostered players with injury/status risk. |
 | `opponent_watch` | Weekly opponent starters, projection, and injury flags. |
@@ -133,7 +137,24 @@ Lineup rows include:
 - `stash_value`: true for reserve/IR players that should not be treated as easy cuts
 - `depth_chart_order`, `depth_chart_position`, `bye_week`, and `source_metadata` when Sleeper exposes that context
 
-`my_lineup` also returns `current_total`, `projected_total`, `projected_starter_total`, `season`, and `week`.
+`my_lineup` also returns `current_total`, `projected_total`,
+`projected_starter_total`, `projected_active_roster_total`,
+`projected_roster_total`, `season`, and `week`. `projected_total` is the
+starter-only projection and matches `projected_starter_total`; use
+`projected_active_roster_total` for starters plus bench or
+`projected_roster_total` for starters, bench, and reserve/IR stashes.
+
+Decision matrix rows include:
+
+- Waiver rows: `recommendation`, `move_score`, `reasoning_summary`,
+  `week_value_delta`, `three_week_value_delta`, `season_value_delta`,
+  impact/penalty fields, selected drop reasoning, and rejected drop reasoning.
+- Trade offer angles: `package_type`, `ask`, `offer`, `my_gain`,
+  `opponent_gain`, `value_balance`, `trade_score`, `recommendation`, and
+  `reasoning_summary`.
+
+`decision_smoke_report` keeps JSON structured and renders Markdown tables with
+those same deterministic waiver and trade columns for review.
 
 Sleeper often omits zero-value stat fields. Scoring code treats missing fields as `0`.
 

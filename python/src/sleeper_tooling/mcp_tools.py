@@ -23,6 +23,11 @@ from sleeper_tooling.league_context import (
     render_context_env,
     resolve_league_context as build_league_context,
 )
+from sleeper_tooling.player_values import build_player_values
+from sleeper_tooling.roster_analysis import (
+    build_league_roster_analysis,
+    build_roster_analysis,
+)
 from sleeper_tooling.normalized_decision_reads import (
     DEFAULT_MAX_AGE_SECONDS as NORMALIZED_DECISION_MAX_AGE_SECONDS,
     NormalizedDecisionInputs,
@@ -969,6 +974,194 @@ class FantasyToolRunner:
                 week=resolved_week,
             )
 
+    def player_values(
+        self,
+        *,
+        league_id: str | None = None,
+        season: int | None = None,
+        week: int | None = None,
+        positions: str = DEFAULT_POSITIONS,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        if limit < 1:
+            raise ValueError("limit must be at least 1")
+
+        resolved_league_id = self._resolve_optional_league_id(league_id)
+        position_list = parse_positions(positions)
+        with self._client() as client:
+            resolved_season, resolved_week = resolve_season_week(client, season, week)
+            scoring_settings = get_league_scoring_settings(client, resolved_league_id)
+            projection_rows = fetch_rows_for_positions(
+                client,
+                season=resolved_season,
+                week=resolved_week,
+                positions=position_list,
+                source="projections",
+                scoring_settings=scoring_settings,
+            )
+            values = build_player_values(
+                players=load_or_fetch_players(client, cache_path=self.players_cache),
+                projection_rows=projection_rows,
+                scoring_settings=scoring_settings,
+            )
+            filtered = [
+                row
+                for row in values
+                if not position_list or str(row.get("position") or "").upper() in position_list
+            ]
+            return {
+                "league_id": resolved_league_id,
+                "season": resolved_season,
+                "week": resolved_week,
+                "positions": position_list,
+                "scoring_source": resolved_league_id or "sleeper_default_points",
+                "limit": limit,
+                "values": filtered[:limit],
+                "evidence": [
+                    "values are deterministic from player metadata and weekly projection rows",
+                    "week_value, three_week_value, season_value, and decision_value use the shared player value model",
+                    "value_above_replacement uses the model replacement baselines",
+                ],
+            }
+
+    def roster_analysis(
+        self,
+        *,
+        league_id: str | None = None,
+        roster_id: int | None = None,
+        season: int | None = None,
+        week: int | None = None,
+        positions: str = DEFAULT_POSITIONS,
+    ) -> dict[str, Any]:
+        resolved_league_id = self._require_league_id(league_id)
+        resolved_roster_id = self._require_roster_id(roster_id)
+        position_list = parse_positions(positions)
+        if season is not None and week is not None:
+            normalized = self._normalized_decision_read(
+                league_id=resolved_league_id,
+                roster_id=resolved_roster_id,
+                season=season,
+                week=week,
+                positions=position_list,
+            )
+            if normalized.fresh and normalized.inputs is not None:
+                return self._with_decision_metadata(
+                    build_roster_analysis(
+                        league_id=resolved_league_id,
+                        roster_id=resolved_roster_id,
+                        season=season,
+                        week=week,
+                        league=normalized.inputs.league,
+                        users=normalized.inputs.users,
+                        rosters=normalized.inputs.rosters,
+                        matchups=normalized.inputs.matchups,
+                        players=normalized.inputs.players,
+                        projection_rows=normalized.inputs.projection_rows,
+                    ),
+                    normalized,
+                    fallback_used=False,
+                )
+        else:
+            normalized = None
+        with self._client() as client:
+            resolved_season, resolved_week = resolve_season_week(client, season, week)
+            if normalized is None:
+                normalized = self._normalized_decision_read(
+                    league_id=resolved_league_id,
+                    roster_id=resolved_roster_id,
+                    season=resolved_season,
+                    week=resolved_week,
+                    positions=position_list,
+                )
+                if normalized.fresh and normalized.inputs is not None:
+                    return self._with_decision_metadata(
+                        build_roster_analysis(
+                            league_id=resolved_league_id,
+                            roster_id=resolved_roster_id,
+                            season=resolved_season,
+                            week=resolved_week,
+                            league=normalized.inputs.league,
+                            users=normalized.inputs.users,
+                            rosters=normalized.inputs.rosters,
+                            matchups=normalized.inputs.matchups,
+                            players=normalized.inputs.players,
+                            projection_rows=normalized.inputs.projection_rows,
+                        ),
+                        normalized,
+                        fallback_used=False,
+                    )
+            league = client.get_league(resolved_league_id)
+            projection_rows = fetch_rows_for_positions(
+                client,
+                season=resolved_season,
+                week=resolved_week,
+                positions=position_list,
+                source="projections",
+                scoring_settings=league.get("scoring_settings") or {},
+            )
+            return self._with_decision_metadata(
+                build_roster_analysis(
+                    league_id=resolved_league_id,
+                    roster_id=resolved_roster_id,
+                    season=resolved_season,
+                    week=resolved_week,
+                    league=league,
+                    users=client.get_league_users(resolved_league_id),
+                    rosters=client.get_rosters(resolved_league_id),
+                    matchups=client.get_matchups(resolved_league_id, resolved_week),
+                    players=load_or_fetch_players(client, cache_path=self.players_cache),
+                    projection_rows=projection_rows,
+                ),
+                normalized,
+                fallback_used=True,
+            )
+
+    def league_roster_analysis(
+        self,
+        *,
+        league_id: str | None = None,
+        season: int | None = None,
+        week: int | None = None,
+        positions: str = DEFAULT_POSITIONS,
+    ) -> dict[str, Any]:
+        resolved_league_id = self._require_league_id(league_id)
+        position_list = parse_positions(positions)
+        with self._client() as client:
+            resolved_season, resolved_week = resolve_season_week(client, season, week)
+            league = client.get_league(resolved_league_id)
+            projection_rows = fetch_rows_for_positions(
+                client,
+                season=resolved_season,
+                week=resolved_week,
+                positions=position_list,
+                source="projections",
+                scoring_settings=league.get("scoring_settings") or {},
+            )
+            return {
+                **build_league_roster_analysis(
+                    league_id=resolved_league_id,
+                    season=resolved_season,
+                    week=resolved_week,
+                    league=league,
+                    users=client.get_league_users(resolved_league_id),
+                    rosters=client.get_rosters(resolved_league_id),
+                    matchups=client.get_matchups(resolved_league_id, resolved_week),
+                    players=load_or_fetch_players(client, cache_path=self.players_cache),
+                    projection_rows=projection_rows,
+                ),
+                "positions": position_list,
+                "data_source": "sleeper_fallback",
+                "freshness": {
+                    "status": "not_checked",
+                    "fresh": False,
+                    "warnings": [
+                        "league_roster_analysis currently uses live Sleeper inputs through the HTTP cache"
+                    ],
+                },
+                "fallback_used": True,
+                "sync_recommended": False,
+            }
+
     def injury_watch(self, *, league_id: str | None = None) -> list[dict[str, Any]]:
         resolved_league_id = self._require_league_id(league_id)
         with self._client() as client:
@@ -1076,7 +1269,9 @@ class FantasyToolRunner:
                     roster_id=resolved_roster_id,
                     season=resolved_season,
                     week=resolved_week,
+                    league=league,
                     lineup=lineup,
+                    matchups=matchups,
                     users=users,
                     rosters=rosters,
                     players=players,
@@ -1391,7 +1586,9 @@ class FantasyToolRunner:
                 roster_id=roster_id,
                 season=season,
                 week=week,
+                league=inputs.league,
                 lineup=lineup,
+                matchups=inputs.matchups,
                 users=inputs.users,
                 rosters=inputs.rosters,
                 players=inputs.players,

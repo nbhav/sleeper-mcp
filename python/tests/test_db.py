@@ -7,6 +7,7 @@ from sleeper_tooling.db import ApiResponseCache, SleeperNormalizedRepository
 
 NORMALIZED_TABLES = {
     "players",
+    "player_external_ids",
     "league_settings",
     "league_users",
     "rosters",
@@ -37,6 +38,7 @@ def test_normalized_schema_migrates_idempotently(tmp_path) -> None:
     assert NORMALIZED_TABLES.issubset({row["name"] for row in rows})
     assert {
         "idx_player_week_rows_player",
+        "idx_player_external_ids_provider",
         "idx_player_week_stat_trends",
         "idx_matchups_league_week",
         "idx_roster_players_player",
@@ -56,6 +58,8 @@ def test_upserts_use_stable_natural_keys_without_duplicates(tmp_path) -> None:
             "team": "DEN",
             "position": "RB",
             "fantasy_positions": ["RB"],
+            "depth_chart_order": 2,
+            "depth_chart_position": "RB",
         }
     }
     assert repo.upsert_players(players) == 1
@@ -136,6 +140,71 @@ def test_upserts_use_stable_natural_keys_without_duplicates(tmp_path) -> None:
         "1": "bench",
         "3": "starter",
     }
+    assert repo.get_player("1")["depth_chart_order"] == 2
+    assert repo.get_player("1")["depth_chart_position"] == "RB"
+    repo.close()
+
+
+def test_player_external_ids_are_normalized_and_queryable(tmp_path) -> None:
+    repo = SleeperNormalizedRepository(tmp_path / "sleeper.db")
+
+    assert repo.upsert_players(
+        {
+            "1": {
+                "full_name": "Linked Player",
+                "espn_id": "12345",
+                "rotowire_id": 67890,
+                "yahoo_id": "",
+                "sportradar_id": None,
+            },
+            "2": {
+                "full_name": "Unlinked Player",
+                "position": "RB",
+            },
+        }
+    ) == 2
+
+    linked_ids = repo.list_player_external_ids("1")
+    unlinked_ids = repo.list_player_external_ids("2")
+
+    assert {
+        row["provider"]: (row["external_id"], row["source"])
+        for row in linked_ids
+    } == {
+        "espn": ("12345", "sleeper_players"),
+        "rotowire": ("67890", "sleeper_players"),
+    }
+    assert repo.get_player_external_id("1", "ESPN")["external_id"] == "12345"
+    assert unlinked_ids == []
+    repo.close()
+
+
+def test_player_external_ids_update_and_remove_missing_ids(tmp_path) -> None:
+    repo = SleeperNormalizedRepository(tmp_path / "sleeper.db")
+
+    repo.upsert_players(
+        {
+            "1": {
+                "full_name": "Changing Player",
+                "espn_id": "old-espn",
+                "yahoo_id": "old-yahoo",
+            }
+        }
+    )
+    repo.upsert_players(
+        {
+            "1": {
+                "full_name": "Changing Player",
+                "espn_id": "new-espn",
+            }
+        }
+    )
+
+    assert {
+        row["provider"]: row["external_id"]
+        for row in repo.list_player_external_ids("1")
+    } == {"espn": "new-espn"}
+    assert repo.get_player_external_id("1", "yahoo") is None
     repo.close()
 
 

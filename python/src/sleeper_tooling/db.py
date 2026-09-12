@@ -12,6 +12,23 @@ from sleeper_tooling.scoring import calculate_fantasy_points
 
 JsonObject = Mapping[str, Any]
 
+PLAYER_EXTERNAL_ID_SOURCE = "sleeper_players"
+
+PLAYER_EXTERNAL_ID_FIELDS = {
+    "espn_id": "espn",
+    "fantasy_data_id": "fantasydata",
+    "gsis_id": "gsis",
+    "nfl_id": "nfl",
+    "pff_id": "pff",
+    "pfr_id": "pro-football-reference",
+    "rotowire_id": "rotowire",
+    "rotoworld_id": "rotoworld",
+    "sportradar_id": "sportradar",
+    "stats_id": "stats",
+    "swish_id": "swish",
+    "yahoo_id": "yahoo",
+}
+
 
 class ApiResponseCache:
     def __init__(self, db_path: Path, *, default_ttl_seconds: int = 900) -> None:
@@ -153,10 +170,12 @@ class SleeperNormalizedRepository:
                     fantasy_positions_json,
                     status,
                     injury_status,
+                    depth_chart_order,
+                    depth_chart_position,
                     raw_json,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(player_id) DO UPDATE SET
                     full_name = excluded.full_name,
                     first_name = excluded.first_name,
@@ -166,6 +185,8 @@ class SleeperNormalizedRepository:
                     fantasy_positions_json = excluded.fantasy_positions_json,
                     status = excluded.status,
                     injury_status = excluded.injury_status,
+                    depth_chart_order = excluded.depth_chart_order,
+                    depth_chart_position = excluded.depth_chart_position,
                     raw_json = excluded.raw_json,
                     updated_at = excluded.updated_at
                 """,
@@ -179,10 +200,42 @@ class SleeperNormalizedRepository:
                     _json_dumps(player.get("fantasy_positions") or []),
                     _text(player.get("status")),
                     _text(player.get("injury_status")),
+                    _int_or_none(player.get("depth_chart_order")),
+                    _text(player.get("depth_chart_position")),
                     _json_dumps(player),
                     updated_at,
                 ),
             )
+            self._connection.execute(
+                """
+                DELETE FROM player_external_ids
+                WHERE player_id = ? AND source = ?
+                """,
+                (player_id, PLAYER_EXTERNAL_ID_SOURCE),
+            )
+            for provider, external_id in _player_external_ids(player):
+                self._connection.execute(
+                    """
+                    INSERT INTO player_external_ids (
+                        player_id,
+                        provider,
+                        external_id,
+                        source,
+                        updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(player_id, provider, source) DO UPDATE SET
+                        external_id = excluded.external_id,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        player_id,
+                        provider,
+                        external_id,
+                        PLAYER_EXTERNAL_ID_SOURCE,
+                        updated_at,
+                    ),
+                )
             count += 1
         self._connection.commit()
         return count
@@ -191,6 +244,43 @@ class SleeperNormalizedRepository:
         row = self._connection.execute(
             "SELECT * FROM players WHERE player_id = ?",
             (str(player_id),),
+        ).fetchone()
+        return _decode_row(row)
+
+    def list_player_external_ids(
+        self,
+        player_id: str,
+        *,
+        provider: str | None = None,
+    ) -> list[dict[str, Any]]:
+        params: list[Any] = [str(player_id)]
+        where = "player_id = ?"
+        if provider is not None:
+            where += " AND provider = ?"
+            params.append(_normalize_provider(provider))
+        rows = self._connection.execute(
+            f"""
+            SELECT * FROM player_external_ids
+            WHERE {where}
+            ORDER BY provider, source
+            """,
+            params,
+        ).fetchall()
+        return [_decode_row(row) for row in rows if row is not None]
+
+    def get_player_external_id(
+        self,
+        player_id: str,
+        provider: str,
+    ) -> dict[str, Any] | None:
+        row = self._connection.execute(
+            """
+            SELECT * FROM player_external_ids
+            WHERE player_id = ? AND provider = ?
+            ORDER BY source
+            LIMIT 1
+            """,
+            (str(player_id), _normalize_provider(provider)),
         ).fetchone()
         return _decode_row(row)
 
@@ -1053,8 +1143,30 @@ def _migrate_normalized_schema(connection: sqlite3.Connection) -> None:
             fantasy_positions_json TEXT NOT NULL DEFAULT '[]',
             status TEXT,
             injury_status TEXT,
+            depth_chart_order INTEGER,
+            depth_chart_position TEXT,
             raw_json TEXT NOT NULL,
             updated_at REAL NOT NULL
+        )
+        """
+    )
+    _ensure_columns(
+        connection,
+        "players",
+        {
+            "depth_chart_order": "INTEGER",
+            "depth_chart_position": "TEXT",
+        },
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS player_external_ids (
+            player_id TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            external_id TEXT NOT NULL,
+            source TEXT NOT NULL,
+            updated_at REAL NOT NULL,
+            PRIMARY KEY (player_id, provider, source)
         )
         """
     )
@@ -1253,6 +1365,10 @@ def _create_normalized_indexes(connection: sqlite3.Connection) -> None:
         ON players(team, position)
         """,
         """
+        CREATE INDEX IF NOT EXISTS idx_player_external_ids_provider
+        ON player_external_ids(provider, external_id)
+        """,
+        """
         CREATE INDEX IF NOT EXISTS idx_league_users_display_name
         ON league_users(league_id, display_name)
         """,
@@ -1333,6 +1449,27 @@ def _iter_player_week_payloads(
         yield _required_text(row, "player_id"), row
 
 
+def _player_external_ids(player: JsonObject) -> Iterable[tuple[str, str]]:
+    for field_name, provider in PLAYER_EXTERNAL_ID_FIELDS.items():
+        external_id = _external_id_text(player.get(field_name))
+        if external_id is None:
+            continue
+        yield provider, external_id
+
+
+def _external_id_text(value: Any) -> str | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (Mapping, list, tuple, set)):
+        return None
+    external_id = str(value).strip()
+    return external_id or None
+
+
+def _normalize_provider(provider: str) -> str:
+    return str(provider).strip().lower()
+
+
 def _ordered_unique(*groups: Iterable[Any]) -> list[str]:
     seen: set[str] = set()
     values: list[str] = []
@@ -1408,6 +1545,23 @@ def _player_name(row: JsonObject, player: JsonObject) -> str | None:
 
 def _json_dumps(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _ensure_columns(
+    connection: sqlite3.Connection,
+    table_name: str,
+    columns: Mapping[str, str],
+) -> None:
+    existing = {
+        str(row["name"])
+        for row in connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+    }
+    for column_name, column_definition in columns.items():
+        if column_name in existing:
+            continue
+        connection.execute(
+            f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}"
+        )
 
 
 def _decode_row(row: sqlite3.Row | None) -> dict[str, Any] | None:

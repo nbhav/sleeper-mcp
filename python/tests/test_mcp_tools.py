@@ -369,9 +369,11 @@ def test_my_lineup_returns_slots_starters_bench_and_projections(tmp_path) -> Non
     assert report["team_name"] == "Me"
     assert report["roster_slots"] == ["RB", "FLEX"]
     assert report["current_total"] == 4
-    assert report["projected_total"] == 67
+    assert report["projected_total"] == 24
     assert report["projected_starter_total"] == 24
     assert report["projected_starter_points"] == 24
+    assert report["projected_active_roster_total"] == 49
+    assert report["projected_roster_total"] == 67
     assert [row["player_id"] for row in report["lineup_table"]] == [
         "starter-rb",
         "bench-wr",
@@ -418,7 +420,10 @@ def test_my_lineup_uses_fresh_normalized_db_without_sleeper_client(tmp_path) -> 
     assert report["sync_recommended"] is False
     assert report["freshness"]["status"] == "fresh"
     assert report["team_name"] == "Me"
+    assert report["projected_total"] == 24
     assert report["projected_starter_total"] == 24
+    assert report["projected_active_roster_total"] == 29
+    assert report["projected_roster_total"] == 47
     assert [row["player_id"] for row in report["lineup_table"]] == [
         "starter-rb",
         "bench-wr",
@@ -590,6 +595,14 @@ def test_waiver_wire_by_position_groups_options_with_gain_and_faab(tmp_path) -> 
     assert rb_pick["drop_name"] == "Drop RB"
     assert rb_pick["drop_lineup_status"] == "bench"
     assert rb_pick["projected_gain_over_drop"] == 25
+    assert rb_pick["recommendation"] == "recommend"
+    assert rb_pick["move_score"] > 0
+    assert rb_pick["reasoning_summary"]
+    assert rb_pick["week_value_delta"] == 25
+    assert "three_week_value_delta" in rb_pick
+    assert "season_value_delta" in rb_pick
+    assert "selected_drop_reasoning" in rb_pick
+    assert "rejected_drop_reasoning" in rb_pick
     assert rb_pick["faab_tier"] == "aggressive"
     assert rb_pick["faab_bid_pct"] == 14
     assert rb_pick["add_trend_count"] == 2500
@@ -626,6 +639,10 @@ def test_waiver_wire_by_position_uses_normalized_db(tmp_path) -> None:
     assert rb_pick["drop_name"] == "Drop RB"
     assert rb_pick["projected_gain_over_drop"] == 25
     assert rb_pick["market_type"] == "waiver"
+    assert rb_pick["recommendation"] == "recommend"
+    assert rb_pick["move_score"] > 0
+    assert rb_pick["reasoning_summary"]
+    assert rb_pick["week_value_delta"] == 25
     assert rb_pick["faab_tier"] == "aggressive"
     wr_pick = report["by_position"]["WR"][0]
     assert wr_pick["add_name"] == "Free WR"
@@ -657,11 +674,24 @@ def test_trade_opportunities_includes_every_opponent_with_offer_angles(tmp_path)
     assert "TE" in {need["position"] for need in wr_rich["needs"]}
     assert wr_rich["targets"][0]["name"] == "Target WR"
     assert wr_rich["offer_angles"][0]["ask_for"]["name"] == "Target WR"
-    assert wr_rich["offer_angles"][0]["offer"][0]["name"] == "Bench TE"
+    assert wr_rich["offer_angles"][0]["package_type"] == "1:1"
+    assert wr_rich["offer_angles"][0]["ask"][0]["name"] == "Target WR"
+    assert wr_rich["offer_angles"][0]["offer"][0]["name"] == "Bench RB"
     assert wr_rich["offer_angles"][0]["projected_lineup_gain"] == 6
-    assert wr_rich["offer_angles"][0]["my_gain"] == 6
-    assert "TE" in wr_rich["offer_angles"][0]["opponent_need_matched"]
+    assert wr_rich["offer_angles"][0]["my_gain"] >= 6
+    assert "RB" in wr_rich["offer_angles"][0]["opponent_need_matched"]
+    assert "value_balance" in wr_rich["offer_angles"][0]
     assert wr_rich["offer_angles"][0]["trade_score"] > 0
+    assert wr_rich["offer_angles"][0]["recommendation"] in {
+        "pursue",
+        "explore",
+        "monitor",
+        "pass",
+        "reject",
+    }
+    assert wr_rich["offer_angles"][0]["reasoning_summary"]
+    assert "my_three_week_value_delta" in wr_rich["offer_angles"][0]
+    assert "my_season_value_delta" in wr_rich["offer_angles"][0]
     assert wr_rich["reasoning"]
     assert report["teams"][1]["team_name"] == "No Fit"
 
@@ -693,9 +723,65 @@ def test_trade_opportunities_uses_normalized_db_without_sleeper_client(tmp_path)
     wr_rich = report["teams"][0]
     assert wr_rich["targets"][0]["name"] == "Target WR"
     assert wr_rich["offer_angles"][0]["ask_for"]["name"] == "Target WR"
-    assert wr_rich["offer_angles"][0]["offer"][0]["name"] == "Bench TE"
+    assert wr_rich["offer_angles"][0]["package_type"] == "1:1"
+    assert wr_rich["offer_angles"][0]["ask"][0]["name"] == "Target WR"
+    assert wr_rich["offer_angles"][0]["offer"][0]["name"] == "Bench RB"
     assert wr_rich["offer_angles"][0]["projected_lineup_gain"] == 6
+    assert wr_rich["offer_angles"][0]["my_week_value_delta"] == 8
     assert wr_rich["offer_angles"][0]["trade_score"] > 0
+    assert wr_rich["offer_angles"][0]["reasoning_summary"]
+    repo.close()
+
+
+def test_player_values_returns_deterministic_value_profiles(tmp_path) -> None:
+    runner = FantasyToolRunner(
+        client_factory=lambda: FakeLineupClient(),
+        players_cache=tmp_path / "players.json",
+    )
+
+    report = runner.player_values(
+        league_id="league-1",
+        season=2026,
+        week=1,
+        positions="RB",
+        limit=2,
+    )
+
+    assert report["league_id"] == "league-1"
+    assert report["season"] == 2026
+    assert report["week"] == 1
+    assert report["positions"] == ["RB"]
+    assert len(report["values"]) == 2
+    top = report["values"][0]
+    assert top["position"] == "RB"
+    assert "week_value" in top
+    assert "three_week_value" in top
+    assert "season_value" in top
+    assert "decision_value" in top
+    assert "value_above_replacement" in top
+
+
+def test_roster_analysis_uses_normalized_db_without_sleeper_client(tmp_path) -> None:
+    repo = build_normalized_decision_fixture(tmp_path)
+    runner = FantasyToolRunner(
+        client_factory=lambda: FailingMcpClient(),
+        decision_repository=repo,
+    )
+
+    report = runner.roster_analysis(
+        league_id="league-1",
+        roster_id=1,
+        season=2026,
+        week=1,
+        positions="RB,WR",
+    )
+
+    assert report["data_source"] == "normalized_db"
+    assert report["fallback_used"] is False
+    assert report["team_name"] == "Me"
+    assert "roster_balance_score" in report
+    assert "protected_players" in report
+    assert "movable_players" in report
     repo.close()
 
 

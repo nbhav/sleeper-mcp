@@ -745,6 +745,7 @@ class SQLiteNormalizedRepositoryAdapter:
 
 NORMALIZED_TABLES = [
     "players",
+    "player_external_ids",
     "league_settings",
     "league_users",
     "rosters",
@@ -769,6 +770,7 @@ NORMALIZED_TABLE_DELETE_ORDER = [
     "rosters",
     "league_users",
     "league_settings",
+    "player_external_ids",
     "players",
     "sync_runs",
 ]

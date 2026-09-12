@@ -90,6 +90,8 @@ def build_decision_smoke_report(
                 lineup.get("projected_starter_points", 0),
             ),
             "projected_total": lineup.get("projected_total", 0),
+            "projected_active_roster_total": lineup.get("projected_active_roster_total", 0),
+            "projected_roster_total": lineup.get("projected_roster_total", 0),
             "active_bench_count": lineup.get("active_bench_count", lineup.get("bench_count", 0)),
             "reserve_count": lineup.get("reserve_count", 0),
             "bye_week_warnings": lineup.get("bye_week_warnings", []),
@@ -126,7 +128,9 @@ def render_decision_smoke_tables(report: dict[str, Any]) -> str:
                 ["Week", value_text(lineup.get("week"))],
                 ["Current Total", value_text(lineup.get("current_total"))],
                 ["Projected Starter Total", value_text(lineup.get("projected_starter_total"))],
-                ["Projected Total", value_text(lineup.get("projected_total"))],
+                ["Projected Total (Starters)", value_text(lineup.get("projected_total"))],
+                ["Projected Active Roster Total", value_text(lineup.get("projected_active_roster_total"))],
+                ["Projected Roster Total", value_text(lineup.get("projected_roster_total"))],
                 ["Active Bench Count", value_text(lineup.get("active_bench_count"))],
                 ["Reserve Count", value_text(lineup.get("reserve_count"))],
                 ["Bye Warnings", warnings_text(lineup.get("bye_week_warnings", []))],
@@ -172,28 +176,37 @@ def render_decision_smoke_tables(report: dict[str, Any]) -> str:
                 "Market",
                 "Action",
                 "Urgency",
+                "Recommendation",
+                "Move Score",
+                "Reasoning",
                 "Drop",
                 "Drop Status",
                 "Projected",
                 "Gain",
+                "Week Delta",
+                "3W Delta",
+                "Season Delta",
                 "Warnings",
             ],
             waiver_table_rows(waivers.get("by_position", {})),
         ),
         "## Trade Opportunities",
         markdown_table(
-            ["Team", "Needs", "Surplus", "Targets", "Offer Angles", "Reasoning"],
             [
-                [
-                    team.get("team_name"),
-                    list_text(team.get("needs", [])),
-                    list_text(team.get("surplus", [])),
-                    trade_targets_text(team.get("targets", [])),
-                    trade_angles_text(team.get("offer_angles", [])),
-                    list_text(team.get("reasoning", [])),
-                ]
-                for team in trades.get("teams", [])
+                "Team",
+                "Needs",
+                "Surplus",
+                "Package Type",
+                "Ask",
+                "Offer",
+                "My Gain",
+                "Opponent Gain",
+                "Value Balance",
+                "Trade Score",
+                "Recommendation",
+                "Reasoning Summary",
             ],
+            trade_table_rows(trades.get("teams", [])),
         ),
         "## Trade Evidence",
         markdown_table(["Evidence"], [[item] for item in trades.get("evidence", [])]),
@@ -213,32 +226,72 @@ def waiver_table_rows(by_position: dict[str, Any]) -> list[list[Any]]:
                     option.get("market_type"),
                     option.get("acquisition_action"),
                     option.get("urgency"),
+                    option.get("recommendation"),
+                    points_text(option.get("move_score")),
+                    option.get("reasoning_summary"),
                     option.get("drop"),
                     option.get("drop_status"),
                     points_text(option.get("projected_points")),
                     points_text(option.get("projected_gain")),
+                    points_text(option.get("week_value_delta")),
+                    points_text(option.get("three_week_value_delta")),
+                    points_text(option.get("season_value_delta")),
                     warnings_text(option.get("bye_week_warnings", [])),
                 ]
             )
     return rows
 
 
-def trade_targets_text(targets: list[dict[str, Any]]) -> str:
-    if not targets:
-        return "none"
-    return "; ".join(
-        f"{target.get('name')} {target.get('position')} {target.get('team')} {points_text(target.get('projected_points'))}, gain {points_text(target.get('projected_lineup_gain'))} over {target.get('upgrade_over')}"
-        for target in targets
-    )
+def trade_table_rows(teams: list[dict[str, Any]]) -> list[list[Any]]:
+    rows = []
+    for team in teams:
+        angles = team.get("offer_angles", []) or []
+        if not angles:
+            rows.append(
+                [
+                    team.get("team_name"),
+                    list_text(team.get("needs", [])),
+                    list_text(team.get("surplus", [])),
+                    "none",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    list_text(team.get("reasoning", [])),
+                ]
+            )
+            continue
+        for angle in angles:
+            rows.append(
+                [
+                    team.get("team_name"),
+                    list_text(team.get("needs", [])),
+                    list_text(team.get("surplus", [])),
+                    angle.get("package_type"),
+                    player_names_text(angle.get("ask", [])),
+                    player_names_text(angle.get("offer", [])),
+                    points_text(angle.get("my_gain")),
+                    points_text(angle.get("opponent_gain")),
+                    points_text(angle.get("value_balance")),
+                    points_text(angle.get("trade_score")),
+                    angle.get("recommendation"),
+                    angle.get("reasoning_summary"),
+                ]
+            )
+    return rows
 
 
-def trade_angles_text(angles: list[dict[str, Any]]) -> str:
-    if not angles:
+def player_names_text(players: Any) -> str:
+    if not players:
         return "none"
-    return "; ".join(
-        f"{angle.get('angle_type')}: ask {angle.get('ask_for')}, offer {list_text(angle.get('offer', []))}, score {value_text(angle.get('trade_score'))}"
-        for angle in angles
-    )
+    names = [
+        player.get("name") if isinstance(player, dict) else player
+        for player in players
+    ]
+    return list_text(names)
 
 
 def markdown_table(headers: list[str], rows: list[list[Any]]) -> str:
@@ -302,6 +355,22 @@ def compact_waiver_row(row: dict[str, Any]) -> dict[str, Any]:
         "drop": row.get("drop_name"),
         "drop_status": row.get("drop_lineup_status"),
         "projected_gain": row.get("projected_gain_over_drop"),
+        "week_value_delta": row.get("week_value_delta"),
+        "three_week_value_delta": row.get("three_week_value_delta"),
+        "season_value_delta": row.get("season_value_delta"),
+        "move_score": row.get("move_score"),
+        "recommendation": row.get("recommendation"),
+        "reasoning_summary": row.get("reasoning_summary"),
+        "starter_impact": row.get("starter_impact"),
+        "depth_impact": row.get("depth_impact"),
+        "positional_need_score": row.get("positional_need_score"),
+        "positional_damage_score": row.get("positional_damage_score"),
+        "injury_coverage_impact": row.get("injury_coverage_impact"),
+        "bye_week_impact": row.get("bye_week_impact"),
+        "streamer_penalty": row.get("streamer_penalty"),
+        "stash_penalty": row.get("stash_penalty"),
+        "selected_drop_reasoning": row.get("selected_drop_reasoning"),
+        "rejected_drop_reasoning": row.get("rejected_drop_reasoning", []),
         "market_type": row.get("market_type"),
         "acquisition_action": row.get("acquisition_action"),
         "urgency": row.get("urgency"),
@@ -331,19 +400,27 @@ def compact_trade_target(row: dict[str, Any]) -> dict[str, Any]:
 
 def compact_trade_angle(row: dict[str, Any]) -> dict[str, Any]:
     return {
-        "angle_type": row.get("angle_type"),
-        "ask_for": (row.get("ask_for") or {}).get("name"),
+        "package_type": row.get("package_type", row.get("angle_type")),
+        "ask": [
+            player.get("name")
+            for player in row.get("ask", [])
+        ],
         "offer": [
             player.get("name")
             for player in row.get("offer", [])
         ],
         "offer_projected_points": row.get("offer_projected_points"),
         "projected_lineup_gain": row.get("projected_lineup_gain"),
+        "my_gain": row.get("my_gain"),
+        "opponent_gain": row.get("opponent_gain"),
+        "value_balance": row.get("value_balance"),
         "trade_score": row.get("trade_score"),
+        "recommendation": row.get("recommendation"),
+        "reasoning_summary": row.get("reasoning_summary", row.get("reasoning")),
         "opponent_need_matched": row.get("opponent_need_matched", []),
+        "my_need_solved": row.get("my_need_solved", []),
         "backup_risk": (row.get("backup_risk") or {}).get("level"),
         "bye_week_risk": (row.get("bye_week_risk") or {}).get("level"),
-        "reasoning": row.get("reasoning"),
     }
 
 

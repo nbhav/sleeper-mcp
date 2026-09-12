@@ -33,6 +33,9 @@ def test_mcp_tools_list_exposes_curated_decision_tools() -> None:
         "waiver_wire_watch",
         "waiver_wire_by_position",
         "trade_opportunities",
+        "player_values",
+        "roster_analysis",
+        "league_roster_analysis",
         "decision_smoke_report",
         "free_agent_watch",
         "injury_watch",
@@ -61,6 +64,9 @@ def test_mcp_tools_list_exposes_curated_decision_tools() -> None:
     assert "required" not in tools_by_name["lineup_recommendations"]["inputSchema"]
     assert "required" not in tools_by_name["waiver_wire_by_position"]["inputSchema"]
     assert "required" not in tools_by_name["trade_opportunities"]["inputSchema"]
+    assert "required" not in tools_by_name["player_values"]["inputSchema"]
+    assert "required" not in tools_by_name["roster_analysis"]["inputSchema"]
+    assert "required" not in tools_by_name["league_roster_analysis"]["inputSchema"]
     assert "required" not in tools_by_name["decision_smoke_report"]["inputSchema"]
     assert "required" not in tools_by_name["free_agent_watch"]["inputSchema"]
     assert "required" not in tools_by_name["injury_watch"]["inputSchema"]
@@ -101,6 +107,18 @@ def test_mcp_tools_list_exposes_curated_decision_tools() -> None:
             "offers_per_team"
         ]["default"]
         == 3
+    )
+    assert (
+        tools_by_name["player_values"]["inputSchema"]["properties"]["limit"][
+            "default"
+        ]
+        == 50
+    )
+    assert (
+        tools_by_name["roster_analysis"]["inputSchema"]["properties"][
+            "positions"
+        ]["default"]
+        == "QB,RB,WR,TE,K,DEF"
     )
     assert (
         tools_by_name["decision_smoke_report"]["inputSchema"]["properties"]["format"][

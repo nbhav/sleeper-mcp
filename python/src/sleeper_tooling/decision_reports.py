@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import math
 from collections import Counter
+from itertools import combinations
 from typing import Any
 
+from sleeper_tooling.player_values import build_player_value, build_player_values
 from sleeper_tooling.reports import owner_display_name, player_name
 
 DEFAULT_STARTER_SLOTS = ["QB", "RB", "RB", "WR", "WR", "WR", "TE", "FLEX", "K", "DEF"]
@@ -11,6 +13,7 @@ NON_STARTER_SLOTS = {"BN", "BE", "IR", "TAXI"}
 POSITION_SLOTS = {"QB", "RB", "WR", "TE", "K", "DEF", "DL", "LB", "DB", "IDP"}
 SKILL_POSITIONS = {"RB", "WR", "TE"}
 KNOWN_MARKET_TYPES = {"free_agent", "waiver", "unknown"}
+TRADE_PACKAGE_TYPES = [(1, 1), (2, 1), (1, 2), (3, 2), (2, 3)]
 FLEX_SLOT_POSITIONS = {
     "FLEX": {"RB", "WR", "TE"},
     "W/R/T": {"RB", "WR", "TE"},
@@ -156,7 +159,11 @@ def build_my_lineup(
         sum(float(row.get("projected_points") or 0) for row in starters),
         2,
     )
-    projected_total = round(
+    projected_active_roster_total = round(
+        sum(float(row.get("projected_points") or 0) for row in starters + bench),
+        2,
+    )
+    projected_roster_total = round(
         sum(float(row.get("projected_points") or 0) for row in lineup_table),
         2,
     )
@@ -177,9 +184,11 @@ def build_my_lineup(
         "reserve_count": len(reserve),
         "current_total": current_total,
         "points_so_far": current_total,
-        "projected_total": projected_total,
+        "projected_total": projected_starter_total,
         "projected_starter_total": projected_starter_total,
         "projected_starter_points": projected_starter_total,
+        "projected_active_roster_total": projected_active_roster_total,
+        "projected_roster_total": projected_roster_total,
         "bye_week_warnings": bye_week_warnings,
         "lineup_table": lineup_table,
         "starters": starters,
@@ -244,19 +253,22 @@ def build_lineup_recommendations(
         reverse=True,
     )[:limit]
 
-    waiver_comparisons = sorted(
+    waiver_matrix = sorted(
         [
             row
             for candidate in available_candidates
             for row in [compare_available_player(candidate, roster_players)]
-            if float(row.get("projected_gain_over_drop") or 0) > 0
+            if row.get("drop_player_id") and float(row.get("projected_gain_over_drop") or 0) > 0
         ],
-        key=lambda row: (
-            float(row.get("priority_score") or 0),
-            float(row.get("projected_gain_over_drop") or 0),
-        ),
+        key=waiver_move_sort_key,
         reverse=True,
-    )[:limit]
+    )
+    waiver_comparisons = [
+        row for row in waiver_matrix if row.get("recommendation") == "recommend"
+    ][:limit]
+    waiver_watch_items = [
+        row for row in waiver_matrix if row.get("recommendation") == "watch"
+    ][:limit]
 
     watchlist = sorted(
         [
@@ -278,12 +290,14 @@ def build_lineup_recommendations(
         "current_lineup": lineup,
         "start_sit": start_sit,
         "waiver_comparisons": waiver_comparisons,
+        "waiver_watch_items": waiver_watch_items,
         "watchlist": watchlist,
         "evidence": [
             "starter and bench comparisons use projected_points under league scoring",
             "waiver comparisons exclude players already rostered in the league",
-            "priority_score combines projection, projected roster gain, normalized add/drop momentum, and rostered percentage when present",
+            "waiver comparisons are ranked by deterministic move_score from the roster-impact move matrix",
             "reserve and last-playable backup protections are applied before choosing drop candidates",
+            "unknown acquisition markets stay watch-level until verified in Sleeper",
             "Sleeper player metadata does not always expose global rostered percentage",
         ],
     }
@@ -705,19 +719,19 @@ def compare_available_player(
     candidate: dict[str, Any],
     roster_players: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    drop_candidate, drop_reason, rejected_drops = best_drop_candidate(candidate, roster_players)
+    matrix = build_waiver_move_matrix(candidate, roster_players)
+    selected = max(matrix, key=waiver_move_sort_key, default={})
+    drop_candidate = selected.get("drop_candidate", {})
+    rejected_drops = selected.get("rejected_drop_reasoning", [])
+    drop_reason = selected.get("selected_drop_reasoning") or selected.get("drop_reasoning") or "no unprotected drop candidate"
     projected_points = float(candidate.get("projected_points") or 0)
     drop_points = float(drop_candidate.get("projected_points") or 0)
     projected_gain = round(projected_points - drop_points, 2)
     market_type = normalize_market_type(candidate.get("market_type"))
-    action = acquisition_action(market_type, projected_gain=projected_gain)
+    recommendation = str(selected.get("recommendation") or "reject")
+    action = acquisition_action(market_type, projected_gain=projected_gain) if recommendation == "recommend" else "watch"
     bye_warnings = move_bye_warnings(candidate, drop_candidate, roster_players)
-    priority_score = round(
-        float(candidate.get("priority_score") or 0)
-        + max(projected_gain, 0) * 1.5
-        - (2 * len(bye_warnings)),
-        2,
-    )
+    priority_score = selected.get("move_score", 0)
     row = {
         "action": action,
         "acquisition_action": action,
@@ -742,18 +756,43 @@ def compare_available_player(
         "selected_drop_reasoning": drop_reason,
         "rejected_drop_reasoning": rejected_drops,
         "projected_gain_over_drop": projected_gain,
+        "week_value_delta": selected.get("week_value_delta", projected_gain),
+        "three_week_value_delta": selected.get("three_week_value_delta", projected_gain),
+        "season_value_delta": selected.get("season_value_delta", projected_gain),
+        "starter_impact": selected.get("starter_impact", 0),
+        "depth_impact": selected.get("depth_impact", 0),
+        "positional_need_score": selected.get("positional_need_score", 0),
+        "positional_damage_score": selected.get("positional_damage_score", 0),
+        "injury_coverage_impact": selected.get("injury_coverage_impact", 0),
+        "bye_week_impact": selected.get("bye_week_impact", 0),
+        "streamer_penalty": selected.get("streamer_penalty", 0),
+        "stash_penalty": selected.get("stash_penalty", 0),
+        "drop_protection_reason": selected.get("drop_protection_reason", ""),
+        "move_score": selected.get("move_score", 0),
+        "recommendation": recommendation,
+        "reasoning_summary": selected.get("reasoning_summary", ""),
         "market_type": market_type,
+        "roster_availability": candidate.get("roster_availability", "unrostered"),
+        "market_confidence": market_confidence(candidate),
         "add_trend_count": candidate.get("add_trend_count", 0),
         "drop_trend_count": candidate.get("drop_trend_count", 0),
         "net_trend_count": candidate.get("net_trend_count", 0),
         "rostered_percent": candidate.get("rostered_percent"),
-        "urgency": add_urgency(projected_gain, candidate),
+        "urgency": add_urgency(projected_gain, {**candidate, "recommendation": recommendation}),
         "add_reasoning": add_reasoning(candidate, projected_gain),
         "bye_week_warnings": bye_warnings,
         "priority_score": priority_score,
-        "source_metadata": candidate.get("source_metadata", {}),
+        "source_metadata": {
+            **candidate.get("source_metadata", {}),
+            "waiver_matrix": selected.get("source_metadata", {}),
+        },
     }
-    if market_type == "waiver":
+    for key in ("week_value", "three_week_value", "season_value", "decision_value", "value_tier", "role_tag"):
+        if key in selected.get("add_value", {}):
+            row[f"add_{key}"] = selected["add_value"][key]
+        if key in selected.get("drop_value", {}):
+            row[f"drop_{key}"] = selected["drop_value"][key]
+    if action == "submit_waiver_claim":
         faab_hint = build_faab_hint(projected_gain, candidate)
         row.update(
             {
@@ -763,6 +802,578 @@ def compare_available_player(
             }
         )
     return row
+
+
+def build_waiver_move_matrix(
+    candidate: dict[str, Any],
+    roster_players: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    rejected: list[dict[str, Any]] = []
+    selected_pool: list[dict[str, Any]] = []
+    for drop_candidate in roster_players:
+        protection_reason = drop_protection_reason(drop_candidate, roster_players)
+        if protection_reason:
+            rejected.append(
+                {
+                    "player_id": drop_candidate.get("player_id", ""),
+                    "name": drop_candidate.get("name", ""),
+                    "position": drop_candidate.get("position", ""),
+                    "reason": protection_reason,
+                }
+            )
+            continue
+        selected_pool.append(drop_candidate)
+
+    rows = [
+        score_waiver_move(
+            candidate=candidate,
+            drop_candidate=drop_candidate,
+            roster_players=roster_players,
+            rejected_drops=rejected,
+        )
+        for drop_candidate in selected_pool
+    ]
+    if rows:
+        return rows
+    return [
+        score_waiver_move(
+            candidate=candidate,
+            drop_candidate={},
+            roster_players=roster_players,
+            rejected_drops=rejected,
+        )
+    ]
+
+
+def score_waiver_move(
+    *,
+    candidate: dict[str, Any],
+    drop_candidate: dict[str, Any],
+    roster_players: list[dict[str, Any]],
+    rejected_drops: list[dict[str, Any]],
+) -> dict[str, Any]:
+    add_value = waiver_player_value(candidate)
+    drop_value = waiver_player_value(drop_candidate) if drop_candidate else empty_player_value()
+    week_delta = round(float(add_value["week_value"]) - float(drop_value["week_value"]), 2)
+    three_week_delta = round(float(add_value["three_week_value"]) - float(drop_value["three_week_value"]), 2)
+    season_delta = round(float(add_value["season_value"]) - float(drop_value["season_value"]), 2)
+    starter_impact = waiver_starter_impact(candidate, roster_players)
+    depth_impact = waiver_depth_impact(candidate, drop_candidate, roster_players)
+    need_score = positional_need_score(candidate, drop_candidate, roster_players)
+    damage_score = positional_damage_score(candidate, drop_candidate, roster_players)
+    injury_impact = injury_coverage_impact(candidate, drop_candidate, roster_players)
+    bye_impact = bye_week_impact(candidate, drop_candidate, roster_players)
+    streamer_penalty = waiver_streamer_penalty(candidate, drop_candidate, roster_players)
+    stash_penalty = waiver_stash_penalty(candidate, roster_players)
+    unknown_market_penalty = 2 if normalize_market_type(candidate.get("market_type")) == "unknown" else 0
+    no_drop_penalty = 100 if not drop_candidate else 0
+    move_score = round(
+        week_delta * 0.8
+        + three_week_delta * 1.2
+        + season_delta * 1.4
+        + starter_impact * 1.5
+        + depth_impact
+        + need_score
+        + injury_impact
+        + bye_impact
+        + trend_priority_boost(int(candidate.get("net_trend_count") or 0))
+        - damage_score
+        - streamer_penalty
+        - stash_penalty
+        - unknown_market_penalty
+        - no_drop_penalty,
+        2,
+    )
+    recommendation = waiver_recommendation(
+        candidate=candidate,
+        drop_candidate=drop_candidate,
+        roster_players=roster_players,
+        move_score=move_score,
+        projected_gain=week_delta,
+        damage_score=damage_score,
+        streamer_penalty=streamer_penalty,
+        stash_penalty=stash_penalty,
+    )
+    selected_reason = selected_drop_reason(candidate, drop_candidate)
+    return {
+        "candidate": candidate,
+        "drop_candidate": drop_candidate,
+        "add_player_id": candidate.get("player_id"),
+        "add_name": candidate.get("name"),
+        "add_position": candidate.get("position"),
+        "drop_player_id": drop_candidate.get("player_id", ""),
+        "drop_name": drop_candidate.get("name", ""),
+        "drop_position": drop_candidate.get("position", ""),
+        "roster_availability": candidate.get("roster_availability", "unrostered"),
+        "market_type": normalize_market_type(candidate.get("market_type")),
+        "market_confidence": market_confidence(candidate),
+        "acquisition_action": acquisition_action(
+            candidate.get("market_type"),
+            projected_gain=week_delta,
+        ) if recommendation == "recommend" else "watch",
+        "week_value_delta": week_delta,
+        "three_week_value_delta": three_week_delta,
+        "season_value_delta": season_delta,
+        "starter_impact": starter_impact,
+        "depth_impact": depth_impact,
+        "positional_need_score": need_score,
+        "positional_damage_score": damage_score,
+        "injury_coverage_impact": injury_impact,
+        "bye_week_impact": bye_impact,
+        "streamer_penalty": streamer_penalty,
+        "stash_penalty": stash_penalty,
+        "drop_protection_reason": "",
+        "move_score": move_score,
+        "recommendation": recommendation,
+        "drop_reasoning": selected_reason,
+        "selected_drop_reasoning": selected_reason,
+        "reasoning_summary": waiver_reasoning_summary(
+            candidate=candidate,
+            drop_candidate=drop_candidate,
+            recommendation=recommendation,
+            move_score=move_score,
+            need_score=need_score,
+            damage_score=damage_score,
+            streamer_penalty=streamer_penalty,
+            stash_penalty=stash_penalty,
+            week_delta=week_delta,
+        ),
+        "rejected_drop_reasoning": list(rejected_drops),
+        "add_value": add_value,
+        "drop_value": drop_value,
+        "source_metadata": {
+            "builder": "sleeper_tooling.decision_reports.build_waiver_move_matrix",
+            "ranking": "deterministic roster-impact move_score",
+            "roster_analysis_compatible": True,
+        },
+    }
+
+
+def waiver_player_value(row: dict[str, Any]) -> dict[str, Any]:
+    if not row:
+        return empty_player_value()
+    existing = {
+        "player_id": row.get("player_id", ""),
+        "name": row.get("name", ""),
+        "team": row.get("team", ""),
+        "position": str(row.get("position") or "").upper(),
+        "fantasy_positions": row.get("fantasy_positions") or [],
+        "week_value": number_or(row.get("week_value"), row.get("projected_points"), 0.0),
+        "three_week_value": number_or(row.get("three_week_value"), row.get("projected_points"), 0.0),
+        "season_value": number_or(row.get("season_value"), row.get("decision_value"), row.get("projected_points"), 0.0),
+        "decision_value": number_or(row.get("decision_value"), row.get("projected_points"), 0.0),
+        "value_tier": row.get("value_tier", ""),
+        "role_tag": row.get("role_tag", ""),
+    }
+    if any(key in row for key in ("week_value", "three_week_value", "season_value", "decision_value")):
+        return existing
+
+    return {
+        **existing,
+        **{
+            key: value
+            for key, value in build_player_value(
+                player_id=str(row.get("player_id") or ""),
+                player={
+                    "full_name": row.get("name", ""),
+                    "team": row.get("team", ""),
+                    "position": row.get("position", ""),
+                    "fantasy_positions": row.get("fantasy_positions") or [],
+                    "status": row.get("status", ""),
+                    "injury_status": row.get("injury_status", ""),
+                    "bye_week": row.get("bye_week", ""),
+                    "rostered_percent": row.get("rostered_percent"),
+                    "depth_chart_order": row.get("depth_chart_order", ""),
+                },
+                projection_row={
+                    "player_id": row.get("player_id", ""),
+                    "points": row.get("projected_points", 0),
+                    "team": row.get("team", ""),
+                    "position": row.get("position", ""),
+                },
+            ).items()
+            if key in {"week_value", "three_week_value", "season_value", "decision_value", "value_tier", "role_tag"}
+        },
+    }
+
+
+def empty_player_value() -> dict[str, Any]:
+    return {
+        "player_id": "",
+        "name": "",
+        "team": "",
+        "position": "",
+        "fantasy_positions": [],
+        "week_value": 0.0,
+        "three_week_value": 0.0,
+        "season_value": 0.0,
+        "decision_value": 0.0,
+        "value_tier": "",
+        "role_tag": "",
+    }
+
+
+def waiver_starter_impact(candidate: dict[str, Any], roster_players: list[dict[str, Any]]) -> float:
+    comparable_starters = [
+        row
+        for row in roster_players
+        if str(row.get("lineup_status") or "").lower() == "starter"
+        and same_position_family(candidate, row)
+    ]
+    if not comparable_starters:
+        return 0.0
+    weakest_starter = min(comparable_starters, key=lambda row: float(row.get("projected_points") or 0))
+    return round(max(0.0, float(candidate.get("projected_points") or 0) - float(weakest_starter.get("projected_points") or 0)), 2)
+
+
+def waiver_depth_impact(
+    candidate: dict[str, Any],
+    drop_candidate: dict[str, Any],
+    roster_players: list[dict[str, Any]],
+) -> float:
+    if not drop_candidate:
+        return 0.0
+    before = roster_position_summary(roster_players)
+    after = roster_position_summary(roster_after_move(candidate, drop_candidate, roster_players))
+    positions = {
+        primary_position(candidate),
+        primary_position(drop_candidate),
+    } - {""}
+    impact = 0.0
+    for position in positions:
+        before_group = before.get(position, {})
+        after_group = after.get(position, {})
+        desired = desired_depth(position)
+        before_gap = max(0, desired - int(before_group.get("playable_count", 0)))
+        after_gap = max(0, desired - int(after_group.get("playable_count", 0)))
+        impact += (before_gap - after_gap) * 4
+        if position in SKILL_POSITIONS:
+            before_count = int(before_group.get("active_count", 0))
+            after_count = int(after_group.get("active_count", 0))
+            if after_count > before_count:
+                impact += 1
+            elif after_count < before_count and after_gap > before_gap:
+                impact -= 3
+    return round(impact, 2)
+
+
+def positional_need_score(
+    candidate: dict[str, Any],
+    drop_candidate: dict[str, Any],
+    roster_players: list[dict[str, Any]],
+) -> float:
+    position = primary_position(candidate)
+    if not position:
+        return 0.0
+    summary = roster_position_summary(roster_players)
+    group = summary.get(position, {})
+    if backup_qb_suppression_applies(candidate, roster_players):
+        return -18.0
+    if position in {"K", "DEF"}:
+        if int(group.get("playable_count", 0)) == 0:
+            return 10.0
+        if is_same_position(candidate, drop_candidate):
+            return 5.0
+        return 0.0
+    playable_gap = max(0, desired_depth(position) - int(group.get("playable_count", 0)))
+    starter_risk = bool(group.get("risky_starter_count"))
+    score = playable_gap * 5
+    if starter_risk and int(group.get("playable_bench_count", 0)) == 0:
+        score += 8
+    return float(score)
+
+
+def positional_damage_score(
+    candidate: dict[str, Any],
+    drop_candidate: dict[str, Any],
+    roster_players: list[dict[str, Any]],
+) -> float:
+    if not drop_candidate:
+        return 100.0
+    if same_position_family(candidate, drop_candidate):
+        return 0.0
+    position = primary_position(drop_candidate)
+    if not position:
+        return 0.0
+    before = roster_position_summary(roster_players).get(position, {})
+    after = roster_position_summary(roster_after_move(candidate, drop_candidate, roster_players)).get(position, {})
+    before_gap = max(0, desired_depth(position) - int(before.get("playable_count", 0)))
+    after_gap = max(0, desired_depth(position) - int(after.get("playable_count", 0)))
+    damage = 5.0
+    if after_gap > before_gap:
+        damage += (after_gap - before_gap) * 10
+    if int(after.get("playable_count", 0)) < int(after.get("required_starter_count", 0)):
+        damage += 12
+    if bool(before.get("risky_starter_count")) and int(after.get("playable_bench_count", 0)) == 0:
+        damage += 10
+    if position in SKILL_POSITIONS and primary_position(candidate) in {"QB", "K", "DEF"}:
+        damage += 8
+    return damage
+
+
+def injury_coverage_impact(
+    candidate: dict[str, Any],
+    drop_candidate: dict[str, Any],
+    roster_players: list[dict[str, Any]],
+) -> float:
+    if not drop_candidate:
+        return 0.0
+    before = roster_position_summary(roster_players)
+    after = roster_position_summary(roster_after_move(candidate, drop_candidate, roster_players))
+    impact = 0.0
+    for position, group in before.items():
+        if not group.get("risky_starter_count"):
+            continue
+        before_cover = int(group.get("playable_bench_count", 0))
+        after_cover = int(after.get(position, {}).get("playable_bench_count", 0))
+        if after_cover > before_cover:
+            impact += 8
+        elif after_cover < before_cover:
+            impact -= 10
+    return impact
+
+
+def bye_week_impact(
+    candidate: dict[str, Any],
+    drop_candidate: dict[str, Any],
+    roster_players: list[dict[str, Any]],
+) -> float:
+    warnings = move_bye_warnings(candidate, drop_candidate, roster_players) if drop_candidate else []
+    if not warnings:
+        return 0.0
+    return -4.0 * len(warnings)
+
+
+def waiver_streamer_penalty(
+    candidate: dict[str, Any],
+    drop_candidate: dict[str, Any],
+    roster_players: list[dict[str, Any]],
+) -> float:
+    position = primary_position(candidate)
+    if position not in {"K", "DEF"}:
+        return 0.0
+    if not drop_candidate:
+        return 20.0
+    if is_same_position(candidate, drop_candidate):
+        return 0.0
+    summary = roster_position_summary(roster_players).get(position, {})
+    lacks_playable_option = int(summary.get("playable_count", 0)) == 0
+    if lacks_playable_option:
+        return 0.0
+    drop_position = primary_position(drop_candidate)
+    if drop_position in SKILL_POSITIONS:
+        return 24.0
+    return 12.0
+
+
+def waiver_stash_penalty(candidate: dict[str, Any], roster_players: list[dict[str, Any]]) -> float:
+    position = primary_position(candidate)
+    role = str(candidate.get("role_tag") or candidate.get("value_tier") or "").lower()
+    if position in SKILL_POSITIONS and role in {"stash", "depth", "strong_starter", "elite"}:
+        return 0.0
+    if position == "QB" and backup_qb_suppression_applies(candidate, roster_players):
+        return 16.0
+    if position in {"K", "DEF"}:
+        return 4.0
+    return 0.0
+
+
+def backup_qb_suppression_applies(candidate: dict[str, Any], roster_players: list[dict[str, Any]]) -> bool:
+    if primary_position(candidate) != "QB":
+        return False
+    summary = roster_position_summary(roster_players)
+    qb_group = summary.get("QB", {})
+    if int(qb_group.get("required_starter_count", 0)) > 1:
+        return False
+    if int(qb_group.get("risky_starter_count", 0)):
+        return False
+    starter_points = float(qb_group.get("top_starter_points") or 0)
+    if starter_points < 22:
+        return False
+    candidate_points = float(candidate.get("projected_points") or 0)
+    rostered_pct = float(candidate.get("rostered_percent") or 0)
+    value_tier = str(candidate.get("value_tier") or "").lower()
+    role_tag = str(candidate.get("role_tag") or "").lower()
+    clear_stash = (
+        candidate_points >= 18
+        or rostered_pct >= 65
+        or value_tier in {"elite", "strong_starter"}
+        or role_tag in {"starter", "depth"}
+    )
+    return not clear_stash
+
+
+def waiver_recommendation(
+    *,
+    candidate: dict[str, Any],
+    drop_candidate: dict[str, Any],
+    roster_players: list[dict[str, Any]],
+    move_score: float,
+    projected_gain: float,
+    damage_score: float,
+    streamer_penalty: float,
+    stash_penalty: float,
+) -> str:
+    if not drop_candidate:
+        return "reject"
+    if projected_gain <= 0 and move_score < 8:
+        return "reject"
+    if backup_qb_suppression_applies(candidate, roster_players):
+        return "watch"
+    if damage_score >= 20 or streamer_penalty >= 20 or stash_penalty >= 16:
+        return "watch" if move_score > 0 else "reject"
+    if normalize_market_type(candidate.get("market_type")) == "unknown":
+        return "watch" if move_score >= 6 else "reject"
+    if move_score >= 6:
+        return "recommend"
+    if move_score > 0:
+        return "watch"
+    return "reject"
+
+
+def waiver_reasoning_summary(
+    *,
+    candidate: dict[str, Any],
+    drop_candidate: dict[str, Any],
+    recommendation: str,
+    move_score: float,
+    need_score: float,
+    damage_score: float,
+    streamer_penalty: float,
+    stash_penalty: float,
+    week_delta: float,
+) -> str:
+    reasons = [
+        f"{candidate.get('name')} over {drop_candidate.get('name', 'no drop')} scores {move_score:.2f}",
+        f"week delta {week_delta:.2f}",
+    ]
+    if need_score:
+        reasons.append(f"need score {need_score:.2f}")
+    if damage_score:
+        reasons.append(f"roster damage {damage_score:.2f}")
+    if streamer_penalty:
+        reasons.append(f"streamer penalty {streamer_penalty:.2f}")
+    if stash_penalty:
+        reasons.append(f"stash penalty {stash_penalty:.2f}")
+    reasons.append(f"recommendation {recommendation}")
+    return "; ".join(reasons)
+
+
+def selected_drop_reason(candidate: dict[str, Any], drop_candidate: dict[str, Any]) -> str:
+    if not drop_candidate:
+        return "no unprotected drop candidate"
+    if same_position_family(candidate, drop_candidate):
+        return "lowest risk active roster cut with comparable position coverage"
+    return "lowest risk active roster cut across positions"
+
+
+def waiver_move_sort_key(row: dict[str, Any]) -> tuple[float, float, float, float]:
+    recommendation_rank = {"recommend": 2.0, "watch": 1.0, "reject": 0.0}.get(str(row.get("recommendation")), 0.0)
+    return (
+        recommendation_rank,
+        float(row.get("move_score") or 0),
+        float(row.get("week_value_delta") or 0),
+        float(row.get("three_week_value_delta") or 0),
+    )
+
+
+def roster_after_move(
+    candidate: dict[str, Any],
+    drop_candidate: dict[str, Any],
+    roster_players: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    drop_id = drop_candidate.get("player_id")
+    incoming = {
+        **candidate,
+        "lineup_status": "bench",
+        "slot": "BN",
+        "active_roster_spot": True,
+    }
+    return [row for row in roster_players if row.get("player_id") != drop_id] + [incoming]
+
+
+def roster_position_summary(roster_players: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    summary: dict[str, dict[str, Any]] = {}
+    for row in roster_players:
+        position = primary_position(row)
+        if not position:
+            continue
+        group = summary.setdefault(
+            position,
+            {
+                "active_count": 0,
+                "playable_count": 0,
+                "starter_count": 0,
+                "required_starter_count": 0,
+                "playable_bench_count": 0,
+                "risky_starter_count": 0,
+                "top_starter_points": 0.0,
+            },
+        )
+        if not row.get("active_roster_spot", True):
+            continue
+        group["active_count"] += 1
+        projected_points = float(row.get("projected_points") or 0)
+        if is_playable_for_waivers(row, position):
+            group["playable_count"] += 1
+            if str(row.get("lineup_status") or "").lower() == "bench":
+                group["playable_bench_count"] += 1
+        if str(row.get("lineup_status") or "").lower() == "starter":
+            group["starter_count"] += 1
+            group["required_starter_count"] += 1
+            group["top_starter_points"] = max(float(group["top_starter_points"]), projected_points)
+            if is_availability_risk(row):
+                group["risky_starter_count"] += 1
+    return summary
+
+
+def is_playable_for_waivers(row: dict[str, Any], position: str) -> bool:
+    if not row.get("active_roster_spot", True):
+        return False
+    if str(row.get("lineup_status") or "").lower() == "reserve":
+        return False
+    if is_availability_risk(row):
+        return False
+    return float(row.get("projected_points") or 0) >= playable_threshold(position)
+
+
+def market_confidence(candidate: dict[str, Any]) -> str:
+    explicit = str(candidate.get("market_confidence") or "").strip().lower()
+    if explicit in {"high", "medium", "low"}:
+        return explicit
+    market_type = normalize_market_type(candidate.get("market_type"))
+    if market_type == "unknown":
+        return "low"
+    source_metadata = candidate.get("source_metadata") or {}
+    if source_metadata.get("market") == "unknown":
+        return "medium"
+    return "high"
+
+
+def primary_position(row: dict[str, Any]) -> str:
+    position = str(row.get("position") or "").upper()
+    if position:
+        return position
+    for value in row.get("fantasy_positions") or []:
+        normalized = str(value or "").upper()
+        if normalized:
+            return normalized
+    return ""
+
+
+def is_same_position(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    return primary_position(left) == primary_position(right)
+
+
+def number_or(*values: Any) -> float:
+    for value in values:
+        if value in (None, ""):
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return 0.0
 
 
 def watchlist_row(candidate: dict[str, Any]) -> dict[str, Any]:
@@ -1000,16 +1611,16 @@ def group_waiver_options_by_position(
         if position not in grouped:
             continue
         row = compare_available_player(candidate, roster_players)
-        if float(row.get("projected_gain_over_drop") or 0) > 0:
+        if (
+            float(row.get("projected_gain_over_drop") or 0) > 0
+            and row.get("recommendation") in {"recommend", "watch"}
+        ):
             grouped[position].append(row)
 
     return {
         position: sorted(
             rows,
-            key=lambda row: (
-                float(row.get("priority_score") or 0),
-                float(row.get("projected_gain_over_drop") or 0),
-            ),
+            key=waiver_move_sort_key,
             reverse=True,
         )[:per_position_limit]
         for position, rows in grouped.items()
@@ -1029,8 +1640,11 @@ def acquisition_action(market_type: Any, *, projected_gain: float) -> str:
 
 def add_urgency(projected_gain: float, candidate: dict[str, Any]) -> str:
     net_trend_count = int(candidate.get("net_trend_count") or 0)
+    market_type = normalize_market_type(candidate.get("market_type"))
+    recommendation = str(candidate.get("recommendation") or "")
+    cap_at_medium = market_type == "unknown" or recommendation in {"watch", "reject"}
     if projected_gain >= 6 or net_trend_count >= 1500:
-        return "high"
+        return "medium" if cap_at_medium else "high"
     if projected_gain >= 2 or net_trend_count >= 250:
         return "medium"
     return "low"
@@ -1103,7 +1717,9 @@ def build_trade_opportunities(
     roster_id: int,
     season: int,
     week: int,
+    league: dict[str, Any] | None = None,
     lineup: dict[str, Any],
+    matchups: list[dict[str, Any]] | None = None,
     users: list[dict[str, Any]],
     rosters: list[dict[str, Any]],
     players: dict[str, dict[str, Any]],
@@ -1113,31 +1729,78 @@ def build_trade_opportunities(
     offers_per_team: int,
 ) -> dict[str, Any]:
     users_by_id = {str(user.get("user_id")): user for user in users}
-    projections_by_player = {str(row.get("player_id")): row for row in projection_rows}
+    matchups = matchups or []
+    normalized_positions = [str(position).upper() for position in positions]
+    league_context = league or {"roster_positions": lineup.get("roster_slots") or []}
+    value_index = trade_value_index(
+        players=players,
+        projection_rows=projection_rows,
+        scoring_settings=league_context.get("scoring_settings") or {},
+    )
+    trade_projection_rows = projection_rows_with_trade_points(projection_rows, value_index)
+    projections_by_player = {str(row.get("player_id")): row for row in trade_projection_rows}
+    roster_rows_by_id = {
+        int(roster.get("roster_id", 0)): enrich_trade_rows(
+            trade_roster_rows(
+                roster=roster,
+                matchup=next(
+                    (
+                        row
+                        for row in matchups
+                        if int(row.get("roster_id", 0)) == int(roster.get("roster_id", 0))
+                    ),
+                    {},
+                ),
+                slots=starter_slots(league_context),
+                players=players,
+                projections_by_player=projections_by_player,
+            ),
+            value_index,
+        )
+        for roster in rosters
+        if roster.get("roster_id") is not None
+    }
+    if roster_id not in roster_rows_by_id:
+        roster_rows_by_id[roster_id] = enrich_trade_rows(
+            [
+                row
+                for row in lineup.get("lineup_table", lineup.get("starters", []) + lineup.get("bench", []))
+                if str(row.get("player_id") or "") != "0"
+            ],
+            value_index,
+        )
+
+    analyses_by_roster = trade_roster_analyses(
+        league_id=league_id,
+        roster_id=roster_id,
+        season=season,
+        week=week,
+        league=league_context,
+        users=users,
+        rosters=rosters,
+        matchups=matchups,
+        players=players,
+        projection_rows=trade_projection_rows,
+        roster_rows_by_id=roster_rows_by_id,
+    )
+    my_analysis = analyses_by_roster.get(roster_id) or fallback_trade_analysis(
+        roster_id=roster_id,
+        team_name=lineup.get("team_name", ""),
+        rows=roster_rows_by_id.get(roster_id, []),
+        positions=normalized_positions,
+    )
     my_roster_players = [
         row
-        for row in lineup.get("lineup_table", lineup.get("starters", []) + lineup.get("bench", []))
+        for row in roster_rows_by_id.get(roster_id, [])
         if str(row.get("player_id") or "") != "0"
+        and str(row.get("position") or "").upper() in set(normalized_positions)
     ]
-    my_starters = [
-        row
-        for row in my_roster_players
-        if str(row.get("lineup_status") or "").lower() == "starter"
-    ]
-    my_bench = [
-        row
-        for row in my_roster_players
-        if str(row.get("lineup_status") or "").lower() == "bench"
-        and row.get("active_roster_spot", True)
-    ]
-    my_offer_chips = trade_offer_chips(my_roster_players)
-    my_upgrade_slots = sorted(
-        [
-            row
-            for row in my_starters
-            if str(row.get("position") or "").upper() in set(positions)
-        ],
-        key=lambda row: float(row.get("projected_points") or 0),
+    my_offer_pool = trade_candidate_pool(
+        rows=my_roster_players,
+        analysis=my_analysis,
+        positions=normalized_positions,
+        side="offer",
+        limit=7,
     )
 
     teams = []
@@ -1146,42 +1809,49 @@ def build_trade_opportunities(
         if other_roster_id == roster_id:
             continue
         owner = users_by_id.get(str(roster.get("owner_id")))
-        roster_rows = roster_projection_rows(
-            roster.get("players") or [],
-            players=players,
-            projections_by_player=projections_by_player,
-            positions=positions,
+        roster_rows = [
+            row
+            for row in roster_rows_by_id.get(other_roster_id, [])
+            if str(row.get("position") or "").upper() in set(normalized_positions)
+        ]
+        analysis = analyses_by_roster.get(other_roster_id) or fallback_trade_analysis(
+            roster_id=other_roster_id,
+            team_name=owner_display_name(owner),
+            rows=roster_rows,
+            positions=normalized_positions,
         )
-        needs = roster_needs(roster_rows, positions)
-        surplus = roster_surplus(roster_rows, positions)
-        targets = trade_targets(
-            roster_rows,
-            my_upgrade_slots=my_upgrade_slots,
-            opponent_surplus=surplus,
+        needs = filter_position_rows(
+            analysis.get("need_positions", roster_needs(roster_rows, normalized_positions)),
+            normalized_positions,
+        )
+        surplus = filter_position_rows(
+            analysis.get("surplus_positions", roster_surplus(roster_rows, normalized_positions)),
+            normalized_positions,
+        )
+        ask_pool = trade_candidate_pool(
+            rows=roster_rows,
+            analysis=analysis,
+            positions=normalized_positions,
+            side="ask",
+            limit=8,
+        )
+        package_matrix = build_trade_package_matrix(
+            opponent_roster_id=other_roster_id,
+            opponent_team_name=owner_display_name(owner),
+            my_rows=my_roster_players,
+            opponent_rows=roster_rows,
+            my_analysis=my_analysis,
+            opponent_analysis=analysis,
+            offer_pool=my_offer_pool,
+            ask_pool=ask_pool,
+            week=week,
+            offers_per_team=offers_per_team,
+        )
+        targets = trade_targets_from_pool(
+            ask_pool,
+            my_roster_players=my_roster_players,
+            my_needs=position_names(my_analysis.get("need_positions", [])),
             targets_per_team=targets_per_team,
-        )
-        offer_angles = []
-        for target in targets:
-            offer_angles.extend(
-                build_offer_angles(
-                    target=target,
-                    my_offer_chips=my_offer_chips,
-                    my_bench=my_bench,
-                    my_roster_players=my_roster_players,
-                    opponent_needs=needs,
-                    offers_per_team=offers_per_team,
-                )
-            )
-            if len(offer_angles) >= offers_per_team:
-                break
-        offer_angles = sorted(
-            offer_angles,
-            key=lambda row: (
-                float(row.get("trade_score") or 0),
-                float(row.get("opponent_fit_score") or 0),
-                float(row.get("my_gain") or 0),
-            ),
-            reverse=True,
         )
         teams.append(
             {
@@ -1190,9 +1860,30 @@ def build_trade_opportunities(
                 "needs": needs,
                 "surplus": surplus,
                 "targets": targets,
-                "offer_angles": offer_angles[:offers_per_team],
-                "reasoning": trade_reasoning(needs, surplus, offer_angles),
+                "package_matrix": package_matrix,
+                "offer_angles": [],
+                "reasoning": [],
             }
+        )
+
+    suppress_repeated_generic_packages(teams)
+    for team in teams:
+        matrix = sorted(
+            team.get("package_matrix", []),
+            key=trade_package_sort_key,
+            reverse=True,
+        )
+        team["package_matrix"] = matrix
+        team["offer_angles"] = [
+            row
+            for row in matrix
+            if row.get("recommendation") in {"pursue", "explore", "monitor"}
+        ][:offers_per_team]
+        team["reasoning"] = trade_reasoning(
+            team.get("needs", []),
+            team.get("surplus", []),
+            team.get("offer_angles", []),
+            matrix,
         )
 
     return {
@@ -1201,12 +1892,13 @@ def build_trade_opportunities(
         "team_name": lineup.get("team_name"),
         "season": season,
         "week": week,
+        "supported_package_types": [f"{offer_count}:{ask_count}" for offer_count, ask_count in TRADE_PACKAGE_TYPES],
         "teams": teams,
         "evidence": [
-            "trade opportunities are projection-based screens, not trade value rankings",
+            "trade opportunities use deterministic mutual-fit package scoring across supported package sizes",
             "each opposing roster is included even when no attractive offer angle is found",
-            "offer angles must match an opponent need and prefer bench or surplus players before core starters",
-            "projected lineup gain compares the target to the lowest projected comparable starter",
+            "offer packages prioritize movable and surplus players while protected players are excluded or heavily penalized",
+            "recommendations require opponent need fit or meaningful value fairness and are downgraded for roster-balance damage",
         ],
     }
 
@@ -1268,181 +1960,583 @@ def roster_surplus(rows: list[dict[str, Any]], positions: list[str]) -> list[dic
     return surplus
 
 
-def trade_targets(
-    roster_rows: list[dict[str, Any]],
+def trade_value_index(
     *,
-    my_upgrade_slots: list[dict[str, Any]],
-    opponent_surplus: list[dict[str, Any]],
-    targets_per_team: int,
-) -> list[dict[str, Any]]:
-    targets = []
-    surplus_positions = {str(row.get("position") or "").upper() for row in opponent_surplus}
-    for player in roster_rows:
-        if surplus_positions and str(player.get("position") or "").upper() not in surplus_positions:
-            continue
-        replaced = comparable_upgrade_slot(player, my_upgrade_slots)
-        if not replaced:
-            continue
-        gain = round(
-            float(player.get("projected_points") or 0)
-            - float(replaced.get("projected_points") or 0),
-            2,
+    players: dict[str, dict[str, Any]],
+    projection_rows: list[dict[str, Any]],
+    scoring_settings: dict[str, Any] | None,
+) -> dict[str, dict[str, Any]]:
+    return {
+        row["player_id"]: row
+        for row in build_player_values(
+            players=players,
+            projection_rows=projection_rows,
+            scoring_settings=scoring_settings,
         )
-        if gain <= 0:
+    }
+
+
+def projection_rows_with_trade_points(
+    projection_rows: list[dict[str, Any]],
+    value_index: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    rows = []
+    for row in projection_rows:
+        player_id = str(row.get("player_id") or "")
+        if not player_id or row.get("points") not in (None, ""):
+            rows.append(row)
             continue
-        targets.append(
+        value = value_index.get(player_id, {})
+        rows.append({**row, "points": value.get("week_value", 0)})
+    return rows
+
+
+def trade_roster_rows(
+    *,
+    roster: dict[str, Any],
+    matchup: dict[str, Any],
+    slots: list[str],
+    players: dict[str, dict[str, Any]],
+    projections_by_player: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    roster_ids = ordered_player_ids(roster.get("players") or [])
+    reserve_ids = set(ordered_player_ids(roster.get("reserve") or []))
+    starter_ids = ordered_player_ids(matchup.get("starters") or [])
+    if not starter_ids:
+        starter_ids = inferred_starters(
+            roster_ids=[player_id for player_id in roster_ids if player_id not in reserve_ids],
+            slots=slots,
+            players=players,
+            projections_by_player=projections_by_player,
+        )
+    player_points = matchup.get("players_points") or {}
+    starter_set = set(starter_ids)
+    rows = [
+        player_lineup_summary(
+            player_id,
+            players=players,
+            projections_by_player=projections_by_player,
+            player_points=player_points,
+            slot=slots[index] if index < len(slots) else f"STARTER_{index + 1}",
+            lineup_status="starter",
+        )
+        for index, player_id in enumerate(starter_ids)
+        if player_id in roster_ids and player_id not in reserve_ids
+    ]
+    for player_id in roster_ids:
+        if player_id in starter_set:
+            continue
+        rows.append(
+            player_lineup_summary(
+                player_id,
+                players=players,
+                projections_by_player=projections_by_player,
+                player_points=player_points,
+                slot="IR" if player_id in reserve_ids else "BN",
+                lineup_status="reserve" if player_id in reserve_ids else "bench",
+            )
+        )
+    return rows
+
+
+def inferred_starters(
+    *,
+    roster_ids: list[str],
+    slots: list[str],
+    players: dict[str, dict[str, Any]],
+    projections_by_player: dict[str, dict[str, Any]],
+) -> list[str]:
+    candidates = [
+        _player_projection_summary(player_id, players, projections_by_player)
+        for player_id in roster_ids
+        if str(player_id) != "0"
+    ]
+    selected: list[str] = []
+    remaining = {row["player_id"]: row for row in candidates}
+    for slot in slots:
+        eligible = [
+            row
+            for row in remaining.values()
+            if is_player_eligible_for_slot(row, slot)
+        ]
+        if not eligible:
+            continue
+        pick = max(eligible, key=lambda row: float(row.get("projected_points") or 0))
+        selected.append(str(pick["player_id"]))
+        remaining.pop(str(pick["player_id"]), None)
+    return selected
+
+
+def enrich_trade_rows(
+    rows: list[dict[str, Any]],
+    value_index: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    enriched = []
+    for row in rows:
+        value = value_index.get(str(row.get("player_id")))
+        if not value:
+            enriched.append(row)
+            continue
+        projected_points = row.get("projected_points", 0)
+        if not projected_points:
+            projected_points = value.get("week_value", 0)
+        enriched.append(
             {
-                **player,
-                "projected_lineup_gain": gain,
-                "upgrade_over": {
-                    "player_id": replaced.get("player_id"),
-                    "name": replaced.get("name"),
-                    "position": replaced.get("position"),
-                    "team": replaced.get("team"),
-                    "projected_points": replaced.get("projected_points"),
-                    "status": replaced.get("status", ""),
-                    "injury_status": replaced.get("injury_status", ""),
-                },
-                "opponent_surplus_position": str(player.get("position") or "").upper() in surplus_positions,
+                **row,
+                "projected_points": projected_points,
+                "week_value": value.get("week_value", 0),
+                "three_week_value": value.get("three_week_value", 0),
+                "season_value": value.get("season_value", 0),
+                "decision_value": value.get("decision_value", 0),
+                "value_tier": value.get("value_tier", row.get("value_tier", "")),
+                "role_tag": value.get("role_tag", ""),
+                "value_above_replacement": value.get("value_above_replacement", {}),
             }
         )
-    return sorted(
-        targets,
-        key=lambda row: (
-            float(row.get("projected_lineup_gain") or 0),
-            float(row.get("projected_points") or 0),
-        ),
-        reverse=True,
-    )[:targets_per_team]
+    return enriched
 
 
-def comparable_upgrade_slot(
-    target: dict[str, Any],
-    my_upgrade_slots: list[dict[str, Any]],
-) -> dict[str, Any] | None:
-    comparable = [row for row in my_upgrade_slots if same_position_family(target, row)]
-    if not comparable:
-        return None
-    return min(comparable, key=lambda row: float(row.get("projected_points") or 0))
-
-
-def build_offer_angles(
+def trade_roster_analyses(
     *,
-    target: dict[str, Any],
-    my_offer_chips: list[dict[str, Any]],
-    my_bench: list[dict[str, Any]],
-    my_roster_players: list[dict[str, Any]],
-    opponent_needs: list[dict[str, Any]],
-    offers_per_team: int,
-) -> list[dict[str, Any]]:
-    need_positions = {str(row.get("position") or "").upper() for row in opponent_needs}
-    angles = []
-    direct = [
-        chip
-        for chip in my_offer_chips
-        if str(chip.get("position") or "").upper() in need_positions
-        and float(chip.get("projected_points") or 0) > 0
-    ]
-    package_pool = sorted(
-        [
-            chip
-            for chip in my_offer_chips
-            if str(chip.get("position") or "").upper() in need_positions
-            if float(chip.get("projected_points") or 0) > 0
-        ],
-        key=lambda row: float(row.get("projected_points") or 0),
-        reverse=True,
-    )
-    for chip in direct[:offers_per_team]:
-        angles.append(
-            trade_angle(
-                target=target,
-                offer=[chip],
-                angle_type="need_fit",
-                reasoning=f"{chip.get('name')} addresses their {chip.get('position')} need.",
-                opponent_needs=opponent_needs,
-                my_roster_players=my_roster_players,
-            )
-        )
-    if len(package_pool) >= 2 and len({chip.get("player_id") for chip in package_pool[:2]}) == 2:
-        package = package_pool[:2]
-        angles.append(
-            trade_angle(
-                target=target,
-                offer=package,
-                angle_type="need_fit_package",
-                reasoning="Package addresses an opponent need while consolidating your depth into a starter upgrade.",
-                opponent_needs=opponent_needs,
-                my_roster_players=my_roster_players,
-            )
-        )
-    return sorted(
-        angles,
-        key=lambda row: float(row.get("trade_score") or 0),
-        reverse=True,
-    )[:offers_per_team]
+    league_id: str,
+    roster_id: int,
+    season: int,
+    week: int,
+    league: dict[str, Any],
+    users: list[dict[str, Any]],
+    rosters: list[dict[str, Any]],
+    matchups: list[dict[str, Any]],
+    players: dict[str, dict[str, Any]],
+    projection_rows: list[dict[str, Any]],
+    roster_rows_by_id: dict[int, list[dict[str, Any]]],
+) -> dict[int, dict[str, Any]]:
+    try:
+        from sleeper_tooling.roster_analysis import build_league_roster_analysis
 
-
-def trade_angle(
-    *,
-    target: dict[str, Any],
-    offer: list[dict[str, Any]],
-    angle_type: str,
-    reasoning: str,
-    opponent_needs: list[dict[str, Any]],
-    my_roster_players: list[dict[str, Any]],
-) -> dict[str, Any]:
-    offer_total = round(sum(float(row.get("projected_points") or 0) for row in offer), 2)
-    need_positions = {str(row.get("position") or "").upper() for row in opponent_needs}
-    matched_needs = sorted(
-        {
-            str(row.get("position") or "").upper()
-            for row in offer
-            if str(row.get("position") or "").upper() in need_positions
+        report = build_league_roster_analysis(
+            league_id=league_id,
+            season=season,
+            week=week,
+            league=league,
+            users=users,
+            rosters=rosters,
+            matchups=matchups,
+            players=players,
+            projection_rows=projection_rows,
+        )
+        return {
+            int(team["roster_id"]): team
+            for team in report.get("teams", [])
+            if team.get("roster_id") is not None
         }
-    )
-    my_gain = float(target.get("projected_lineup_gain") or 0)
-    opponent_fit_score = opponent_trade_fit_score(
-        offer=offer,
-        opponent_need_matched=matched_needs,
-    )
-    backup_risk = trade_backup_risk(offer, my_roster_players)
-    bye_week_risk = trade_bye_week_risk(target, offer, my_roster_players)
-    roster_balance_after = roster_balance_after_trade(target, offer, my_roster_players)
-    trade_score = round(
-        my_gain * 10
-        + opponent_fit_score
-        - float(backup_risk.get("penalty") or 0)
-        - float(bye_week_risk.get("penalty") or 0)
-        - float(roster_balance_after.get("penalty") or 0),
-        2,
-    )
+    except (ImportError, ValueError, TypeError, KeyError):
+        users_by_id = {str(user.get("user_id")): user for user in users}
+        analyses = {}
+        for roster in rosters:
+            current_roster_id = int(roster.get("roster_id", 0))
+            owner = users_by_id.get(str(roster.get("owner_id")))
+            analyses[current_roster_id] = fallback_trade_analysis(
+                roster_id=current_roster_id,
+                team_name=owner_display_name(owner),
+                rows=roster_rows_by_id.get(current_roster_id, []),
+                positions=[],
+            )
+        if roster_id not in analyses:
+            analyses[roster_id] = fallback_trade_analysis(
+                roster_id=roster_id,
+                team_name="",
+                rows=roster_rows_by_id.get(roster_id, []),
+                positions=[],
+            )
+        return analyses
+
+
+def fallback_trade_analysis(
+    *,
+    roster_id: int,
+    team_name: str,
+    rows: list[dict[str, Any]],
+    positions: list[str],
+) -> dict[str, Any]:
+    position_list = positions or sorted({str(row.get("position") or "").upper() for row in rows if row.get("position")})
     return {
-        "angle_type": angle_type,
-        "ask_for": target,
-        "offer": [
+        "roster_id": roster_id,
+        "team_name": team_name,
+        "need_positions": roster_needs(rows, position_list),
+        "surplus_positions": roster_surplus(rows, position_list),
+        "protected_players": [
             {
                 "player_id": row.get("player_id"),
                 "name": row.get("name"),
                 "position": row.get("position"),
-                "team": row.get("team"),
-                "projected_points": row.get("projected_points"),
-                "status": row.get("status", ""),
-                "injury_status": row.get("injury_status", ""),
+                "reasons": [drop_protection_reason(row, rows)],
             }
-            for row in offer
+            for row in rows
+            if drop_protection_reason(row, rows)
         ],
-        "offer_projected_points": offer_total,
-        "projected_lineup_gain": target.get("projected_lineup_gain", 0),
+        "movable_players": trade_offer_chips(rows),
+        "position_groups": {},
+        "roster_balance_score": 70,
+    }
+
+
+def trade_candidate_pool(
+    *,
+    rows: list[dict[str, Any]],
+    analysis: dict[str, Any],
+    positions: list[str],
+    side: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    allowed = {position.upper() for position in positions}
+    protected_reasons = protected_reason_by_player(analysis)
+    movable_ids = {str(row.get("player_id")) for row in analysis.get("movable_players", [])}
+    surplus_positions = position_names(analysis.get("surplus_positions", []))
+    candidates = []
+    for row in rows:
+        position = str(row.get("position") or "").upper()
+        if allowed and position not in allowed:
+            continue
+        if not row.get("active_roster_spot", True):
+            continue
+        if float(row.get("projected_points") or row.get("week_value") or 0) <= 0:
+            continue
+        lineup_status = str(row.get("lineup_status") or "").lower()
+        protected_reason = protected_reasons.get(str(row.get("player_id")), "")
+        protected = bool(protected_reason)
+        if side == "offer" and lineup_status == "starter":
+            continue
+        if side == "offer" and protected and str(row.get("player_id")) not in movable_ids:
+            candidate_penalty = 30
+        elif protected:
+            candidate_penalty = 22 if lineup_status == "starter" else 12
+        elif str(row.get("player_id")) in movable_ids or position in surplus_positions:
+            candidate_penalty = 0
+        else:
+            candidate_penalty = 5 if side == "ask" else 8
+        reasons = []
+        if protected_reason:
+            reasons.append(f"protected: {protected_reason}")
+        if position in surplus_positions:
+            reasons.append(f"{position} surplus")
+        if str(row.get("player_id")) in movable_ids:
+            reasons.append("movable roster piece")
+        candidates.append(
+            {
+                **compact_trade_player(row),
+                "lineup_status": row.get("lineup_status", ""),
+                "week_value": value_number(row, "week_value", "projected_points"),
+                "three_week_value": value_number(row, "three_week_value", "projected_points"),
+                "season_value": value_number(row, "season_value", "projected_points"),
+                "decision_value": value_number(row, "decision_value", "projected_points"),
+                "candidate_penalty": candidate_penalty,
+                "candidate_reasons": reasons,
+                "protected": protected,
+                "surplus_position": position in surplus_positions,
+            }
+        )
+    return sorted(
+        candidates,
+        key=lambda row: (
+            -float(row.get("candidate_penalty") or 0),
+            float(row.get("surplus_position") is True),
+            float(row.get("decision_value") or 0),
+            float(row.get("projected_points") or 0),
+        ),
+        reverse=True,
+    )[:limit]
+
+
+def build_trade_package_matrix(
+    *,
+    opponent_roster_id: int,
+    opponent_team_name: str,
+    my_rows: list[dict[str, Any]],
+    opponent_rows: list[dict[str, Any]],
+    my_analysis: dict[str, Any],
+    opponent_analysis: dict[str, Any],
+    offer_pool: list[dict[str, Any]],
+    ask_pool: list[dict[str, Any]],
+    week: int,
+    offers_per_team: int,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    per_type_limit = max(3, offers_per_team)
+    for offer_count, ask_count in TRADE_PACKAGE_TYPES:
+        if len(offer_pool) < offer_count or len(ask_pool) < ask_count:
+            continue
+        typed_rows = [
+            score_trade_package(
+                opponent_roster_id=opponent_roster_id,
+                opponent_team_name=opponent_team_name,
+                package_type=f"{offer_count}:{ask_count}",
+                offer=list(offer),
+                ask=list(ask),
+                my_rows=my_rows,
+                opponent_rows=opponent_rows,
+                my_analysis=my_analysis,
+                opponent_analysis=opponent_analysis,
+                week=week,
+            )
+            for offer in combinations(offer_pool, offer_count)
+            for ask in combinations(ask_pool, ask_count)
+        ]
+        rows.extend(sorted(typed_rows, key=trade_package_sort_key, reverse=True)[:per_type_limit])
+    return sorted(rows, key=trade_package_sort_key, reverse=True)
+
+
+def score_trade_package(
+    *,
+    opponent_roster_id: int,
+    opponent_team_name: str,
+    package_type: str,
+    offer: list[dict[str, Any]],
+    ask: list[dict[str, Any]],
+    my_rows: list[dict[str, Any]],
+    opponent_rows: list[dict[str, Any]],
+    my_analysis: dict[str, Any],
+    opponent_analysis: dict[str, Any],
+    week: int,
+) -> dict[str, Any]:
+    my_needs = position_names(my_analysis.get("need_positions", []))
+    opponent_needs = position_names(opponent_analysis.get("need_positions", []))
+    my_surplus = position_names(my_analysis.get("surplus_positions", []))
+    opponent_surplus = position_names(opponent_analysis.get("surplus_positions", []))
+    opponent_need_matched = matched_positions(offer, opponent_needs)
+    my_need_solved = matched_positions(ask, my_needs)
+    my_values = package_values(ask, offer)
+    opponent_values = package_values(offer, ask)
+    projected_lineup_gain, upgrade_over = lineup_gain(ask, outgoing=offer, roster_rows=my_rows)
+    opponent_projected_gain, opponent_upgrade_over = lineup_gain(offer, outgoing=ask, roster_rows=opponent_rows)
+    my_roster_balance_after = roster_balance_after_trade(
+        incoming=ask,
+        outgoing=offer,
+        roster_players=my_rows,
+        analysis=my_analysis,
+        side="my",
+    )
+    opponent_roster_balance_after = roster_balance_after_trade(
+        incoming=offer,
+        outgoing=ask,
+        roster_players=opponent_rows,
+        analysis=opponent_analysis,
+        side="opponent",
+    )
+    backup_risk = trade_backup_risk(offer, my_rows, my_analysis)
+    bye_week_risk = trade_bye_week_risk(
+        incoming=ask,
+        outgoing=offer,
+        roster_players=my_rows,
+        week=week,
+    )
+    value_balance = round(abs(my_values["outgoing_decision"] - my_values["incoming_decision"]), 2)
+    fairness_supported = opponent_values["week_delta"] >= -2 and value_balance <= 8
+    my_gain = round(projected_lineup_gain + len(my_need_solved) * 2, 2)
+    opponent_gain = round(opponent_projected_gain + len(opponent_need_matched) * 2, 2)
+    rejection_reasons = trade_rejection_reasons(
+        opponent_need_matched=opponent_need_matched,
+        my_need_solved=my_need_solved,
+        fairness_supported=fairness_supported,
+        my_roster_balance_after=my_roster_balance_after,
+        opponent_roster_balance_after=opponent_roster_balance_after,
+        backup_risk=backup_risk,
+        value_balance=value_balance,
+    )
+    if (
+        len(offer) > len(ask)
+        and my_values["week_delta"] <= -3
+        and not my_need_solved
+        and "harms my roster balance" not in rejection_reasons
+    ):
+        rejection_reasons.append("harms my roster balance")
+    candidate_penalty = sum(float(row.get("candidate_penalty") or 0) for row in offer + ask)
+    surplus_fit = sum(1 for row in offer if str(row.get("position") or "").upper() in my_surplus)
+    opponent_surplus_fit = sum(1 for row in ask if str(row.get("position") or "").upper() in opponent_surplus)
+    package_focus_score = opponent_need_focus_score(offer, opponent_need_matched)
+    package_shape_bonus = max(0, len(offer) - len(ask)) * 3
+    trade_score = round(
+        (my_gain * 7)
+        + (opponent_gain * 6)
+        + len(opponent_need_matched) * 14
+        + package_focus_score * 6
+        + len(my_need_solved) * 8
+        + (surplus_fit + opponent_surplus_fit) * 3
+        + package_shape_bonus
+        - value_balance * 1.2
+        - float(my_roster_balance_after.get("penalty") or 0)
+        - float(opponent_roster_balance_after.get("penalty") or 0) * 0.7
+        - float(backup_risk.get("penalty") or 0)
+        - float(bye_week_risk.get("penalty") or 0)
+        - candidate_penalty,
+        2,
+    )
+    recommendation = trade_recommendation(trade_score, rejection_reasons)
+    reasoning_summary = trade_package_reasoning(
+        package_type=package_type,
+        ask=ask,
+        offer=offer,
+        opponent_need_matched=opponent_need_matched,
+        my_need_solved=my_need_solved,
+        value_balance=value_balance,
+        recommendation=recommendation,
+        rejection_reasons=rejection_reasons,
+    )
+    ask_for = ask[0] if len(ask) == 1 else {"players": [compact_trade_player(row) for row in ask]}
+    return {
+        "opponent_roster_id": opponent_roster_id,
+        "opponent_team_name": opponent_team_name,
+        "package_type": package_type,
+        "angle_type": package_type,
+        "ask": [compact_trade_player(row) for row in ask],
+        "ask_for": ask_for,
+        "offer": [compact_trade_player(row) for row in offer],
+        "offer_projected_points": round(sum(float(row.get("projected_points") or 0) for row in offer), 2),
+        "ask_projected_points": round(sum(float(row.get("projected_points") or 0) for row in ask), 2),
+        "projected_lineup_gain": projected_lineup_gain,
+        "upgrade_over": upgrade_over,
+        "opponent_projected_lineup_gain": opponent_projected_gain,
+        "opponent_upgrade_over": opponent_upgrade_over,
         "my_gain": my_gain,
-        "opponent_fit_score": opponent_fit_score,
-        "opponent_need_matched": matched_needs,
+        "opponent_gain": opponent_gain,
+        "my_week_value_delta": my_values["week_delta"],
+        "my_three_week_value_delta": my_values["three_week_delta"],
+        "my_season_value_delta": my_values["season_delta"],
+        "opponent_week_value_delta": opponent_values["week_delta"],
+        "opponent_three_week_value_delta": opponent_values["three_week_delta"],
+        "opponent_season_value_delta": opponent_values["season_delta"],
+        "opponent_need_matched": opponent_need_matched,
+        "my_need_solved": my_need_solved,
+        "package_focus_score": package_focus_score,
+        "value_balance": value_balance,
         "backup_risk": backup_risk,
         "bye_week_risk": bye_week_risk,
-        "roster_balance_after": roster_balance_after,
+        "my_roster_balance_after": my_roster_balance_after,
+        "opponent_roster_balance_after": opponent_roster_balance_after,
+        "roster_balance_after": my_roster_balance_after,
         "trade_score": trade_score,
-        "reasoning": reasoning,
+        "recommendation": recommendation,
+        "reasoning_summary": reasoning_summary,
+        "reasoning": reasoning_summary,
+        "rejection_reasons": rejection_reasons,
     }
+
+
+def trade_rejection_reasons(
+    *,
+    opponent_need_matched: list[str],
+    my_need_solved: list[str],
+    fairness_supported: bool,
+    my_roster_balance_after: dict[str, Any],
+    opponent_roster_balance_after: dict[str, Any],
+    backup_risk: dict[str, Any],
+    value_balance: float,
+) -> list[str]:
+    reasons = []
+    if not opponent_need_matched and not fairness_supported:
+        reasons.append("does not address opponent need or enough value fairness")
+    if backup_risk.get("level") == "high" or float(my_roster_balance_after.get("penalty") or 0) >= 18:
+        reasons.append("harms my roster balance")
+    if float(opponent_roster_balance_after.get("penalty") or 0) >= 28:
+        reasons.append("damages opponent roster balance")
+    if value_balance > 18 and not (opponent_need_matched and my_need_solved):
+        reasons.append("value gap is too wide for a mutual-fit package")
+    return reasons
+
+
+def trade_recommendation(trade_score: float, rejection_reasons: list[str]) -> str:
+    if rejection_reasons:
+        return "reject"
+    if trade_score >= 75:
+        return "pursue"
+    if trade_score >= 45:
+        return "explore"
+    if trade_score >= 25:
+        return "monitor"
+    return "pass"
+
+
+def trade_package_reasoning(
+    *,
+    package_type: str,
+    ask: list[dict[str, Any]],
+    offer: list[dict[str, Any]],
+    opponent_need_matched: list[str],
+    my_need_solved: list[str],
+    value_balance: float,
+    recommendation: str,
+    rejection_reasons: list[str],
+) -> str:
+    pieces = [f"{package_type} package"]
+    if opponent_need_matched:
+        pieces.append("matches their " + "/".join(opponent_need_matched) + " need")
+    if my_need_solved:
+        pieces.append("helps your " + "/".join(my_need_solved) + " need")
+    pieces.append(f"value balance {value_balance:.2f}")
+    if rejection_reasons:
+        pieces.append("rejected: " + "; ".join(rejection_reasons))
+    else:
+        pieces.append(f"recommendation {recommendation}")
+    return "; ".join(pieces)
+
+
+def opponent_need_focus_score(
+    offer: list[dict[str, Any]],
+    opponent_need_matched: list[str],
+) -> float:
+    if not opponent_need_matched:
+        return 0.0
+    matched = set(opponent_need_matched)
+    positions = [str(row.get("position") or "").upper() for row in offer if row.get("position")]
+    if not positions:
+        return 0.0
+    matching_count = sum(1 for position in positions if position in matched)
+    unrelated_count = len(positions) - matching_count
+    return round((matching_count / len(positions)) - (unrelated_count * 0.35), 2)
+
+
+def package_values(incoming: list[dict[str, Any]], outgoing: list[dict[str, Any]]) -> dict[str, float]:
+    incoming_week = sum(value_number(row, "week_value", "projected_points") for row in incoming)
+    outgoing_week = sum(value_number(row, "week_value", "projected_points") for row in outgoing)
+    incoming_three = sum(value_number(row, "three_week_value", "projected_points") for row in incoming)
+    outgoing_three = sum(value_number(row, "three_week_value", "projected_points") for row in outgoing)
+    incoming_season = sum(value_number(row, "season_value", "projected_points") for row in incoming)
+    outgoing_season = sum(value_number(row, "season_value", "projected_points") for row in outgoing)
+    incoming_decision = sum(value_number(row, "decision_value", "projected_points") for row in incoming)
+    outgoing_decision = sum(value_number(row, "decision_value", "projected_points") for row in outgoing)
+    return {
+        "incoming_decision": round(incoming_decision, 2),
+        "outgoing_decision": round(outgoing_decision, 2),
+        "week_delta": round(incoming_week - outgoing_week, 2),
+        "three_week_delta": round(incoming_three - outgoing_three, 2),
+        "season_delta": round(incoming_season - outgoing_season, 2),
+    }
+
+
+def lineup_gain(
+    incoming: list[dict[str, Any]],
+    *,
+    outgoing: list[dict[str, Any]],
+    roster_rows: list[dict[str, Any]],
+) -> tuple[float, dict[str, Any]]:
+    outgoing_ids = {str(row.get("player_id")) for row in outgoing}
+    starters = [
+        row
+        for row in roster_rows
+        if str(row.get("lineup_status") or "").lower() == "starter"
+        and str(row.get("player_id")) not in outgoing_ids
+    ]
+    best_gain = 0.0
+    replaced: dict[str, Any] = {}
+    for target in incoming:
+        comparable = [row for row in starters if same_position_family(target, row)]
+        if not comparable:
+            continue
+        replacement = min(comparable, key=lambda row: float(row.get("projected_points") or 0))
+        gain = round(float(target.get("projected_points") or 0) - float(replacement.get("projected_points") or 0), 2)
+        if gain > best_gain:
+            best_gain = gain
+            replaced = compact_trade_player(replacement)
+    return max(0.0, best_gain), replaced
 
 
 def trade_offer_chips(roster_players: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1473,23 +2567,19 @@ def trade_offer_chips(roster_players: list[dict[str, Any]]) -> list[dict[str, An
     return sorted(chips, key=lambda row: float(row.get("projected_points") or 0), reverse=True)
 
 
-def opponent_trade_fit_score(
-    *,
-    offer: list[dict[str, Any]],
-    opponent_need_matched: list[str],
-) -> float:
-    offer_points = sum(float(row.get("projected_points") or 0) for row in offer)
-    return round(len(opponent_need_matched) * 35 + min(offer_points, 30), 2)
-
-
 def trade_backup_risk(
     offer: list[dict[str, Any]],
     roster_players: list[dict[str, Any]],
+    analysis: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    protected_reasons = protected_reason_by_player(analysis or {})
     reasons = []
     penalty = 0
+    outgoing_ids = {row.get("player_id") for row in offer}
     for row in offer:
-        reason = drop_protection_reason(row, roster_players)
+        reason = protected_reasons.get(str(row.get("player_id")), "")
+        if analysis is None:
+            reason = drop_protection_reason(row, roster_players)
         if reason:
             reasons.append(f"{row.get('name')} is protected: {reason}")
             penalty += 25
@@ -1497,77 +2587,202 @@ def trade_backup_risk(
         remaining_playable = [
             player
             for player in roster_players
-            if player.get("player_id") != row.get("player_id")
+            if player.get("player_id") not in outgoing_ids
             and str(player.get("position") or "").upper() == position
             and player.get("active_roster_spot", True)
             and float(player.get("projected_points") or 0) >= playable_threshold(position)
         ]
-        if len(remaining_playable) < desired_depth(position):
-            reasons.append(f"{position} depth would fall below desired playable coverage")
+        if len(remaining_playable) < max(1, min(desired_depth(position), 2)):
+            reasons.append(f"{position} depth would fall below playable coverage")
             penalty += 10
     level = "high" if penalty >= 25 else "medium" if penalty else "low"
     return {"level": level, "penalty": penalty, "reasons": reasons}
 
 
 def trade_bye_week_risk(
-    target: dict[str, Any],
-    offer: list[dict[str, Any]],
+    *,
+    incoming: list[dict[str, Any]],
+    outgoing: list[dict[str, Any]],
     roster_players: list[dict[str, Any]],
+    week: int,
 ) -> dict[str, Any]:
+    outgoing_ids = {row.get("player_id") for row in outgoing}
     after = [
         player
         for player in roster_players
-        if player.get("player_id") not in {row.get("player_id") for row in offer}
-    ] + [target]
+        if player.get("player_id") not in outgoing_ids
+    ] + incoming
     counts = Counter(
         int(player.get("bye_week"))
         for player in after
         if str(player.get("bye_week") or "").isdigit()
     )
     clustered = {
-        week: count
-        for week, count in counts.items()
-        if count >= 4
+        bye_week: count
+        for bye_week, count in counts.items()
+        if count >= 4 or bye_week == week and count >= 2
     }
-    penalty = sum((count - 3) * 4 for count in clustered.values())
+    penalty = sum((count - 3) * 4 if bye_week != week else count * 4 for bye_week, count in clustered.items())
     return {
         "level": "medium" if penalty else "low",
         "penalty": penalty,
         "clustered_byes": clustered,
-        "incoming_bye_week": target.get("bye_week", ""),
-        "outgoing_bye_weeks": [row.get("bye_week", "") for row in offer],
+        "incoming_bye_weeks": [row.get("bye_week", "") for row in incoming],
+        "outgoing_bye_weeks": [row.get("bye_week", "") for row in outgoing],
     }
 
 
 def roster_balance_after_trade(
-    target: dict[str, Any],
-    offer: list[dict[str, Any]],
+    *,
+    incoming: list[dict[str, Any]],
+    outgoing: list[dict[str, Any]],
     roster_players: list[dict[str, Any]],
+    analysis: dict[str, Any],
+    side: str,
 ) -> dict[str, Any]:
-    outgoing_ids = {row.get("player_id") for row in offer}
+    outgoing_ids = {row.get("player_id") for row in outgoing}
     after = [
         player
         for player in roster_players
         if player.get("player_id") not in outgoing_ids
-    ] + [target]
+    ] + incoming
     counts = Counter(str(row.get("position") or "").upper() for row in after if row.get("position"))
+    incoming_positions = {str(row.get("position") or "").upper() for row in incoming}
+    outgoing_positions = {str(row.get("position") or "").upper() for row in outgoing}
+    groups = analysis.get("position_groups") or {}
+    raw_need_positions = position_names(analysis.get("need_positions", []))
+    need_positions = {
+        position
+        for position in raw_need_positions
+        if position in incoming_positions
+        or position in outgoing_positions
+        or counts.get(position, 0) > 0
+        or int((groups.get(position) or {}).get("required_starter_count") or 0) > 0
+    }
+    protected_reasons = protected_reason_by_player(analysis)
     warnings = []
     penalty = 0
-    for position, desired in {position: desired_depth(position) for position in counts}.items():
-        if counts[position] < desired:
-            warnings.append(f"{position} depth below desired roster balance")
-            penalty += 8
+    for row in outgoing:
+        reason = protected_reasons.get(str(row.get("player_id")))
+        if reason:
+            warnings.append(f"{row.get('name')} is protected: {reason}")
+            penalty += 18
+    for position in sorted(need_positions):
+        if position in outgoing_positions and position not in incoming_positions:
+            warnings.append(f"{position} need gets worse after trade")
+            penalty += 14
+    checked_positions = set(counts) | need_positions | incoming_positions | outgoing_positions
+    for position in sorted(checked_positions):
+        group = groups.get(position) or {}
+        required = int(group.get("required_starter_count") or 0)
+        if required == 0 and counts.get(position, 0) == 0 and position not in incoming_positions and position not in outgoing_positions:
+            continue
+        if required == 0:
+            desired = 1 if counts.get(position, 0) or position in incoming_positions or position in outgoing_positions else 0
+        else:
+            desired = max(required, min(desired_depth(position), required + 1))
+        if counts.get(position, 0) < required:
+            warnings.append(f"{position} falls below starter requirement")
+            penalty += 20
+        elif counts.get(position, 0) < desired and position not in incoming_positions:
+            warnings.append(f"{position} playable depth thins after trade")
+            penalty += 6
+    solved_needs = len(need_positions & incoming_positions)
+    before_score = int(analysis.get("roster_balance_score") or 70)
+    score = max(0, min(100, int(round(before_score + solved_needs * 6 - penalty))))
+    level = "high" if penalty >= 24 else "medium" if penalty else "low"
     return {
+        "side": side,
+        "score": score,
+        "before_score": before_score,
         "position_counts": dict(sorted(counts.items())),
         "warnings": warnings,
         "penalty": penalty,
+        "level": level,
     }
+
+
+def trade_targets_from_pool(
+    ask_pool: list[dict[str, Any]],
+    *,
+    my_roster_players: list[dict[str, Any]],
+    my_needs: set[str],
+    targets_per_team: int,
+) -> list[dict[str, Any]]:
+    targets = []
+    for player in ask_pool:
+        projected_lineup_gain, upgrade_over = lineup_gain([player], outgoing=[], roster_rows=my_roster_players)
+        position = str(player.get("position") or "").upper()
+        targets.append(
+            {
+                **compact_trade_player(player),
+                "projected_lineup_gain": projected_lineup_gain,
+                "upgrade_over": upgrade_over,
+                "my_need_solved": position in my_needs,
+                "opponent_surplus_position": bool(player.get("surplus_position")),
+                "target_reason": "; ".join(player.get("candidate_reasons") or []) or "value target",
+            }
+        )
+    return sorted(
+        targets,
+        key=lambda row: (
+            float(row.get("my_need_solved") is True),
+            float(row.get("opponent_surplus_position") is True),
+            float(row.get("projected_lineup_gain") or 0),
+            float(row.get("projected_points") or 0),
+        ),
+        reverse=True,
+    )[:targets_per_team]
+
+
+def suppress_repeated_generic_packages(teams: list[dict[str, Any]]) -> None:
+    rows_by_offer: dict[tuple[str, ...], list[dict[str, Any]]] = {}
+    for team in teams:
+        for row in team.get("package_matrix", []):
+            signature = tuple(sorted(str(player.get("player_id")) for player in row.get("offer", [])))
+            if signature:
+                rows_by_offer.setdefault(signature, []).append(row)
+    for rows in rows_by_offer.values():
+        if len(rows) <= 1:
+            continue
+        for row in rows:
+            if independently_supported_trade(row):
+                continue
+            add_trade_rejection(row, "repeated generic package without independent opponent fit", penalty=18)
+
+
+def independently_supported_trade(row: dict[str, Any]) -> bool:
+    return bool(row.get("opponent_need_matched")) and (
+        float(row.get("opponent_gain") or 0) > 0
+        or float(row.get("opponent_week_value_delta") or 0) >= -2
+        or float(row.get("value_balance") or 0) <= 5
+    )
+
+
+def add_trade_rejection(row: dict[str, Any], reason: str, *, penalty: float) -> None:
+    reasons = row.setdefault("rejection_reasons", [])
+    if reason not in reasons:
+        reasons.append(reason)
+    row["trade_score"] = round(float(row.get("trade_score") or 0) - penalty, 2)
+    row["recommendation"] = "reject"
+    row["reasoning_summary"] = trade_package_reasoning(
+        package_type=str(row.get("package_type") or ""),
+        ask=row.get("ask", []),
+        offer=row.get("offer", []),
+        opponent_need_matched=row.get("opponent_need_matched", []),
+        my_need_solved=row.get("my_need_solved", []),
+        value_balance=float(row.get("value_balance") or 0),
+        recommendation="reject",
+        rejection_reasons=reasons,
+    )
+    row["reasoning"] = row["reasoning_summary"]
 
 
 def trade_reasoning(
     needs: list[dict[str, Any]],
     surplus: list[dict[str, Any]],
     offer_angles: list[dict[str, Any]],
+    package_matrix: list[dict[str, Any]] | None = None,
 ) -> list[str]:
     reasons = []
     if needs:
@@ -1581,10 +2796,83 @@ def trade_reasoning(
             + ", ".join(f"{row['position']} depth" for row in surplus[:3])
         )
     if offer_angles:
-        reasons.append("At least one offer angle matches an opponent need and creates a projected lineup upgrade for you.")
+        types = sorted({str(row.get("package_type")) for row in offer_angles if row.get("package_type")})
+        reasons.append("Recommended mutual-fit packages: " + ", ".join(types))
+    elif package_matrix:
+        rejected = sum(1 for row in package_matrix if row.get("recommendation") == "reject")
+        reasons.append(f"No recommended package after mutual-fit scoring; {rejected} matrix rows rejected or downgraded.")
     else:
-        reasons.append("No clear mutual-fit offer angle from current roster depth.")
+        reasons.append("No clear mutual-fit package from current roster depth.")
     return reasons
+
+
+def compact_trade_player(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "player_id": row.get("player_id"),
+        "name": row.get("name"),
+        "position": row.get("position"),
+        "team": row.get("team"),
+        "projected_points": row.get("projected_points"),
+        "week_value": row.get("week_value", row.get("projected_points", 0)),
+        "three_week_value": row.get("three_week_value", row.get("projected_points", 0)),
+        "season_value": row.get("season_value", row.get("projected_points", 0)),
+        "decision_value": row.get("decision_value", row.get("projected_points", 0)),
+        "status": row.get("status", ""),
+        "injury_status": row.get("injury_status", ""),
+        "bye_week": row.get("bye_week", ""),
+    }
+
+
+def protected_reason_by_player(analysis: dict[str, Any]) -> dict[str, str]:
+    reasons = {}
+    for row in analysis.get("protected_players", []) or []:
+        player_id = str(row.get("player_id"))
+        row_reasons = row.get("reasons") or []
+        reasons[player_id] = "; ".join(str(reason) for reason in row_reasons if reason) or "protected roster piece"
+    return reasons
+
+
+def position_names(rows: list[dict[str, Any]]) -> set[str]:
+    return {str(row.get("position") or "").upper() for row in rows if row.get("position")}
+
+
+def filter_position_rows(rows: list[dict[str, Any]], positions: list[str]) -> list[dict[str, Any]]:
+    allowed = {str(position).upper() for position in positions}
+    return [
+        row
+        for row in rows
+        if str(row.get("position") or "").upper() in allowed
+    ]
+
+
+def matched_positions(players: list[dict[str, Any]], need_positions: set[str]) -> list[str]:
+    return sorted(
+        {
+            str(row.get("position") or "").upper()
+            for row in players
+            if str(row.get("position") or "").upper() in need_positions
+        }
+    )
+
+
+def value_number(row: dict[str, Any], primary: str, fallback: str) -> float:
+    for key in (primary, fallback):
+        try:
+            return round(float(row.get(key) or 0), 2)
+        except (TypeError, ValueError):
+            continue
+    return 0.0
+
+
+def trade_package_sort_key(row: dict[str, Any]) -> tuple[float, float, float, float, float]:
+    recommended = 0.0 if row.get("recommendation") == "reject" else 1.0
+    return (
+        recommended,
+        float(row.get("package_focus_score") or 0),
+        float(row.get("trade_score") or 0),
+        float(row.get("opponent_gain") or 0),
+        float(row.get("my_gain") or 0),
+    )
 
 
 def playable_threshold(position: str) -> float:

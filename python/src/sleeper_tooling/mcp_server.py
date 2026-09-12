@@ -214,6 +214,47 @@ TOOLS = [
         },
     },
     {
+        "name": "player_values",
+        "description": "Rank deterministic player value profiles with week, near-term, season, and replacement-aware scores.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "league_id": {"type": "string"},
+                "season": {"type": "integer"},
+                "week": {"type": "integer"},
+                "positions": {"type": "string", "default": "QB,RB,WR,TE,K,DEF"},
+                "limit": {"type": "integer", "default": 50},
+            },
+        },
+    },
+    {
+        "name": "roster_analysis",
+        "description": "Analyze one roster's strengths, weaknesses, protected players, movable players, and trade/waiver posture.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "league_id": {"type": "string"},
+                "roster_id": {"type": "integer"},
+                "season": {"type": "integer"},
+                "week": {"type": "integer"},
+                "positions": {"type": "string", "default": "QB,RB,WR,TE,K,DEF"},
+            },
+        },
+    },
+    {
+        "name": "league_roster_analysis",
+        "description": "Analyze every roster in a league for deterministic needs, surplus, risk, and trade posture.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "league_id": {"type": "string"},
+                "season": {"type": "integer"},
+                "week": {"type": "integer"},
+                "positions": {"type": "string", "default": "QB,RB,WR,TE,K,DEF"},
+            },
+        },
+    },
+    {
         "name": "decision_smoke_report",
         "description": "Run the compact lineup, waiver, and trade smoke workflow and return display-ready Markdown tables or JSON.",
         "inputSchema": {
