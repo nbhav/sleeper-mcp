@@ -1,7 +1,7 @@
 interface:
   display_name: "Sleeper Weekly Scout"
   short_description: "Back-test weeks and actionable waivers"
-  default_prompt: "Use $sleeper-weekly-scout to call deterministic MCP tools for Sleeper leaders, lineup tables, positional waiver targets, and trade opportunities. Fall back only to Dockerized repo commands, use make decision-smoke for live validation, never host installs, use make local-up when setup is needed, and run make teardown after workflow checks."
+  default_prompt: "Use $sleeper-weekly-scout to check decision_data_status when available, sync stale normalized data, then call deterministic MCP tools for Sleeper leaders, lineup tables, positional waiver targets, trends, and trade opportunities. Fall back only to Dockerized repo commands, use make decision-smoke for live validation, never host installs, use make local-up when setup is needed, and run make teardown after workflow checks."
 
 policy:
   allow_implicit_invocation: true

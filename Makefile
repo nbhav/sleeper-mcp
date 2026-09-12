@@ -1,7 +1,7 @@
 COMPOSE := docker compose -f infra/docker/docker-compose.yml
 WORKER_DEPLOY_ARGS ?=
 
-.PHONY: build test integration-test decision-smoke shell sleeper mcp worker-build worker-install worker-typecheck worker-dev worker-deploy local-up local-down docker-prune teardown ci-teardown clean
+.PHONY: build test integration-test decision-smoke shell sleeper sync-data sync-status mcp worker-build worker-install worker-typecheck worker-dev worker-deploy local-up local-down docker-prune teardown ci-teardown clean
 
 build:
 	$(COMPOSE) build sleeper sleeper-mcp
@@ -20,6 +20,12 @@ shell:
 
 sleeper:
 	$(COMPOSE) run --rm sleeper $(ARGS)
+
+sync-data:
+	$(COMPOSE) run --rm sleeper sync-data --output json $(ARGS)
+
+sync-status:
+	$(COMPOSE) run --rm sleeper sync-status --output json $(ARGS)
 
 mcp:
 	$(COMPOSE) run --rm -i sleeper-mcp

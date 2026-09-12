@@ -25,6 +25,62 @@ TOOLS = [
         },
     },
     {
+        "name": "decision_data_status",
+        "description": "Report normalized decision data freshness without calling Sleeper.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "season": {"type": "integer"},
+                "max_age_hours": {"type": "number", "default": 24},
+            },
+        },
+    },
+    {
+        "name": "sync_decision_data",
+        "description": "Trigger normalized decision data sync through the configured sync service.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "league_id": {"type": "string"},
+                "season": {"type": "integer"},
+                "week": {"type": "integer"},
+                "force": {"type": "boolean", "default": False},
+            },
+        },
+    },
+    {
+        "name": "player_stat_trends",
+        "description": "Return graph-friendly normalized player stat rows for one stat key over a week range.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["season", "player_id", "stat_key", "start_week"],
+            "properties": {
+                "season": {"type": "integer"},
+                "player_id": {"type": "string"},
+                "stat_key": {"type": "string"},
+                "start_week": {"type": "integer"},
+                "end_week": {"type": "integer"},
+                "source": {"type": "string", "enum": ["stats", "projections"], "default": "stats"},
+            },
+        },
+    },
+    {
+        "name": "position_stat_leaders",
+        "description": "Return graph-friendly normalized stat leaders for a position, week, and stat key.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["season", "week", "position", "stat_key"],
+            "properties": {
+                "season": {"type": "integer"},
+                "week": {"type": "integer"},
+                "position": {"type": "string"},
+                "stat_key": {"type": "string"},
+                "source": {"type": "string", "enum": ["stats", "projections"], "default": "stats"},
+                "limit": {"type": "integer", "default": 10},
+            },
+        },
+    },
+    {
         "name": "weekly_briefing",
         "description": "League-aware weekly leaders plus waiver signal for the current or requested week.",
         "inputSchema": {
@@ -154,6 +210,47 @@ TOOLS = [
                 "positions": {"type": "string", "default": "QB,RB,WR,TE"},
                 "targets_per_team": {"type": "integer", "default": 5},
                 "offers_per_team": {"type": "integer", "default": 3},
+            },
+        },
+    },
+    {
+        "name": "player_values",
+        "description": "Rank deterministic player value profiles with week, near-term, season, and replacement-aware scores.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "league_id": {"type": "string"},
+                "season": {"type": "integer"},
+                "week": {"type": "integer"},
+                "positions": {"type": "string", "default": "QB,RB,WR,TE,K,DEF"},
+                "limit": {"type": "integer", "default": 50},
+            },
+        },
+    },
+    {
+        "name": "roster_analysis",
+        "description": "Analyze one roster's strengths, weaknesses, protected players, movable players, and trade/waiver posture.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "league_id": {"type": "string"},
+                "roster_id": {"type": "integer"},
+                "season": {"type": "integer"},
+                "week": {"type": "integer"},
+                "positions": {"type": "string", "default": "QB,RB,WR,TE,K,DEF"},
+            },
+        },
+    },
+    {
+        "name": "league_roster_analysis",
+        "description": "Analyze every roster in a league for deterministic needs, surplus, risk, and trade posture.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "league_id": {"type": "string"},
+                "season": {"type": "integer"},
+                "week": {"type": "integer"},
+                "positions": {"type": "string", "default": "QB,RB,WR,TE,K,DEF"},
             },
         },
     },

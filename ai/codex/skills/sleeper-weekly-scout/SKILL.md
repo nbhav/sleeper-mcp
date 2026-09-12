@@ -10,12 +10,17 @@ Use this skill when a user wants historical top players, week-over-week movement
 ## Core Workflow
 
 1. Prefer deterministic MCP tools when the MCP server is registered.
-2. Use JSON output unless the user explicitly wants a table.
-3. Fall back to the repo CLI through Docker Compose only when MCP is unavailable.
-4. Do not install packages or create a virtualenv on the host.
-5. Use `make local-up` before local Docker workflows when setup is needed.
-6. After Docker workflow runs, use `make teardown` to stop Compose resources and prune stopped containers plus dangling images when appropriate.
-7. Use `decision_smoke_report` for display-ready MCP smoke tables, or `make decision-smoke` for local CLI validation.
+2. Before trendable lineup, waiver, trade, or historical decisions, call `decision_data_status` when it is registered.
+3. If normalized decision data is missing or stale, call `sync_decision_data` when available, then retry the read.
+4. Use JSON output unless the user explicitly wants a table.
+5. Fall back to the repo CLI through Docker Compose only when MCP is unavailable.
+6. Do not install packages or create a virtualenv on the host.
+7. Use `make local-up` before local Docker workflows when setup is needed.
+8. After Docker workflow runs, use `make teardown` to stop Compose resources and prune stopped containers plus dangling images when appropriate.
+9. Use `decision_smoke_report` for display-ready MCP smoke tables, or `make decision-smoke` for local CLI validation.
+
+The normalized decision-data tools are available in the Python stdio MCP
+runtime. Worker D1 parity is planned separately.
 
 ## Historical Leaders
 
@@ -52,6 +57,18 @@ Rules:
 - Keep the default positions `QB,RB,WR,TE,K,DEF` unless the user narrows scope.
 
 ## Week-Over-Week Changes
+
+Prefer normalized trend tools when they are registered:
+
+```text
+player_stat_trends
+position_stat_leaders
+```
+
+Before using them, check `decision_data_status`. If stale or missing, sync with
+`sync_decision_data`. The normalized model stores numeric Sleeper stats
+as tall weekly rows keyed by season, week, source, player, and stat key, with a
+two-season default retention window.
 
 Use `weekly_performance_backtest` for `x` weeks. It compares rows by `player_id`, `position`, and `points`.
 
@@ -108,6 +125,13 @@ CLI fallback:
 
 ```bash
 make sleeper ARGS="waiver-watch <league_id> --positions RB,WR,TE --limit 25 --output json"
+```
+
+Normalized CLI freshness fallback:
+
+```bash
+make sleeper ARGS="sync-status --output json"
+make sleeper ARGS="sync-data --season <season> --output json"
 ```
 
 Rules:

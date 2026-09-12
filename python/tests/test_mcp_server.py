@@ -21,6 +21,10 @@ def test_mcp_tools_list_exposes_curated_decision_tools() -> None:
 
     assert tool_names == {
         "resolve_league_context",
+        "decision_data_status",
+        "sync_decision_data",
+        "player_stat_trends",
+        "position_stat_leaders",
         "weekly_briefing",
         "weekly_performance_backtest",
         "waiver_watch",
@@ -29,6 +33,9 @@ def test_mcp_tools_list_exposes_curated_decision_tools() -> None:
         "waiver_wire_watch",
         "waiver_wire_by_position",
         "trade_opportunities",
+        "player_values",
+        "roster_analysis",
+        "league_roster_analysis",
         "decision_smoke_report",
         "free_agent_watch",
         "injury_watch",
@@ -38,11 +45,28 @@ def test_mcp_tools_list_exposes_curated_decision_tools() -> None:
     }
     assert tools_by_name["resolve_league_context"]["inputSchema"]["required"] == ["league_ref"]
     assert "user_ref" in tools_by_name["resolve_league_context"]["inputSchema"]["properties"]
+    assert "required" not in tools_by_name["decision_data_status"]["inputSchema"]
+    assert "required" not in tools_by_name["sync_decision_data"]["inputSchema"]
+    assert tools_by_name["player_stat_trends"]["inputSchema"]["required"] == [
+        "season",
+        "player_id",
+        "stat_key",
+        "start_week",
+    ]
+    assert tools_by_name["position_stat_leaders"]["inputSchema"]["required"] == [
+        "season",
+        "week",
+        "position",
+        "stat_key",
+    ]
     assert "required" not in tools_by_name["waiver_watch"]["inputSchema"]
     assert "required" not in tools_by_name["my_lineup"]["inputSchema"]
     assert "required" not in tools_by_name["lineup_recommendations"]["inputSchema"]
     assert "required" not in tools_by_name["waiver_wire_by_position"]["inputSchema"]
     assert "required" not in tools_by_name["trade_opportunities"]["inputSchema"]
+    assert "required" not in tools_by_name["player_values"]["inputSchema"]
+    assert "required" not in tools_by_name["roster_analysis"]["inputSchema"]
+    assert "required" not in tools_by_name["league_roster_analysis"]["inputSchema"]
     assert "required" not in tools_by_name["decision_smoke_report"]["inputSchema"]
     assert "required" not in tools_by_name["free_agent_watch"]["inputSchema"]
     assert "required" not in tools_by_name["injury_watch"]["inputSchema"]
@@ -52,6 +76,18 @@ def test_mcp_tools_list_exposes_curated_decision_tools() -> None:
         tools_by_name["waiver_wire_by_position"]["inputSchema"]["properties"][
             "per_position_limit"
         ]["default"]
+        == 10
+    )
+    assert (
+        tools_by_name["decision_data_status"]["inputSchema"]["properties"][
+            "max_age_hours"
+        ]["default"]
+        == 24
+    )
+    assert (
+        tools_by_name["position_stat_leaders"]["inputSchema"]["properties"]["limit"][
+            "default"
+        ]
         == 10
     )
     assert (
@@ -71,6 +107,18 @@ def test_mcp_tools_list_exposes_curated_decision_tools() -> None:
             "offers_per_team"
         ]["default"]
         == 3
+    )
+    assert (
+        tools_by_name["player_values"]["inputSchema"]["properties"]["limit"][
+            "default"
+        ]
+        == 50
+    )
+    assert (
+        tools_by_name["roster_analysis"]["inputSchema"]["properties"][
+            "positions"
+        ]["default"]
+        == "QB,RB,WR,TE,K,DEF"
     )
     assert (
         tools_by_name["decision_smoke_report"]["inputSchema"]["properties"]["format"][
@@ -100,6 +148,44 @@ def test_mcp_tool_call_returns_json_text_content() -> None:
     content = response["result"]["content"][0]
     assert content["type"] == "text"
     assert json.loads(content["text"]) == [{"league_id": "league-1", "player": "Hurt RB"}]
+
+
+def test_mcp_tool_call_dispatches_new_normalized_data_tool() -> None:
+    class Runner:
+        def player_stat_trends(
+            self,
+            *,
+            season: int,
+            player_id: str,
+            stat_key: str,
+            start_week: int,
+        ):
+            return {
+                "season": season,
+                "player_id": player_id,
+                "stat_key": stat_key,
+                "rows": [{"week": start_week, "stat_value": 7}],
+            }
+
+    response = McpServer(Runner()).handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 6,
+            "method": "tools/call",
+            "params": {
+                "name": "player_stat_trends",
+                "arguments": {
+                    "season": 2026,
+                    "player_id": "rb-1",
+                    "stat_key": "rush_att",
+                    "start_week": 1,
+                },
+            },
+        }
+    )
+
+    content = response["result"]["content"][0]
+    assert json.loads(content["text"])["rows"] == [{"week": 1, "stat_value": 7}]
 
 
 def test_mcp_tool_call_returns_raw_markdown_text_content() -> None:

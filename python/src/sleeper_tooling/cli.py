@@ -27,6 +27,12 @@ from sleeper_tooling.reports import (
 )
 from sleeper_tooling.scoring import flatten_scored_player_rows
 from sleeper_tooling.season import current_season_year
+from sleeper_tooling.sync import (
+    NormalizedRepositoryUnavailable,
+    SleeperSyncService,
+    SyncError,
+    build_normalized_repository,
+)
 
 app = typer.Typer(no_args_is_help=True, help="Pull fantasy football data from Sleeper.")
 StatSource = Literal["stats", "projections"]
@@ -278,6 +284,85 @@ def cache_clear(
         cache.close()
 
 
+@app.command("sync-data")
+def sync_data(
+    league_id: Annotated[
+        Optional[str],
+        typer.Option(
+            "--league-id",
+            help="Sleeper league_id. Defaults to SLEEPER_DEFAULT_LEAGUE_ID.",
+        ),
+    ] = None,
+    seasons: Annotated[
+        Optional[str],
+        typer.Option(
+            "--seasons",
+            help="Comma-separated seasons. Defaults to current Sleeper season plus previous season.",
+        ),
+    ] = None,
+    weeks: Annotated[
+        Optional[str],
+        typer.Option(
+            "--weeks",
+            help="Comma-separated weeks. Defaults to completed weeks plus the current Sleeper week.",
+        ),
+    ] = None,
+    output: Annotated[OutputFormat, typer.Option("--output", "-o")] = "json",
+) -> None:
+    """Sync cached Sleeper data into normalized tables."""
+    with client_or_exit() as client:
+        service = build_sync_service(client)
+        try:
+            result = service.sync(
+                league_id=league_id,
+                seasons=parse_int_csv(seasons),
+                weeks=parse_int_csv(weeks),
+            )
+        except SyncError as exc:
+            emit(exc.result.to_dict(), output_format=output)
+            raise typer.Exit(1) from exc
+        except (NormalizedRepositoryUnavailable, ValueError) as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(1) from exc
+        finally:
+            close_repository(service)
+    emit(result.to_dict(), output_format=output)
+
+
+@app.command("sync-status")
+def sync_status(
+    output: Annotated[OutputFormat, typer.Option("--output", "-o")] = "json",
+) -> None:
+    """Report normalized sync row counts and freshness metadata."""
+    repository = build_normalized_repository(resolve_cache_db_path())
+    try:
+        emit(repository.sync_status(), output_format=output)
+    finally:
+        close_repository(repository)
+
+
+@app.command("sync-clear")
+def sync_clear(
+    normalized_only: Annotated[
+        bool,
+        typer.Option(
+            "--normalized-only",
+            help="Clear normalized tables while preserving the raw API response cache.",
+        ),
+    ] = False,
+    output: Annotated[OutputFormat, typer.Option("--output", "-o")] = "json",
+) -> None:
+    """Clear normalized sync data."""
+    if not normalized_only:
+        typer.echo("sync-clear requires --normalized-only to preserve raw cache data.", err=True)
+        raise typer.Exit(2)
+    repository = build_normalized_repository(resolve_cache_db_path())
+    try:
+        emit(repository.clear_normalized(), output_format=output)
+    finally:
+        close_repository(repository)
+
+
 @app.command("best-week")
 def best_week(
     season: Annotated[Optional[int], typer.Option("--season", "-s", help="Season. Defaults to Sleeper's current season.")] = None,
@@ -450,6 +535,17 @@ def parse_positions(positions: str) -> list[str]:
     return [position.strip().upper() for position in positions.split(",") if position.strip()]
 
 
+def parse_int_csv(raw_value: str | None) -> list[int] | None:
+    if not raw_value:
+        return None
+    values: list[int] = []
+    for raw_part in raw_value.split(","):
+        part = raw_part.strip()
+        if part:
+            values.append(int(part))
+    return values
+
+
 def resolve_season_week(
     client: SleeperClient,
     season: int | None,
@@ -539,3 +635,16 @@ def client_or_exit() -> SleeperClient:
     except SleeperApiError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(1) from exc
+
+
+def build_sync_service(client: SleeperClient) -> SleeperSyncService:
+    return SleeperSyncService(
+        client=client,
+        repository=build_normalized_repository(resolve_cache_db_path()),
+    )
+
+
+def close_repository(repository: object) -> None:
+    close = getattr(repository, "close", None)
+    if callable(close):
+        close()

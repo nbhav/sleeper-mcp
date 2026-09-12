@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 import sleeper_tooling.mcp_tools as mcp_tools
+from sleeper_tooling.db import SleeperNormalizedRepository
 from sleeper_tooling.mcp_tools import FantasyToolRunner
 
 
@@ -86,6 +87,144 @@ def test_resolve_league_context_returns_env_and_cloudflare_vars(tmp_path) -> Non
         "SLEEPER_DEFAULT_OWNER_ID": "u1",
     }
     assert "SLEEPER_DEFAULT_ROSTER_ID=1" in context["env_text"]
+
+
+def test_decision_data_status_does_not_call_sleeper_client() -> None:
+    class FailingClient:
+        def __enter__(self):
+            raise AssertionError("decision_data_status must not call Sleeper")
+
+    runner = FantasyToolRunner(
+        client_factory=lambda: FailingClient(),
+        trend_repository=FakeStatusRepository(
+            {
+                "row_count": 8,
+                "last_synced_at": 9999999999,
+                "latest_stats_week": 2,
+                "latest_projections_week": 3,
+                "sources": ["stats", "projections"],
+            }
+        ),
+    )
+
+    status = runner.decision_data_status(season=2026, max_age_hours=1)
+
+    assert status["status"] == "fresh"
+    assert status["fresh"] is True
+    assert status["row_count"] == 8
+    assert status["latest_stats_week"] == 2
+
+
+def test_decision_data_status_reports_stale_and_missing() -> None:
+    stale_runner = FantasyToolRunner(
+        trend_repository=FakeStatusRepository({"row_count": 8, "last_synced_at": 1})
+    )
+    missing_runner = FantasyToolRunner(
+        trend_repository=FakeStatusRepository({"row_count": 0, "last_synced_at": 1})
+    )
+
+    assert stale_runner.decision_data_status(max_age_hours=1)["status"] == "stale"
+    assert missing_runner.decision_data_status(max_age_hours=1)["status"] == "missing"
+
+
+def test_sync_decision_data_delegates_to_configured_sync_service() -> None:
+    service = FakeSyncService()
+    runner = FantasyToolRunner(
+        sync_service=service,
+        default_league_id="default-league",
+    )
+
+    report = runner.sync_decision_data(season=2026, week=1, force=True)
+
+    assert report == {
+        "synced": True,
+        "league_id": "default-league",
+        "season": 2026,
+        "week": 1,
+        "force": True,
+    }
+    assert service.calls == [
+        {
+            "league_id": "default-league",
+            "season": 2026,
+            "week": 1,
+            "force": True,
+        }
+    ]
+
+
+def test_player_stat_trends_returns_compact_graph_shape() -> None:
+    repo = FakeTrendRepository()
+    runner = FantasyToolRunner(trend_repository=repo)
+
+    report = runner.player_stat_trends(
+        season=2026,
+        player_id="rb-1",
+        stat_key="rush_att",
+        start_week=1,
+        end_week=2,
+    )
+
+    assert report["shape"] == [
+        "season",
+        "week",
+        "player_id",
+        "name",
+        "team",
+        "position",
+        "stat_key",
+        "stat_value",
+    ]
+    assert report["rows"] == [
+        {
+            "season": 2026,
+            "week": 1,
+            "player_id": "rb-1",
+            "name": "Runner One",
+            "team": "DEN",
+            "position": "RB",
+            "stat_key": "rush_att",
+            "stat_value": 10,
+        },
+        {
+            "season": 2026,
+            "week": 2,
+            "player_id": "rb-1",
+            "name": "Runner One",
+            "team": "DEN",
+            "position": "RB",
+            "stat_key": "rush_att",
+            "stat_value": 12,
+        },
+    ]
+    assert repo.calls[0]["source"] == "stats"
+
+
+def test_position_stat_leaders_returns_graph_friendly_leaders() -> None:
+    runner = FantasyToolRunner(trend_repository=FakeTrendRepository())
+
+    report = runner.position_stat_leaders(
+        season=2026,
+        week=2,
+        position="rb",
+        stat_key="rush_att",
+        limit=1,
+    )
+
+    assert report["position"] == "RB"
+    assert report["leaders"] == [
+        {
+            "position_rank": 1,
+            "season": 2026,
+            "week": 2,
+            "player_id": "rb-2",
+            "name": "Runner Two",
+            "team": "KC",
+            "position": "RB",
+            "stat_key": "rush_att",
+            "stat_value": 18,
+        }
+    ]
 
 
 def test_tools_use_default_league_id_when_argument_is_omitted(tmp_path) -> None:
@@ -230,9 +369,11 @@ def test_my_lineup_returns_slots_starters_bench_and_projections(tmp_path) -> Non
     assert report["team_name"] == "Me"
     assert report["roster_slots"] == ["RB", "FLEX"]
     assert report["current_total"] == 4
-    assert report["projected_total"] == 67
+    assert report["projected_total"] == 24
     assert report["projected_starter_total"] == 24
     assert report["projected_starter_points"] == 24
+    assert report["projected_active_roster_total"] == 49
+    assert report["projected_roster_total"] == 67
     assert [row["player_id"] for row in report["lineup_table"]] == [
         "starter-rb",
         "bench-wr",
@@ -257,6 +398,121 @@ def test_my_lineup_returns_slots_starters_bench_and_projections(tmp_path) -> Non
     assert report["reserve"][0]["active_roster_spot"] is False
     assert report["reserve"][0]["stash_value"] is True
     assert report["reserve"][0]["depth_chart_order"] == 2
+
+
+def test_my_lineup_uses_fresh_normalized_db_without_sleeper_client(tmp_path) -> None:
+    repo = build_normalized_decision_fixture(tmp_path)
+    runner = FantasyToolRunner(
+        client_factory=lambda: FailingMcpClient(),
+        decision_repository=repo,
+    )
+
+    report = runner.my_lineup(
+        league_id="league-1",
+        roster_id=1,
+        season=2026,
+        week=1,
+        positions="RB,WR",
+    )
+
+    assert report["data_source"] == "normalized_db"
+    assert report["fallback_used"] is False
+    assert report["sync_recommended"] is False
+    assert report["freshness"]["status"] == "fresh"
+    assert report["team_name"] == "Me"
+    assert report["projected_total"] == 24
+    assert report["projected_starter_total"] == 24
+    assert report["projected_active_roster_total"] == 29
+    assert report["projected_roster_total"] == 47
+    assert [row["player_id"] for row in report["lineup_table"]] == [
+        "starter-rb",
+        "bench-wr",
+        "drop-rb",
+        "ir-rb",
+    ]
+    assert report["reserve"][0]["active_roster_spot"] is False
+    repo.close()
+
+
+def test_my_lineup_uses_default_normalized_repository_from_cache_db(tmp_path) -> None:
+    cache_db = tmp_path / "default-wiring.db"
+    repo = build_normalized_decision_fixture(tmp_path, db_path=cache_db)
+    repo.close()
+    runner = FantasyToolRunner(
+        client_factory=lambda: FailingMcpClient(),
+        cache_db=cache_db,
+    )
+
+    report = runner.my_lineup(
+        league_id="league-1",
+        roster_id=1,
+        season=2026,
+        week=1,
+        positions="RB,WR",
+    )
+
+    assert report["data_source"] == "normalized_db"
+    assert report["team_name"] == "Me"
+    assert report["projected_starter_total"] == 24
+    runner._decision_repository.close()
+
+
+def test_my_lineup_empty_normalized_db_falls_back_with_warning(tmp_path) -> None:
+    repo = SleeperNormalizedRepository(tmp_path / "empty.db")
+    runner = FantasyToolRunner(
+        client_factory=lambda: FakeLineupClient(),
+        decision_repository=repo,
+        players_cache=tmp_path / "players.json",
+    )
+
+    report = runner.my_lineup(
+        league_id="league-1",
+        roster_id=1,
+        season=2026,
+        week=1,
+        positions="RB,WR",
+    )
+
+    assert report["data_source"] == "sleeper_fallback"
+    assert report["fallback_used"] is True
+    assert report["sync_recommended"] is True
+    assert report["freshness"]["status"] == "missing"
+    assert "league_settings" in report["freshness"]["missing_inputs"]
+    assert report["projected_starter_total"] == 24
+    repo.close()
+
+
+def test_my_lineup_stale_normalized_db_falls_back_with_warning(tmp_path) -> None:
+    repo = build_normalized_decision_fixture(tmp_path)
+    mark_normalized_fixture_stale(repo)
+    sync_run_id = repo.create_sync_run(
+        target="normalized_sleeper_data",
+        league_id="league-1",
+        status="running",
+    )
+    repo.finish_sync_run(sync_run_id, status="failed", error_text="boom")
+    runner = FantasyToolRunner(
+        client_factory=lambda: FakeLineupClient(),
+        decision_repository=repo,
+        players_cache=tmp_path / "players.json",
+    )
+
+    report = runner.my_lineup(
+        league_id="league-1",
+        roster_id=1,
+        season=2026,
+        week=1,
+        positions="RB,WR",
+    )
+
+    assert report["data_source"] == "sleeper_fallback"
+    assert report["fallback_used"] is True
+    assert report["sync_recommended"] is True
+    assert report["freshness"]["status"] == "stale"
+    assert report["freshness"]["latest_sync"]["status"] == "failed"
+    assert "normalized decision data is stale" in report["freshness"]["warnings"]
+    assert report["projected_starter_total"] == 24
+    repo.close()
 
 
 def test_lineup_recommendations_compares_lineup_and_available_players(tmp_path) -> None:
@@ -339,6 +595,14 @@ def test_waiver_wire_by_position_groups_options_with_gain_and_faab(tmp_path) -> 
     assert rb_pick["drop_name"] == "Drop RB"
     assert rb_pick["drop_lineup_status"] == "bench"
     assert rb_pick["projected_gain_over_drop"] == 25
+    assert rb_pick["recommendation"] == "recommend"
+    assert rb_pick["move_score"] > 0
+    assert rb_pick["reasoning_summary"]
+    assert rb_pick["week_value_delta"] == 25
+    assert "three_week_value_delta" in rb_pick
+    assert "season_value_delta" in rb_pick
+    assert "selected_drop_reasoning" in rb_pick
+    assert "rejected_drop_reasoning" in rb_pick
     assert rb_pick["faab_tier"] == "aggressive"
     assert rb_pick["faab_bid_pct"] == 14
     assert rb_pick["add_trend_count"] == 2500
@@ -350,6 +614,40 @@ def test_waiver_wire_by_position_groups_options_with_gain_and_faab(tmp_path) -> 
     assert wr_pick["market_type"] == "unknown"
     assert wr_pick["acquisition_action"] == "watch"
     assert "faab_tier" not in wr_pick
+
+
+def test_waiver_wire_by_position_uses_normalized_db(tmp_path) -> None:
+    repo = build_normalized_decision_fixture(tmp_path)
+    runner = FantasyToolRunner(
+        client_factory=lambda: FailingMcpClient(),
+        decision_repository=repo,
+    )
+
+    report = runner.waiver_wire_by_position(
+        league_id="league-1",
+        roster_id=1,
+        season=2026,
+        week=1,
+        positions="RB,WR",
+        per_position_limit=1,
+    )
+
+    assert report["data_source"] == "normalized_db"
+    assert report["fallback_used"] is False
+    rb_pick = report["by_position"]["RB"][0]
+    assert rb_pick["add_name"] == "Free RB"
+    assert rb_pick["drop_name"] == "Drop RB"
+    assert rb_pick["projected_gain_over_drop"] == 25
+    assert rb_pick["market_type"] == "waiver"
+    assert rb_pick["recommendation"] == "recommend"
+    assert rb_pick["move_score"] > 0
+    assert rb_pick["reasoning_summary"]
+    assert rb_pick["week_value_delta"] == 25
+    assert rb_pick["faab_tier"] == "aggressive"
+    wr_pick = report["by_position"]["WR"][0]
+    assert wr_pick["add_name"] == "Free WR"
+    assert wr_pick["projected_gain_over_drop"] == 10
+    repo.close()
 
 
 def test_trade_opportunities_includes_every_opponent_with_offer_angles(tmp_path) -> None:
@@ -376,13 +674,115 @@ def test_trade_opportunities_includes_every_opponent_with_offer_angles(tmp_path)
     assert "TE" in {need["position"] for need in wr_rich["needs"]}
     assert wr_rich["targets"][0]["name"] == "Target WR"
     assert wr_rich["offer_angles"][0]["ask_for"]["name"] == "Target WR"
-    assert wr_rich["offer_angles"][0]["offer"][0]["name"] == "Bench TE"
+    assert wr_rich["offer_angles"][0]["package_type"] == "1:1"
+    assert wr_rich["offer_angles"][0]["ask"][0]["name"] == "Target WR"
+    assert wr_rich["offer_angles"][0]["offer"][0]["name"] == "Bench RB"
     assert wr_rich["offer_angles"][0]["projected_lineup_gain"] == 6
-    assert wr_rich["offer_angles"][0]["my_gain"] == 6
-    assert "TE" in wr_rich["offer_angles"][0]["opponent_need_matched"]
+    assert wr_rich["offer_angles"][0]["my_gain"] >= 6
+    assert "RB" in wr_rich["offer_angles"][0]["opponent_need_matched"]
+    assert "value_balance" in wr_rich["offer_angles"][0]
     assert wr_rich["offer_angles"][0]["trade_score"] > 0
+    assert wr_rich["offer_angles"][0]["recommendation"] in {
+        "pursue",
+        "explore",
+        "monitor",
+        "pass",
+        "reject",
+    }
+    assert wr_rich["offer_angles"][0]["reasoning_summary"]
+    assert "my_three_week_value_delta" in wr_rich["offer_angles"][0]
+    assert "my_season_value_delta" in wr_rich["offer_angles"][0]
     assert wr_rich["reasoning"]
     assert report["teams"][1]["team_name"] == "No Fit"
+
+
+def test_trade_opportunities_uses_normalized_db_without_sleeper_client(tmp_path) -> None:
+    repo = build_normalized_trade_fixture(tmp_path)
+    runner = FantasyToolRunner(
+        client_factory=lambda: FailingMcpClient(),
+        decision_repository=repo,
+    )
+
+    report = runner.trade_opportunities(
+        league_id="league-1",
+        roster_id=1,
+        season=2026,
+        week=1,
+        positions="QB,RB,WR,TE",
+        targets_per_team=3,
+        offers_per_team=2,
+    )
+
+    assert report["data_source"] == "normalized_db"
+    assert report["fallback_used"] is False
+    assert report["sync_recommended"] is False
+    assert [team["team_name"] for team in report["teams"]] == [
+        "WR Rich",
+        "No Fit",
+    ]
+    wr_rich = report["teams"][0]
+    assert wr_rich["targets"][0]["name"] == "Target WR"
+    assert wr_rich["offer_angles"][0]["ask_for"]["name"] == "Target WR"
+    assert wr_rich["offer_angles"][0]["package_type"] == "1:1"
+    assert wr_rich["offer_angles"][0]["ask"][0]["name"] == "Target WR"
+    assert wr_rich["offer_angles"][0]["offer"][0]["name"] == "Bench RB"
+    assert wr_rich["offer_angles"][0]["projected_lineup_gain"] == 6
+    assert wr_rich["offer_angles"][0]["my_week_value_delta"] == 8
+    assert wr_rich["offer_angles"][0]["trade_score"] > 0
+    assert wr_rich["offer_angles"][0]["reasoning_summary"]
+    repo.close()
+
+
+def test_player_values_returns_deterministic_value_profiles(tmp_path) -> None:
+    runner = FantasyToolRunner(
+        client_factory=lambda: FakeLineupClient(),
+        players_cache=tmp_path / "players.json",
+    )
+
+    report = runner.player_values(
+        league_id="league-1",
+        season=2026,
+        week=1,
+        positions="RB",
+        limit=2,
+    )
+
+    assert report["league_id"] == "league-1"
+    assert report["season"] == 2026
+    assert report["week"] == 1
+    assert report["positions"] == ["RB"]
+    assert len(report["values"]) == 2
+    top = report["values"][0]
+    assert top["position"] == "RB"
+    assert "week_value" in top
+    assert "three_week_value" in top
+    assert "season_value" in top
+    assert "decision_value" in top
+    assert "value_above_replacement" in top
+
+
+def test_roster_analysis_uses_normalized_db_without_sleeper_client(tmp_path) -> None:
+    repo = build_normalized_decision_fixture(tmp_path)
+    runner = FantasyToolRunner(
+        client_factory=lambda: FailingMcpClient(),
+        decision_repository=repo,
+    )
+
+    report = runner.roster_analysis(
+        league_id="league-1",
+        roster_id=1,
+        season=2026,
+        week=1,
+        positions="RB,WR",
+    )
+
+    assert report["data_source"] == "normalized_db"
+    assert report["fallback_used"] is False
+    assert report["team_name"] == "Me"
+    assert "roster_balance_score" in report
+    assert "protected_players" in report
+    assert "movable_players" in report
+    repo.close()
 
 
 def test_decision_smoke_report_returns_markdown_tables(tmp_path) -> None:
@@ -515,6 +915,104 @@ def test_player_card_returns_chart_ready_points(tmp_path) -> None:
     ]
 
 
+class FakeStatusRepository:
+    def __init__(self, status: dict[str, object]) -> None:
+        self.status = status
+
+    def decision_data_status(self, *, season=None):
+        return {"season": season, **self.status}
+
+
+class FakeSyncService:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def sync_decision_data(self, *, league_id=None, season=None, week=None, force=False):
+        call = {
+            "league_id": league_id,
+            "season": season,
+            "week": week,
+            "force": force,
+        }
+        self.calls.append(call)
+        return {"synced": True, **call}
+
+
+class FailingMcpClient:
+    def __enter__(self):
+        raise AssertionError("normalized decision read should not call Sleeper")
+
+
+class FakeTrendRepository:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def query_numeric_stat_rows(
+        self,
+        *,
+        source,
+        season,
+        start_week,
+        end_week,
+        stat_keys=None,
+        player_ids=None,
+        positions=None,
+    ):
+        self.calls.append(
+            {
+                "source": source,
+                "season": season,
+                "start_week": start_week,
+                "end_week": end_week,
+                "stat_keys": stat_keys,
+                "player_ids": player_ids,
+                "positions": positions,
+            }
+        )
+        return [
+            {
+                "season": 2026,
+                "week": 1,
+                "player_id": "rb-1",
+                "name": "Runner One",
+                "team": "DEN",
+                "position": "RB",
+                "stat_key": "rush_att",
+                "stat_value": 10,
+            },
+            {
+                "season": 2026,
+                "week": 2,
+                "player_id": "rb-1",
+                "name": "Runner One",
+                "team": "DEN",
+                "position": "RB",
+                "stat_key": "rush_att",
+                "stat_value": 12,
+            },
+            {
+                "season": 2026,
+                "week": 2,
+                "player_id": "rb-2",
+                "name": "Runner Two",
+                "team": "KC",
+                "position": "RB",
+                "stat_key": "rush_att",
+                "stat_value": 18,
+            },
+            {
+                "season": 2026,
+                "week": 2,
+                "player_id": "wr-1",
+                "name": "Wide One",
+                "team": "LV",
+                "position": "WR",
+                "stat_key": "targets",
+                "stat_value": 9,
+            },
+        ]
+
+
 class FakeMcpClient:
     def __init__(self) -> None:
         self.league_ids: list[str] = []
@@ -630,6 +1128,281 @@ class FakeMcpClient:
             "player": {"full_name": name, "team": team, "position": position},
             "stats": {"custom_score": custom_score, "pts_ppr": custom_score},
         }
+
+
+def build_normalized_decision_fixture(
+    tmp_path,
+    *,
+    db_path: Path | None = None,
+) -> SleeperNormalizedRepository:
+    repo = SleeperNormalizedRepository(db_path or tmp_path / "normalized.db")
+    repo.upsert_league_settings(
+        {
+            "league_id": "league-1",
+            "name": "Normalized League",
+            "season": 2026,
+            "roster_positions": ["RB", "FLEX", "BN", "IR"],
+            "scoring_settings": {"custom_score": 10},
+        }
+    )
+    repo.upsert_league_users(
+        "league-1",
+        [
+            {"user_id": "u1", "display_name": "Me", "metadata": {"team_name": "Me"}},
+            {
+                "user_id": "u2",
+                "display_name": "Opponent",
+                "metadata": {"team_name": "Opponent"},
+            },
+        ],
+    )
+    repo.upsert_rosters(
+        "league-1",
+        [
+            {
+                "roster_id": 1,
+                "owner_id": "u1",
+                "players": [
+                    "starter-rb",
+                    "bench-wr",
+                    "drop-rb",
+                    "ir-rb",
+                ],
+                "reserve": ["ir-rb"],
+            },
+            {"roster_id": 2, "owner_id": "u2", "players": ["rostered-rb"]},
+        ],
+    )
+    repo.upsert_matchups(
+        "league-1",
+        2026,
+        1,
+        [
+            {
+                "roster_id": 1,
+                "matchup_id": 10,
+                "points": 4,
+                "starters": ["starter-rb", "bench-wr"],
+                "players": ["starter-rb", "bench-wr", "drop-rb"],
+                "players_points": {"starter-rb": 2, "bench-wr": 2},
+            },
+            {
+                "roster_id": 2,
+                "matchup_id": 10,
+                "points": 0,
+                "starters": ["rostered-rb"],
+                "players": ["rostered-rb"],
+            },
+        ],
+    )
+    repo.upsert_players(
+        {
+            "starter-rb": normalized_player("Starter RB", "RB", "KC"),
+            "bench-wr": normalized_player("Bench WR", "WR", "GB"),
+            "drop-rb": normalized_player("Drop RB", "RB", "LV"),
+            "free-wr": normalized_player("Free WR", "WR", "SF"),
+            "ir-rb": {
+                **normalized_player("IR RB", "RB", "MIA"),
+                "status": "Inactive",
+                "injury_status": "IR",
+                "depth_chart_order": 2,
+                "depth_chart_position": "RB",
+            },
+            "free-rb": {
+                **normalized_player("Free RB", "RB", "DEN"),
+                "market_type": "waiver",
+                "rostered_percent": 55,
+            },
+            "rostered-rb": normalized_player("Rostered RB", "RB", "BAL"),
+        }
+    )
+    repo.upsert_player_week_rows(
+        season=2026,
+        week=1,
+        source="projections",
+        rows=[
+            normalized_projection("starter-rb", "Starter RB", "KC", "RB", 1),
+            normalized_projection("bench-wr", "Bench WR", "GB", "WR", 1.4),
+            normalized_projection("drop-rb", "Drop RB", "LV", "RB", 0.5),
+            normalized_projection("free-wr", "Free WR", "SF", "WR", 1.5),
+            normalized_projection("ir-rb", "IR RB", "MIA", "RB", 1.8),
+            normalized_projection("free-rb", "Free RB", "DEN", "RB", 3),
+            normalized_projection("rostered-rb", "Rostered RB", "BAL", "RB", 4),
+        ],
+        scoring_settings={"custom_score": 10},
+    )
+    repo.upsert_transactions(
+        "league-1",
+        [
+            {
+                "transaction_id": "txn-add",
+                "week": 1,
+                "type": "waiver",
+                "status": "complete",
+                "created": 100,
+                "adds": {"free-rb": 99},
+                "drops": {},
+            }
+        ],
+        week=1,
+    )
+    return repo
+
+
+def build_normalized_trade_fixture(tmp_path) -> SleeperNormalizedRepository:
+    repo = SleeperNormalizedRepository(tmp_path / "normalized-trade.db")
+    repo.upsert_league_settings(
+        {
+            "league_id": "league-1",
+            "name": "Trade League",
+            "season": 2026,
+            "roster_positions": ["WR", "TE", "FLEX", "BN", "BN"],
+            "scoring_settings": {"custom_score": 10},
+        }
+    )
+    repo.upsert_league_users(
+        "league-1",
+        [
+            {"user_id": "u1", "display_name": "Me", "metadata": {"team_name": "Me"}},
+            {
+                "user_id": "u2",
+                "display_name": "WR Rich",
+                "metadata": {"team_name": "WR Rich"},
+            },
+            {
+                "user_id": "u3",
+                "display_name": "No Fit",
+                "metadata": {"team_name": "No Fit"},
+            },
+        ],
+    )
+    repo.upsert_rosters(
+        "league-1",
+        [
+            {
+                "roster_id": 1,
+                "owner_id": "u1",
+                "players": [
+                    "my-wr-low",
+                    "my-te-start",
+                    "my-flex",
+                    "bench-te",
+                    "bench-rb",
+                ],
+            },
+            {
+                "roster_id": 2,
+                "owner_id": "u2",
+                "players": ["target-wr", "other-wr", "third-wr", "bad-te"],
+            },
+            {
+                "roster_id": 3,
+                "owner_id": "u3",
+                "players": ["low-wr", "low-rb", "low-te"],
+            },
+        ],
+    )
+    repo.upsert_matchups(
+        "league-1",
+        2026,
+        1,
+        [
+            {
+                "roster_id": 1,
+                "matchup_id": 10,
+                "points": 12,
+                "starters": ["my-wr-low", "my-te-start", "my-flex"],
+                "players": [
+                    "my-wr-low",
+                    "my-te-start",
+                    "my-flex",
+                    "bench-te",
+                    "bench-rb",
+                ],
+                "players_points": {"my-wr-low": 4, "my-te-start": 5, "my-flex": 3},
+            }
+        ],
+    )
+    players = {
+        "my-wr-low": normalized_player("My Low WR", "WR", "KC"),
+        "my-te-start": normalized_player("My Start TE", "TE", "DEN"),
+        "my-flex": normalized_player("My Flex", "RB", "LV"),
+        "bench-te": normalized_player("Bench TE", "TE", "SEA"),
+        "bench-rb": normalized_player("Bench RB", "RB", "GB"),
+        "target-wr": normalized_player("Target WR", "WR", "MIA"),
+        "other-wr": normalized_player("Other WR", "WR", "BAL"),
+        "third-wr": normalized_player("Third WR", "WR", "PHI"),
+        "bad-te": normalized_player("Bad TE", "TE", "NYJ"),
+        "low-wr": normalized_player("Low WR", "WR", "NE"),
+        "low-rb": normalized_player("Low RB", "RB", "CHI"),
+        "low-te": normalized_player("Low TE", "TE", "CAR"),
+    }
+    repo.upsert_players(players)
+    projections = {
+        "my-wr-low": ("My Low WR", "KC", "WR", 1.0),
+        "my-te-start": ("My Start TE", "DEN", "TE", 0.9),
+        "my-flex": ("My Flex", "LV", "RB", 0.8),
+        "bench-te": ("Bench TE", "SEA", "TE", 0.8),
+        "bench-rb": ("Bench RB", "GB", "RB", 0.6),
+        "target-wr": ("Target WR", "MIA", "WR", 1.4),
+        "other-wr": ("Other WR", "BAL", "WR", 1.2),
+        "third-wr": ("Third WR", "PHI", "WR", 1.1),
+        "bad-te": ("Bad TE", "NYJ", "TE", 0.3),
+        "low-wr": ("Low WR", "NE", "WR", 0.7),
+        "low-rb": ("Low RB", "CHI", "RB", 0.6),
+        "low-te": ("Low TE", "CAR", "TE", 0.5),
+    }
+    repo.upsert_player_week_rows(
+        season=2026,
+        week=1,
+        source="projections",
+        rows=[
+            normalized_projection(player_id, name, team, position, custom_score)
+            for player_id, (name, team, position, custom_score) in projections.items()
+        ],
+        scoring_settings={"custom_score": 10},
+    )
+    return repo
+
+
+def normalized_player(name: str, position: str, team: str) -> dict[str, object]:
+    return {
+        "full_name": name,
+        "team": team,
+        "position": position,
+        "fantasy_positions": [position],
+        "status": "Active",
+        "injury_status": "",
+    }
+
+
+def normalized_projection(
+    player_id: str,
+    name: str,
+    team: str,
+    position: str,
+    custom_score: float,
+) -> dict[str, object]:
+    return {
+        "player_id": player_id,
+        "player": {"full_name": name, "team": team, "position": position},
+        "stats": {"custom_score": custom_score, "pts_ppr": custom_score},
+    }
+
+
+def mark_normalized_fixture_stale(repo: SleeperNormalizedRepository) -> None:
+    old_timestamp = 1
+    for table in (
+        "players",
+        "league_settings",
+        "league_users",
+        "rosters",
+        "matchups",
+        "transactions",
+        "player_week_rows",
+    ):
+        repo._connection.execute(f"UPDATE {table} SET updated_at = ?", (old_timestamp,))
+    repo._connection.commit()
 
 
 class FakeLineupClient(FakeMcpClient):

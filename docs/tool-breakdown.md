@@ -18,6 +18,7 @@ The Docker and Compose files live under `infra/docker/`. The main Makefile at th
 | `python/src/sleeper_tooling/league_context.py` | Resolve default league, owner, and roster IDs from a league URL plus team/user name. |
 | `python/src/sleeper_tooling/mcp_server.py` | Stdio MCP protocol server. |
 | `python/src/sleeper_tooling/mcp_tools.py` | MCP tool implementations over the decision engine. |
+| `python/src/sleeper_tooling/player_values.py` | Deterministic player value model for week, near-term, season, and replacement-aware decision scores. |
 | `python/src/sleeper_tooling/reports.py` | Helpers that join raw API objects into fantasy-friendly rows. |
 | `python/src/sleeper_tooling/scoring.py` | League-specific fantasy point calculation. |
 | `python/src/sleeper_tooling/output.py` | JSON, CSV, and terminal table rendering. |
@@ -31,6 +32,19 @@ Most decision workflows follow this shape:
 3. Normalize raw Sleeper payloads into compact fantasy rows.
 4. Apply league scoring settings when a league ID is provided.
 5. Return JSON-first output that an LLM or script can consume directly.
+
+The HTTP response cache and the normalized decision database have separate
+responsibilities:
+
+- `api_cache` stores raw Sleeper HTTP responses by request URL. It is an
+  endpoint cache for rate-limit and latency control, not an analytical model.
+- Normalized decision tables are the planned durable read model for trendable
+  fantasy questions. They should store typed players, teams, weekly stats,
+  projections, matchups, roster snapshots, and tall stat rows derived from raw
+  Sleeper payloads.
+- Decision tools should read normalized tables when they are fresh enough, then
+  fall back to live Sleeper reads plus `api_cache` when normalized data is
+  missing or stale.
 
 When a command or MCP tool omits `season`, the tooling uses the current calendar
 year. When `week` is omitted, it asks Sleeper for the current NFL week.
@@ -57,6 +71,8 @@ year. When `week` is omitted, it asks Sleeper for the current NFL week.
 | `injury-watch` | Show injury-relevant players currently rostered in a league. |
 | `cache-info` | Show SQLite API response cache stats. |
 | `cache-clear` | Clear SQLite API response cache rows. |
+| `sync-data` | Planned: populate normalized decision tables for the current/default season window. |
+| `sync-status` | Planned: report normalized table coverage, newest synced week, and stale/missing sources. |
 
 Use command help for details:
 
@@ -76,14 +92,21 @@ make sleeper ARGS="waiver-watch --help"
 | `my_lineup` | Current starters and bench for the configured roster, with a unified lineup table, actual points, status, injuries, and league-scored projections. |
 | `lineup_recommendations` | Start/sit changes plus available-player comparisons against protected drop candidates, acquisition action, and market-aware waiver hints. |
 | `waiver_wire_watch` | Actionable waiver shortlist with availability, projections, trends, status, and recent actuals. |
-| `waiver_wire_by_position` | Top waiver and free-agent options by position, with drop candidate, projected gain, status, acquisition action, and FAAB guidance only for known waiver claims. |
-| `trade_opportunities` | Every opposing team with needs, surplus, targets, mutual-fit offer scores, roster-balance risk, and reasoning. |
-| `decision_smoke_report` | Compact lineup, waiver, and trade smoke workflow output as display-ready Markdown tables or JSON. |
+| `waiver_wire_by_position` | Top waiver and free-agent options by position, with recommendation, move score, value deltas, protected drop reasoning, acquisition action, and FAAB guidance only for known waiver claims. |
+| `trade_opportunities` | Every opposing team with needs, surplus, targets, mutual-fit package matrices, trade score, recommendation, roster-balance risk, and reasoning summary. |
+| `player_values` | Deterministic player value rankings with week, three-week, season, decision, and replacement-aware scores. |
+| `roster_analysis` | One-roster strengths, weaknesses, protected players, movable players, balance score, trade posture, and waiver posture. |
+| `league_roster_analysis` | League-wide roster analysis for team needs, surplus, risk, and trade posture. |
+| `decision_smoke_report` | Compact lineup, waiver, and trade smoke workflow output as display-ready Markdown tables or JSON, including waiver move-matrix and trade package columns. |
 | `free_agent_watch` | Unrostered players ranked by projection. |
 | `injury_watch` | Rostered players with injury/status risk. |
 | `opponent_watch` | Weekly opponent starters, projection, and injury flags. |
 | `league_team_watch` | Completed league transactions for a week. |
 | `player_card` | Player metadata and chart-ready actual vs projected points. |
+| `decision_data_status` | Planned: MCP freshness check for normalized decision data before lineup, waiver, trade, or trend reads. |
+| `sync_decision_data` | Planned: MCP-triggered normalized sync for missing or stale decision data. |
+| `player_stat_trends` | Planned: trendable player stat reads backed by normalized weekly stat rows. |
+| `position_stat_leaders` | Planned: position leader reads backed by normalized weekly stat rows. |
 
 The MCP surface is intentionally decision-shaped. Add new MCP tools when they answer a useful fantasy question, not when they merely expose another raw Sleeper endpoint.
 
@@ -114,7 +137,24 @@ Lineup rows include:
 - `stash_value`: true for reserve/IR players that should not be treated as easy cuts
 - `depth_chart_order`, `depth_chart_position`, `bye_week`, and `source_metadata` when Sleeper exposes that context
 
-`my_lineup` also returns `current_total`, `projected_total`, `projected_starter_total`, `season`, and `week`.
+`my_lineup` also returns `current_total`, `projected_total`,
+`projected_starter_total`, `projected_active_roster_total`,
+`projected_roster_total`, `season`, and `week`. `projected_total` is the
+starter-only projection and matches `projected_starter_total`; use
+`projected_active_roster_total` for starters plus bench or
+`projected_roster_total` for starters, bench, and reserve/IR stashes.
+
+Decision matrix rows include:
+
+- Waiver rows: `recommendation`, `move_score`, `reasoning_summary`,
+  `week_value_delta`, `three_week_value_delta`, `season_value_delta`,
+  impact/penalty fields, selected drop reasoning, and rejected drop reasoning.
+- Trade offer angles: `package_type`, `ask`, `offer`, `my_gain`,
+  `opponent_gain`, `value_balance`, `trade_score`, `recommendation`, and
+  `reasoning_summary`.
+
+`decision_smoke_report` keeps JSON structured and renders Markdown tables with
+those same deterministic waiver and trade columns for review.
 
 Sleeper often omits zero-value stat fields. Scoring code treats missing fields as `0`.
 
@@ -123,6 +163,59 @@ Sleeper often omits zero-value stat fields. Scoring code treats missing fields a
 The tools mostly use Sleeper as the source of truth and keep a small local cache
 so repeated CLI, MCP, and Worker calls do not refetch the same endpoint over and
 over.
+
+### Normalized Decision Data
+
+Normalized decision data is the analytical layer above raw Sleeper responses.
+It is generated from Sleeper state, players, stats, projections, league, roster,
+matchup, transaction, and trending endpoints, then stored in SQLite locally as
+queryable tables. Cloudflare D1 parity is planned as a follow-up.
+
+Responsibilities:
+
+- Convert Sleeper numeric stat values automatically to numeric database fields.
+  Sleeper may omit zero stats or encode values inconsistently across payloads;
+  normalization should coerce parseable stat values to numbers and treat
+  missing stat keys as `0` for scoring and comparisons.
+- Store weekly player stats in a tall trend model: one row per `season`, `week`,
+  `source`, `player_id`, and `stat_key`, with the numeric stat value in a
+  single value column. This makes week-over-week deltas, rolling windows, and
+  arbitrary stat-key leaderboards possible without schema changes for every new
+  Sleeper stat.
+- Keep typed dimension/snapshot tables for players, teams, leagues, rosters,
+  matchups, projections, and source freshness metadata so decision tools can
+  answer without reparsing raw JSON on every call.
+- Retain two seasons by default. Sync jobs should keep the current season plus
+  one prior season unless the caller explicitly requests a wider or narrower
+  retention window.
+- Track freshness at the source/table/window level so agents can know whether a
+  decision read is fresh, stale, missing, or falling back.
+
+CLI workflow:
+
+```bash
+make sleeper ARGS="sync-status --output json"
+make sleeper ARGS="sync-data --season <season> --output json"
+```
+
+MCP workflow:
+
+```text
+decision_data_status
+sync_decision_data
+player_stat_trends
+position_stat_leaders
+```
+
+Agents should call `decision_data_status` before trendable lineup, waiver,
+trade, or historical decisions. If normalized data is missing or stale, they
+should call `sync_decision_data` when available, then retry the decision read.
+If sync is unavailable or still stale, tools should return fallback metadata and
+use the existing live Sleeper plus `api_cache` path rather than failing a
+decision outright.
+
+The Python CLI and stdio MCP tools are available on this branch. Worker D1
+normalized tables and cron parity are still planned separately.
 
 ### Python And Stdio MCP
 
