@@ -89,6 +89,21 @@ def test_projection_actual_deltas_use_stat_value_for_delta() -> None:
     assert rows[0]["delta_value"] == 3
 
 
+def test_projection_actual_deltas_zero_fills_missing_projection_key() -> None:
+    rows = projection_actual_deltas(
+        FakeTrendRepository(),
+        season=2026,
+        week=1,
+        stat_keys=["rush_att"],
+        positions=["RB"],
+    )
+
+    assert rows[0]["player_id"] == "rb-1"
+    assert rows[0]["actual_value"] == 10
+    assert rows[0]["projected_value"] == 0
+    assert rows[0]["delta_value"] == 10
+
+
 def test_week_over_week_movers_returns_risers_and_fallers() -> None:
     report = week_over_week_movers(
         FakeTrendRepository(),

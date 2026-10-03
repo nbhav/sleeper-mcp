@@ -128,6 +128,29 @@ because a similarly named field exists in a different time window:
   air-yard share require valid denominators and must not be named as if the
   absolute field were already a share.
 
+### Projection row/key qualification and zero-fill behavior
+
+`projection_actual_deltas()` in `python/src/sleeper_tooling/trend_queries.py`
+queries actual and projection stat rows separately, indexes projection rows by
+`(season, week, player_id, stat_key)`, and iterates the actual rows only. If
+that exact projection row or stat key is absent, the existing code assigns
+`projected_value = 0.0` and still emits a delta. A projection-only player or
+projection-only stat key emits no delta row at all. The output does not expose
+whether zero means a real projected zero or an absent projection row/key.
+
+This is an existing query contract, not evidence that the forecast was zero.
+Until the query exposes presence separately, consumers and the matrix above
+must qualify projection-dependent reasons as follows:
+
+- A same-week actual/projection reason requires an actual row and a matching
+  projection row/key; an absent projection must be reported as a missing input,
+  even though the current numeric delta is zero-filled.
+- Projection-only rows can support forecast context only when their required
+  keys exist; they cannot establish actual usage, role change, or post-change
+  sample size.
+- A missing projection key is different from a numeric projected zero, but the
+  current trend output does not preserve that distinction.
+
 ## Sleeper-Computable Signals By Position
 
 The keys below are original Sleeper `stats` keys as stored in
@@ -246,60 +269,66 @@ loader, or local override source populates them:
 
 ## Planned Reason-Code Computability Matrix
 
-The position column makes the planned position-specific coverage explicit. A
-row marked `actual-only` must not be presented as projection evidence.
+This is the canonical audit table. It is intentionally one row per exact
+reason-code name in the upstream plan, including position rules that have no
+usable Sleeper source yet. `Required window` is the minimum plan window; the
+source columns say whether that window is evidence from actual stats,
+projections, or current metadata. A projection row is never treated as an
+observed usage row. The upstream plan's `last_1_week`, `last_2_weeks`,
+`last_3_weeks`, `last_4_weeks`, `season_to_date`, `post_change_window`, and
+`current_week` names are used literally so this table can be checked row by
+row without inferring coverage from grouped prose.
 
-| Reason code | Position | Tier | Window/source | Notes |
-|---|---|---|---|---|
-| `role_change_recent` | all | partial | actual weekly trends | Raw volume change only; no historical depth, route, or share denominator. |
-| `role_loss_recent` | all | partial | actual weekly trends | Declining raw volume cannot prove demotion, committee change, snap-share loss, or route loss. |
-| `projection_lagging_role_change` | all | partial | same-week actual/projection delta | Uses shared attempts, targets, receptions, and points; no route/snap/share context. |
-| `season_average_stale` | all | computed | actual weekly rows; projection version projection-only | Never mix forecast rows into completed-season averages. |
-| `recent_spike_against_stable_usage` | all | partial | actual weekly rows | Points plus raw usage; stable snap/route/share is unavailable. |
-| `insufficient_post_change_sample` | all | computed | actual week counts | A projection change is not an actual post-change sample. |
-| `low_touch_big_points` | RB/WR/TE | computed | actual weekly rows | `rush_att + rec` is a touch proxy, not opportunity share. |
-| `low_target_big_points` | RB/WR/TE | computed | actual weekly rows | `rec_tgt` is available where present; target share is missing. |
-| `low_route_big_points` | WR/TE | not_evaluable_missing_source | missing source | No route or route-share keys are synced/observed. |
-| `td_only_low_usage` | QB/RB/WR/TE | partial | actual weekly rows; projection variant projection-only | Position-specific TD keys plus raw usage; low raw count does not establish low opportunity/share. |
-| `qb_low_rush_floor` | QB | computed | actual or projection window | `rush_att`, `rush_yd`, and `rush_td` are direct fields; this is not rushing share. |
-| `rb_workload_change` | RB | partial | actual weekly trends | `rush_att`, `rec_tgt`, and `rec` are workload proxies; carry/target share is missing. |
-| `rb_receiving_role_change` | RB | partial | actual weekly trends | Receiving volume only; no route or target share. |
-| `rb_efficiency_spike` | RB | partial | actual weekly rows | `rush_ypa`, `rush_yac`, and explosive buckets exist, but sample/opportunity context is limited. |
-| `wr_target_role_change` | WR | partial | actual weekly trends | `rec_tgt`/`rec` trend; no target, route, snap, or air-yard share. |
-| `wr_air_yard_opportunity` | WR | partial | actual-only | `rec_air_yd` is absolute receiving air yards; air-yard share and team denominator are missing. |
-| `wr_td_only_low_usage` | WR | partial | actual weekly rows | TDs against raw targets/touches; no route or opportunity-share conclusion. |
-| `te_target_role_change` | TE | partial | actual weekly trends | `rec_tgt`/`rec` trend; no route or target share. |
-| `te_air_yard_opportunity` | TE | partial | actual-only | `rec_air_yd` is absolute receiving air yards; no air-yard share or projection field. |
-| `te_td_only_low_usage` | TE | partial | actual weekly rows | TDs against raw targets/touches; no route or snap-share conclusion. |
-| `k_volume_change` | K | computed | actual or projection window | `fga`, `fgm`, `xpa`, and `xpm` are direct fields. |
-| `long_kick_spike` | K | computed | actual or projection window | Distance buckets and `fgm_lng`/`fgm_50p` are available; projections are coarser. |
-| `def_td_spike` | DEF | computed | actual or projection window | Defensive/special-teams TD keys are directly visible. |
-| `def_turnover_spike_without_pressure` | DEF | partial | actual weekly rows | Turnovers plus sack/qb-hit/tackle-loss proxies; true pressure rate and matchup inputs are missing. |
-| `def_pass_rush_disruption` | DEF | partial | actual-only; projection version projection-only | Actual events exist; projections lack `qb_hit` and do not establish pressure rate. |
-| `matchup_opponent_label_present` | all | computed | actual or projection weekly raw row | `raw_json.opponent` is week-specific raw input, not current metadata or a strength grade. |
-| `matchup_strength_missing_source` | all | not_evaluable_missing_source | missing source | No defensive strength, positional allowance, pace, pass funnel, or run funnel source. |
-| `matchup_weather_missing_source` | all | not_evaluable_missing_source | missing source | No weather/stadium source. |
-| `matchup_implied_total_missing_source` | all | not_evaluable_missing_source | missing source | No game total, spread, moneyline, or team implied total. |
-| `matchup_pressure_missing_source` | QB/WR/TE/DEF | not_evaluable_missing_source | missing source | Actual `qb_hit`/`sack` are outcomes, not pre-game matchup inputs. |
-| `depth_chart_current_only` | all | current_metadata_only | current `players` snapshot | Historical role/depth changes cannot be proven. |
-| `injury_current_only` | all | current_metadata_only | current `players` snapshot | Historical injury snapshots are not stored per week. |
-
-### Exact Position Rule Codes From The Plan
-
-The following planned codes are deliberately listed even when the current
-source audit can only classify them as partial or missing. This prevents a
-future implementation from silently collapsing a position-specific rule into a
-generic points trend:
-
-| Position | Planned codes | Current audit result |
-|---|---|---|
-| QB | `qb_volume_rise`, `qb_rushing_role_rise`, `pass_td_spike_low_volume`, `rushing_td_spike`, `garbage_time_unconfirmed` | volume/rush/TD proxies are partial or computed in actual/projection windows; garbage-time context is `not_evaluable_missing_source` |
-| RB | `rb_touch_share_rise`, `rb_receiving_role_rise`, `injury_replacement`, `long_run_spike_unconfirmed` | raw touch/receiving trends are partial; injury replacement is `current_metadata_only` unless weekly availability/depth evidence exists; long-run spike is partial |
-| WR | `wr_target_role_rise`, `wr_depth_chart_breakout`, `low_target_big_points`, `long_td_spike`, `multi_td_low_volume` | target/TD/raw-point proxies are partial; depth-chart portion is `current_metadata_only` |
-| TE | `te_target_role_rise`, `te_red_zone_role_rise`, `te_td_only_week`, `low_route_big_points`, `not_evaluable_missing_routes` | target/red-zone/TD proxies are partial; route rule is explicitly missing without route data |
-| K | `k_team_opportunity_rise`, `long_kick_spike`, `low_attempt_kicker_spike` | kick-volume and distance fields are computed in each stated window; environment remains missing |
-| DEF | `def_pressure_rise`, `def_points_allowed_improving`, `def_td_spike`, `turnover_spike_without_pressure`, `score_dependent_def_week` | historical event proxies are partial or computed; true pressure/matchup context is missing |
-| Cross-position one-off/context | `td_spike_low_usage`, `injury_replacement`, `low_route_big_points`, `low_touch_big_points`, `turnover_td_spike`, `projection_disagreement`, `depth_chart_disagreement`, `season_average_stale`, `change_point_unconfirmed`, `not_evaluable_missing_nfl_schedule` | use the more specific position rows above; missing inputs must remain explicit reason codes |
+| Reason code | Position | Tier | Required window | Actual-stats qualification | Projection qualification | Missing-input reason |
+|---|---|---|---|---|---|---|
+| `role_change_recent` | all | partial | last_2_weeks + season_to_date | Raw opportunity trend; no share/route/depth proof. | Not qualified; projections are forecasts. | historical role, route/share denominator |
+| `role_loss_recent` | all | partial | last_2_weeks + season_to_date | Raw opportunity decline only. | Not qualified; projections are forecasts. | historical role, route/share denominator |
+| `projection_lagging_role_change` | all | partial | last_2_weeks + same-week delta | Requires actual opportunity and same-week actual points. | Requires matching projection row and key; missing projection is zero-filled by current query behavior. | route/snap/share context; projection row/key may be absent |
+| `season_average_stale` | all | computed | last_2_weeks + season_to_date | Completed active-week points only. | Projection-only version is allowed for forecast context. | none for the stated points comparison |
+| `recent_spike_against_stable_usage` | all | partial | last_2_weeks + season_to_date | Points versus raw opportunity; stable share is unavailable. | Not qualified as observed usage. | stable route/snap/share denominator |
+| `insufficient_post_change_sample` | all | computed | post_change_window | Count active actual weeks after the change. | Not qualified; forecast weeks are not post-change samples. | none; insufficient sample is the reason |
+| `low_touch_big_points` | RB/WR/TE | computed | last_1_week | `rush_att + rec` touch proxy versus actual points. | Not qualified as an actual spike. | touch proxy is not opportunity share |
+| `low_target_big_points` | RB/WR/TE | computed | last_1_week | Actual `rec_tgt` versus actual receiving points. | Not qualified as an actual spike. | target share denominator |
+| `low_route_big_points` | WR/TE | not_evaluable_missing_source | last_1_week | No route input is stored. | No route input is stored. | routes/route share |
+| `td_only_low_usage` | QB/RB/WR/TE | partial | last_1_week | TD keys plus raw usage; useful but incomplete. | TD and usage forecast can be compared, not observed. | opportunity share and position-specific denominator |
+| `def_td_spike` | DEF | computed | last_1_week | Defensive/special-teams TD keys are present. | Forecast TD keys are present, but not an observed spike. | none for the stated TD signal |
+| `turnover_spike_without_pressure` | DEF | partial | last_2_weeks + season_to_date | Turnovers and sack/qb-hit/tackle-loss proxies. | Projection turnover rows do not establish pressure. | true pressure rate and matchup pressure |
+| `long_kick_spike` | K | computed | last_1_week | Long-field-goal buckets and kicking points. | Coarser distance fields can support a forecast flag. | none for the stated distance signal |
+| `matchup_opponent_label_present` | all | partial | current_week | Raw weekly `opponent` label only. | Raw weekly `opponent` label only. | NFL schedule join and matchup quality |
+| `not_evaluable_missing_nfl_schedule` | all | not_evaluable_missing_source | current_week | No normalized NFL schedule/opponent join. | Same. | NFL schedule, home/away, kickoff, opponent join |
+| `not_evaluable_missing_matchup_strength` | all | not_evaluable_missing_source | current_week | No defensive strength/pace/funnel source. | Same. | matchup strength |
+| `not_evaluable_missing_matchup_weather` | all | not_evaluable_missing_source | current_week | No weather/stadium source. | Same. | weather, wind, roof/surface |
+| `not_evaluable_missing_matchup_implied_total` | all | not_evaluable_missing_source | current_week | No betting or team-total source. | Same. | game total, spread, moneyline, implied team total |
+| `not_evaluable_missing_matchup_pressure` | QB/WR/TE/DEF | not_evaluable_missing_source | current_week | `qb_hit`/`sack` are outcomes, not opponent pressure inputs. | Same. | opponent pressure matchup |
+| `current_metadata_only_depth_chart` | all | current_metadata_only | current_week | Current `players` depth fields only; not historical evidence. | Same current snapshot only. | historical depth chart |
+| `current_metadata_only_injury` | all | current_metadata_only | current_week | Current status/injury fields only; not historical evidence. | Same current snapshot only. | historical availability/injury |
+| `qb_volume_rise` | QB | partial | last_2_weeks + season_to_date | Dropback proxy from actual attempts/sacks. | Not qualified as observed role evidence. | designed-play, snap, and share context |
+| `qb_rushing_role_rise` | QB | partial | last_2_weeks + season_to_date | Actual `rush_att` trend. | Forecast rush attempts only; not observed role evidence. | designed-rush/share context |
+| `pass_td_spike_low_volume` | QB | partial | last_1_week | Actual passing TDs versus actual volume. | Forecast TD/volume comparison only. | stable opportunity and game-script context |
+| `rushing_td_spike` | QB | partial | last_1_week | Actual rushing TDs versus rush volume. | Forecast only. | red-zone/designated-rush context |
+| `garbage_time_unconfirmed` | QB | not_evaluable_missing_source | last_1_week | No game-state or play-time context. | Same. | game state and drive/play context |
+| `rb_touch_share_rise` | RB | partial | last_2_weeks + season_to_date | Touch proxy from actual carries plus receptions. | Not qualified as observed share. | team RB touch denominator |
+| `rb_receiving_role_rise` | RB | partial | last_2_weeks + season_to_date | Actual target/reception trend. | Forecast receiving volume only. | route and target-share denominator |
+| `injury_replacement` | RB | current_metadata_only | current_week + post_change_window | Current injury/depth metadata can suggest, not prove, replacement history. | Current metadata only; projections do not add historical availability. | week-specific availability/depth snapshot |
+| `long_run_spike_unconfirmed` | RB | partial | last_1_week | Actual long-run and rushing output fields. | Forecast explosive-run keys are not observed outcomes. | stable workload and play context |
+| `wr_target_role_rise` | WR | partial | last_2_weeks + season_to_date | Actual target trend. | Forecast targets only. | target/route/snap share denominator |
+| `wr_depth_chart_breakout` | WR | current_metadata_only | current_week + post_change_window | Current depth fields only. | Same current snapshot only. | historical depth chart and weekly role |
+| `long_td_spike` | WR | partial | last_1_week | Actual long reception/TD fields. | Forecast only. | route, air-yard share, and game context |
+| `multi_td_low_volume` | WR | partial | last_1_week | Actual TDs versus targets/touches. | Forecast only. | route and opportunity-share denominator |
+| `te_target_role_rise` | TE | partial | last_2_weeks + season_to_date | Actual target trend. | Forecast targets only. | target/route/snap share denominator |
+| `te_red_zone_role_rise` | TE | partial | last_2_weeks | Actual `rec_rz_tgt` in two straight weeks where present. | Projection red-zone keys are not consistently available. | red-zone opportunity denominator |
+| `te_td_only_week` | TE | partial | last_1_week | Actual TDs versus targets/touches. | Forecast only. | route and opportunity-share denominator |
+| `not_evaluable_missing_routes` | TE | not_evaluable_missing_source | last_1_week | No route or route-share key. | No route or route-share key. | routes/route participation |
+| `k_team_opportunity_rise` | K | partial | last_3_weeks + season_to_date | Actual FG/PAT attempt trend; team scoring chances absent. | Forecast attempt trend only. | team scoring-opportunity denominator |
+| `low_attempt_kicker_spike` | K | partial | last_1_week | Actual points versus low FG/PAT attempts. | Forecast only. | team opportunity and weather |
+| `def_pressure_rise` | DEF | partial | last_3_weeks + season_to_date | Actual sacks; `qb_hit` is an incomplete proxy. | Projection sacks only, no observed pressure. | true pressure rate and opponent context |
+| `def_points_allowed_improving` | DEF | computed | last_3_weeks + season_to_date | Actual points-allowed fields. | Forecast points allowed can support forecast context. | opponent-adjusted strength |
+| `score_dependent_def_week` | DEF | partial | last_1_week | Actual points allowed/TD/turnover components. | Forecast only. | game script and opponent strength |
+| `td_spike_low_usage` | all | partial | last_1_week | Position TD keys versus raw usage where available. | Forecast only. | opportunity denominator |
+| `turnover_td_spike` | DEF | partial | last_1_week | Actual turnover and TD keys. | Forecast only. | pressure and repeatability context |
+| `projection_disagreement` | all | partial | same-week actual/projection delta | Requires an actual row. | Requires matching projection row/key; absent projection currently becomes zero. | projection row/key and projection version |
+| `depth_chart_disagreement` | all | current_metadata_only | current_week | Current metadata can be compared with weekly row labels only. | Same. | historical depth snapshot |
+| `change_point_unconfirmed` | all | partial | post_change_window + season_to_date | Actual trend can identify a candidate but not confirm role. | Not qualified from forecasts. | larger post-change sample and role source |
 
 ## V1 Implementation Guidance
 
