@@ -544,6 +544,48 @@ def test_player_context_exact_thresholds_and_missing_metrics_are_deterministic()
     assert absent["reasons"][0]["computability_tier"] == "not_evaluable_missing_source"
 
 
+def test_player_context_emits_role_loss_when_opportunity_declines_past_threshold() -> None:
+    rows = [
+        {"week": 1, "active": True, "touches": 18},
+        {"week": 2, "active": True, "touches": 18},
+        {"week": 3, "active": True, "touches": 10},
+        {"week": 4, "active": True, "touches": 10},
+    ]
+
+    signal = opportunity_signal("RB", rows, metric="touches")
+    result = evaluate_player_usage_context("RB", {"season_weeks": rows})
+
+    assert signal["status"] == "decreased"
+    assert result["reason_codes"] == ["role_loss_recent"]
+    assert result["capped_modifiers"] == {"context": -4.0}
+
+
+def test_player_context_missing_opportunity_does_not_create_spike_penalties() -> None:
+    missing_rb = spike_reason_codes("RB", {"points": 24, "total_tds": 2})
+    missing_wr = spike_reason_codes("WR", {"points": 24, "rec_tds": 2})
+    missing_defense = spike_reason_codes("DEF", {"takeaways": 4})
+
+    assert missing_rb == ["not_evaluable_missing_touches"]
+    assert missing_wr == ["not_evaluable_missing_targets"]
+    assert missing_defense == ["not_evaluable_missing_pressure_proxy_rise"]
+    assert evaluate_player_usage_context(
+        "RB", {"recent_weeks": [{"week": 1, "active": True, "points": 24, "total_tds": 2}]}
+    )["capped_modifiers"] == {}
+
+
+def test_player_context_contract_contains_dynamic_missing_source_codes() -> None:
+    contract_codes = player_usage_context_contract()["reason_code_schema"]["codes"]
+
+    for code in (
+        "not_evaluable_missing_dropbacks",
+        "not_evaluable_missing_touches",
+        "not_evaluable_missing_targets",
+        "not_evaluable_missing_rush_attempts",
+        "not_evaluable_missing_pressure_proxy_rise",
+    ):
+        assert code in contract_codes
+
+
 def test_player_context_golden_fixtures_execute_behaviorally() -> None:
     for fixture in PLAYER_USAGE_CONTEXT_GOLDEN_FIXTURES:
         result = evaluate_player_usage_context(fixture["position"], fixture["inputs"])

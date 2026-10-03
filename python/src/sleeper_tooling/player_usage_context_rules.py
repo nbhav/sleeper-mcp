@@ -110,6 +110,11 @@ REASON_CODES: dict[str, dict[str, Any]] = {
     "not_evaluable_missing_matchup_weather": _reason("not_evaluable_missing_matchup_weather", "matchup_adjustment", "neutral", "not_evaluable_missing_source", (), "low", "weather and stadium data are missing", ("weather",)),
     "not_evaluable_missing_matchup_implied_total": _reason("not_evaluable_missing_matchup_implied_total", "matchup_adjustment", "neutral", "not_evaluable_missing_source", (), "low", "betting and implied-total data are missing", ("implied total",)),
     "not_evaluable_missing_matchup_pressure": _reason("not_evaluable_missing_matchup_pressure", "matchup_adjustment", "neutral", "not_evaluable_missing_source", (), "medium", "opponent pressure context is missing", ("pressure matchup",)),
+    "not_evaluable_missing_dropbacks": _reason("not_evaluable_missing_dropbacks", "opportunity", "neutral", "not_evaluable_missing_source", (), "medium", "dropbacks are missing; this signal is not evaluable", ("dropbacks",)),
+    "not_evaluable_missing_touches": _reason("not_evaluable_missing_touches", "opportunity", "neutral", "not_evaluable_missing_source", (), "medium", "touches are missing; this signal is not evaluable", ("touches",)),
+    "not_evaluable_missing_targets": _reason("not_evaluable_missing_targets", "opportunity", "neutral", "not_evaluable_missing_source", (), "medium", "targets are missing; this signal is not evaluable", ("targets",)),
+    "not_evaluable_missing_rush_attempts": _reason("not_evaluable_missing_rush_attempts", "opportunity", "neutral", "not_evaluable_missing_source", (), "medium", "rush attempts are missing; this signal is not evaluable", ("rush_attempts",)),
+    "not_evaluable_missing_pressure_proxy_rise": _reason("not_evaluable_missing_pressure_proxy_rise", "one_off_risk", "neutral", "not_evaluable_missing_source", (), "medium", "turnover spike risk is not evaluable without a pressure proxy", ("pressure_proxy_rise",)),
     "current_metadata_only_depth_chart": _reason("current_metadata_only_depth_chart", "depth_chart_confidence", "neutral", "current_metadata_only", ("current depth metadata",), "medium", "depth chart metadata is current-only and not historical", ("historical depth chart",)),
     "current_metadata_only_injury": _reason("current_metadata_only_injury", "role_stability", "neutral", "current_metadata_only", ("current injury metadata",), "medium", "injury metadata is current-only and not historical", ("historical availability",)),
 }
@@ -155,6 +160,8 @@ def compare_recent_to_baseline(recent: Sequence[Mapping[str, Any]], baseline: Se
 def _missing_metric_reason(metric: str, *, component: str = "opportunity") -> dict[str, Any]:
     normalized = "".join(character if character.isalnum() else "_" for character in metric.lower()).strip("_")
     code = f"not_evaluable_missing_{normalized}"
+    if code in REASON_CODES:
+        return deepcopy(REASON_CODES[code])
     return _reason(
         code,
         component,
@@ -194,8 +201,14 @@ def opportunity_signal(position: str, rows: Sequence[Mapping[str, Any]], *, metr
     if threshold.get("increase_per_game") is not None:
         increase_checks.append(Decimal(str(delta_per_game)) >= Decimal(str(threshold["increase_per_game"])))
     increased = any(increase_checks)
+    decrease_checks = []
+    if threshold.get("increase_pct") is not None:
+        decrease_checks.append(delta_pct is not None and Decimal(str(delta_pct)) <= -Decimal(str(threshold["increase_pct"])))
+    if threshold.get("increase_per_game") is not None:
+        decrease_checks.append(Decimal(str(delta_per_game)) <= -Decimal(str(threshold["increase_per_game"])))
     improved = threshold.get("improvement_pct") is not None and delta_pct is not None and Decimal(str(delta_pct)) <= -Decimal(str(threshold["improvement_pct"]))
-    return {"status": "increased" if increased or improved else "stable", "delta_pct": delta_pct, "delta_per_game": delta_per_game, "recent": window, "baseline": baseline, "reason_codes": [], "reasons": []}
+    status = "increased" if increased or improved else ("decreased" if any(decrease_checks) else "stable")
+    return {"status": status, "delta_pct": delta_pct, "delta_per_game": delta_per_game, "recent": window, "baseline": baseline, "reason_codes": [], "reasons": []}
 
 
 def compute_matchup_modifier(position: str, raw_modifier: float | None, *, nfl_schedule_available: bool, opponent_strength_available: bool = True) -> dict[str, Any]:
@@ -214,20 +227,33 @@ def spike_reason_codes(position: str, row: Mapping[str, Any]) -> list[str]:
     points = float(row.get("points") or row.get("fantasy_points") or 0)
     thresholds = SPIKE_THRESHOLDS[position]
     codes: list[str] = []
-    if position == "RB" and points >= 20 and int(row.get("touches", 0)) <= thresholds["low_touch_floor"]["touches_max"]:
-        codes.append("low_touch_big_points")
-    if position in {"WR", "TE"} and points >= 15 and int(row.get("targets", 0)) <= thresholds["low_target_floor"]["targets_max"]:
-        codes.append("low_target_big_points")
+    if position == "RB" and points >= 20:
+        if row.get("touches") is None:
+            codes.append("not_evaluable_missing_touches")
+        elif int(row["touches"]) <= thresholds["low_touch_floor"]["touches_max"]:
+            codes.append("low_touch_big_points")
+    if position in {"WR", "TE"} and points >= 15:
+        if row.get("targets") is None:
+            codes.append("not_evaluable_missing_targets")
+        elif int(row["targets"]) <= thresholds["low_target_floor"]["targets_max"]:
+            codes.append("low_target_big_points")
     td_count = int(row.get("total_tds", 0) or row.get("rec_tds", 0) or row.get("passing_tds", 0))
     if position in {"RB", "WR", "TE", "QB"} and td_count >= (thresholds.get("total_tds") or thresholds.get("rec_tds") or thresholds.get("passing_tds"))["min"]:
-        codes.append("td_only_low_usage")
+        opportunity_field = {"RB": "touches", "WR": "targets", "TE": "targets", "QB": "rush_attempts"}[position]
+        if row.get(opportunity_field) is None:
+            codes.append(f"not_evaluable_missing_{opportunity_field}")
+        else:
+            codes.append("td_only_low_usage")
     if position == "K" and (int(row.get("made_50_plus", 0)) >= thresholds["made_50_plus"]["min"] or float(row.get("long_kick_point_share", 0)) >= thresholds["long_kick_point_share"]["min"]):
         codes.append("long_kick_spike")
     if position == "DEF" and int(row.get("def_or_special_teams_tds", 0)) >= thresholds["def_or_special_teams_tds"]["min"]:
         codes.append("def_td_spike")
-    if position == "DEF" and int(row.get("takeaways", 0)) >= thresholds["takeaways"]["min"] and not row.get("pressure_proxy_rise", False):
-        codes.append("turnover_spike_without_pressure")
-    return codes
+    if position == "DEF" and int(row.get("takeaways", 0)) >= thresholds["takeaways"]["min"]:
+        if row.get("pressure_proxy_rise") is None:
+            codes.append("not_evaluable_missing_pressure_proxy_rise")
+        elif not row["pressure_proxy_rise"]:
+            codes.append("turnover_spike_without_pressure")
+    return list(dict.fromkeys(codes))
 
 
 def cap_modifier(cap_name: str, value: float, *, position: str | None = None) -> float:
@@ -311,13 +337,13 @@ def evaluate_player_usage_context(position: str, inputs: Mapping[str, Any]) -> d
 
 
 PLAYER_USAGE_CONTEXT_GOLDEN_FIXTURES: tuple[dict[str, Any], ...] = (
-    {"id": "wr_high_points_low_usage", "case": "high_points_with_low_usage", "position": "WR", "inputs": {"recent_weeks": [{"week": 4, "active": True, "targets": 3, "points": 24, "rec_tds": 2}, {"week": 5, "active": True, "targets": 3, "points": 24, "rec_tds": 2}], "season_weeks": [{"week": 1, "active": True, "targets": 7, "points": 12}, {"week": 2, "active": True, "targets": 8, "points": 13}, {"week": 3, "active": True, "targets": 7, "points": 12}]}, "expected": {"reason_codes": ["low_target_big_points", "td_only_low_usage"], "capped_modifiers": {"context": -6.0}}},
+    {"id": "wr_high_points_low_usage", "case": "high_points_with_low_usage", "position": "WR", "inputs": {"recent_weeks": [{"week": 4, "active": True, "targets": 3, "points": 24, "rec_tds": 2}, {"week": 5, "active": True, "targets": 3, "points": 24, "rec_tds": 2}], "season_weeks": [{"week": 1, "active": True, "targets": 7, "points": 12}, {"week": 2, "active": True, "targets": 8, "points": 13}, {"week": 3, "active": True, "targets": 7, "points": 12}]}, "expected": {"reason_codes": ["role_loss_recent", "low_target_big_points", "td_only_low_usage"], "capped_modifiers": {"context": -6.0}}},
     {"id": "rb_rising_usage_lagging_projection", "case": "rising_usage_with_lagging_projections", "position": "RB", "inputs": {"recent_weeks": [{"week": 4, "active": True, "touches": 19, "projection_delta": -2}, {"week": 5, "active": True, "touches": 20, "projection_delta": -2}], "season_weeks": [{"week": 1, "active": True, "touches": 14}, {"week": 2, "active": True, "touches": 14}, {"week": 3, "active": True, "touches": 14}]}, "expected": {"reason_codes": ["role_change_recent", "projection_lagging_role_change"], "capped_modifiers": {"trend": 4.0, "context": 4.0}}},
-    {"id": "qb_high_projection_weak_actuals", "case": "high_projections_with_weak_actuals", "position": "QB", "inputs": {"recent_weeks": [{"week": 4, "active": True, "dropbacks": 25, "points": 11, "projected_points": 23}, {"week": 5, "active": True, "dropbacks": 25, "points": 11, "projected_points": 23}], "season_weeks": [{"week": 1, "active": True, "dropbacks": 35, "points": 18}, {"week": 2, "active": True, "dropbacks": 36, "points": 19}, {"week": 3, "active": True, "dropbacks": 34, "points": 18}]}, "expected": {"reason_codes": ["season_average_stale"], "capped_modifiers": {"context": -3.0}}},
+    {"id": "qb_high_projection_weak_actuals", "case": "high_projections_with_weak_actuals", "position": "QB", "inputs": {"recent_weeks": [{"week": 4, "active": True, "dropbacks": 25, "points": 11, "projected_points": 23}, {"week": 5, "active": True, "dropbacks": 25, "points": 11, "projected_points": 23}], "season_weeks": [{"week": 1, "active": True, "dropbacks": 35, "points": 18}, {"week": 2, "active": True, "dropbacks": 36, "points": 19}, {"week": 3, "active": True, "dropbacks": 34, "points": 18}]}, "expected": {"reason_codes": ["role_loss_recent", "season_average_stale"], "capped_modifiers": {"context": -6.0}}},
     {"id": "rb_injury_fill_in", "case": "injury_fill_in", "position": "RB", "inputs": {"recent_weeks": [{"week": 4, "active": True, "touches": 17, "injury_fill_in": True}, {"week": 5, "active": True, "touches": 17, "injury_fill_in": True}], "season_weeks": [{"week": 1, "active": True, "touches": 6}, {"week": 2, "active": True, "touches": 7}, {"week": 3, "active": True, "touches": 6}]}, "expected": {"reason_codes": ["role_change_recent"], "capped_modifiers": {"context": 4.0}}},
     {"id": "te_buried_depth_breakout", "case": "buried_depth_chart_breakout", "position": "TE", "inputs": {"recent_weeks": [{"week": 4, "active": True, "targets": 5, "red_zone_targets": 1}, {"week": 5, "active": True, "targets": 5, "red_zone_targets": 1}], "season_weeks": [{"week": 1, "active": True, "targets": 2}, {"week": 2, "active": True, "targets": 2}, {"week": 3, "active": True, "targets": 2}], "current_metadata": {"depth_chart_role": "third_te"}}, "expected": {"reason_codes": ["role_change_recent", "current_metadata_only_depth_chart"], "capped_modifiers": {"context": 6.0}}},
     {"id": "k_long_kick_spike", "case": "k_long_kick_spike", "position": "K", "inputs": {"recent_weeks": [{"week": 4, "active": True, "made_50_plus": 2, "long_kick_point_share": 0.56}, {"week": 5, "active": True, "made_50_plus": 2, "long_kick_point_share": 0.56}], "season_weeks": [{"week": 1, "active": True, "made_50_plus": 0}, {"week": 2, "active": True, "made_50_plus": 0}, {"week": 3, "active": True, "made_50_plus": 0}]}, "expected": {"reason_codes": ["long_kick_spike"], "capped_modifiers": {"context": -4.5}}},
-    {"id": "def_td_turnover_spike", "case": "def_touchdown_or_turnover_spike", "position": "DEF", "inputs": {"recent_weeks": [{"week": 4, "active": True, "def_or_special_teams_tds": 1, "takeaways": 4, "sacks": 1}, {"week": 5, "active": True, "def_or_special_teams_tds": 1, "takeaways": 4, "sacks": 1}], "season_weeks": [{"week": 1, "active": True, "def_or_special_teams_tds": 0, "takeaways": 1, "sacks": 4}, {"week": 2, "active": True, "def_or_special_teams_tds": 0, "takeaways": 1, "sacks": 4}, {"week": 3, "active": True, "def_or_special_teams_tds": 0, "takeaways": 1, "sacks": 4}], "matchup": {"raw_modifier": 4, "nfl_schedule_available": True}}, "expected": {"reason_codes": ["def_td_spike", "turnover_spike_without_pressure"], "capped_modifiers": {"context": -6.0, "matchup": 3.0}}},
+    {"id": "def_td_turnover_spike", "case": "def_touchdown_or_turnover_spike", "position": "DEF", "inputs": {"recent_weeks": [{"week": 4, "active": True, "def_or_special_teams_tds": 1, "takeaways": 4, "sacks": 1, "pressure_proxy_rise": False}, {"week": 5, "active": True, "def_or_special_teams_tds": 1, "takeaways": 4, "sacks": 1, "pressure_proxy_rise": False}], "season_weeks": [{"week": 1, "active": True, "def_or_special_teams_tds": 0, "takeaways": 1, "sacks": 4}, {"week": 2, "active": True, "def_or_special_teams_tds": 0, "takeaways": 1, "sacks": 4}, {"week": 3, "active": True, "def_or_special_teams_tds": 0, "takeaways": 1, "sacks": 4}], "matchup": {"raw_modifier": 4, "nfl_schedule_available": True}}, "expected": {"reason_codes": ["def_td_spike", "turnover_spike_without_pressure"], "capped_modifiers": {"context": -6.0, "matchup": 3.0}}},
     {"id": "qb_missing_matchup_source", "case": "missing_matchup_source", "position": "QB", "inputs": {"matchup": {"raw_modifier": 2.75, "nfl_schedule_available": False}}, "expected": {"reason_codes": ["not_evaluable_missing_nfl_schedule"], "capped_modifiers": {"matchup": 0.0}}},
 )
 
