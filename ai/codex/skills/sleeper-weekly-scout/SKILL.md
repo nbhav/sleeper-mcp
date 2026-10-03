@@ -194,6 +194,21 @@ Rules:
 - Summarize needs, surplus, top targets, offer angles, trade score, opponent fit, backup risk, bye risk, roster balance after the move, and reasoning.
 - Treat output as a projection-based screen, not a definitive trade-value model.
 
+## Position Evaluation
+
+When the user asks for position-specific judgment, combine this workflow with
+the matching skill:
+
+- `sleeper-qb-evaluator` for quarterback starts, streams, backup cover, rushing floor, trades, and bye coverage.
+- `sleeper-rb-evaluator` for running back workload, receiving role, handcuffs, IR stashes, waivers, trades, and roster depth.
+- `sleeper-wr-evaluator` for wide receiver targets, flex value, role stability, waivers, trades, injury, and bye clustering.
+- `sleeper-te-evaluator` for tight end scarcity, elite holds, streamers, target stability, waivers, trades, and bye cover.
+- `sleeper-k-evaluator` for kicker scoring rules, streamability, elite holds, bye cover, and low-cost adds.
+- `sleeper-def-evaluator` for defense scoring rules, matchup context, streamability, elite holds, bye cover, and low-cost adds.
+
+Use the position skills to interpret deterministic output, not to replace
+`player_values`, `roster_analysis`, or move-matrix calculations.
+
 ## Smoke Tables
 
 For pre-merge or reviewer validation of the live lineup, waiver, and trade workflow, call:

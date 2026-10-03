@@ -245,10 +245,14 @@ For MCP clients that need the same validation in a human-readable table, call:
 
 Smoke Markdown tables expose the same deterministic fields that MCP JSON
 returns. Waiver rows include `recommendation`, `move_score`,
-`reasoning_summary`, and week/three-week/season deltas when available. Trade
-rows are package-angle rows with `package_type`, `ask`, `offer`, `my_gain`,
-`opponent_gain`, `value_balance`, `trade_score`, `recommendation`, and
-`reasoning_summary`.
+`reasoning_summary`, and week/three-week/season deltas when available. If no
+waiver rows survive the recommendation filter, the smoke output also shows
+`Waiver Diagnostics` with the highest-ranked rejected or blocked candidates.
+Trade rows are package-angle rows with `package_type`, `ask`, `offer`,
+`my_gain`, `opponent_gain`, `value_balance`, `trade_score`, `recommendation`,
+and `reasoning_summary`. If no trade packages are recommended, `Trade
+Diagnostics` shows top rejected packages and rejection reasons so an empty
+trade table is explainable.
 
 ## Shareable Skill
 
@@ -259,6 +263,22 @@ ai/codex/skills/sleeper-weekly-scout/
 ```
 
 It tells Codex to prefer deterministic MCP tools for historical weekly scouting and waiver-wire workflows, with Dockerized CLI fallbacks when MCP is unavailable.
+
+Position evaluator skills also live under `ai/codex/skills/`:
+
+| Skill | Use |
+|---|---|
+| `sleeper-qb-evaluator` | Quarterback start, stream, backup, trade, rushing-floor, injury, and bye decisions. |
+| `sleeper-rb-evaluator` | Running back workload, receiving role, handcuff, IR stash, waiver, trade, and roster-depth decisions. |
+| `sleeper-wr-evaluator` | Wide receiver target trend, flex, waiver, trade, injury, bye, and roster-balance decisions. |
+| `sleeper-te-evaluator` | Tight end scarcity, elite hold, streamer, target stability, bye, waiver, and trade decisions. |
+| `sleeper-k-evaluator` | Kicker scoring-rule, streamability, elite hold, bye, and low-cost waiver decisions. |
+| `sleeper-def-evaluator` | Defense scoring-rule, matchup, streamability, elite hold, bye, and low-cost waiver decisions. |
+
+Use these skills after the deterministic tools return data. They should help an
+agent interpret `player_values`, `roster_analysis`, `waiver_wire_by_position`,
+`trade_opportunities`, `player_stat_trends`, and `position_stat_leaders`
+without asking the LLM to invent missing context.
 
 ## Remote MCP On Cloudflare
 

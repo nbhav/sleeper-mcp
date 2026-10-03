@@ -49,7 +49,6 @@ def build_decision_smoke_report(
             "status": row.get("status", ""),
             "injury_status": row.get("injury_status", ""),
             "active_roster_spot": row.get("active_roster_spot", True),
-            "stash_value": row.get("stash_value", False),
             "actual_points": row.get("actual_points", 0),
             "projected_points": row.get("projected_points", 0),
         }
@@ -58,6 +57,10 @@ def build_decision_smoke_report(
     waiver_rows = {
         position: [compact_waiver_row(row) for row in rows]
         for position, rows in (waivers.get("by_position", {}) or {}).items()
+    }
+    waiver_diagnostics = {
+        position: [compact_waiver_row(row) for row in rows]
+        for position, rows in (waivers.get("diagnostics_by_position", {}) or {}).items()
     }
     trade_teams = [
         {
@@ -75,6 +78,10 @@ def build_decision_smoke_report(
                 compact_trade_angle(row)
                 for row in team.get("offer_angles", [])
             ],
+            "diagnostic_angles": [
+                compact_trade_angle(row)
+                for row in top_trade_diagnostics(team.get("package_matrix", []), team.get("offer_angles", []), offers_per_team)
+            ],
             "reasoning": team.get("reasoning", []),
         }
         for team in trades.get("teams", [])
@@ -90,8 +97,6 @@ def build_decision_smoke_report(
                 lineup.get("projected_starter_points", 0),
             ),
             "projected_total": lineup.get("projected_total", 0),
-            "projected_active_roster_total": lineup.get("projected_active_roster_total", 0),
-            "projected_roster_total": lineup.get("projected_roster_total", 0),
             "active_bench_count": lineup.get("active_bench_count", lineup.get("bench_count", 0)),
             "reserve_count": lineup.get("reserve_count", 0),
             "bye_week_warnings": lineup.get("bye_week_warnings", []),
@@ -101,6 +106,7 @@ def build_decision_smoke_report(
             "week": waivers.get("week"),
             "per_position_limit": waivers.get("per_position_limit"),
             "by_position": waiver_rows,
+            "diagnostics_by_position": waiver_diagnostics,
         },
         "trade_opportunities": {
             "week": trades.get("week"),
@@ -129,8 +135,6 @@ def render_decision_smoke_tables(report: dict[str, Any]) -> str:
                 ["Current Total", value_text(lineup.get("current_total"))],
                 ["Projected Starter Total", value_text(lineup.get("projected_starter_total"))],
                 ["Projected Total (Starters)", value_text(lineup.get("projected_total"))],
-                ["Projected Active Roster Total", value_text(lineup.get("projected_active_roster_total"))],
-                ["Projected Roster Total", value_text(lineup.get("projected_roster_total"))],
                 ["Active Bench Count", value_text(lineup.get("active_bench_count"))],
                 ["Reserve Count", value_text(lineup.get("reserve_count"))],
                 ["Bye Warnings", warnings_text(lineup.get("bye_week_warnings", []))],
@@ -148,7 +152,6 @@ def render_decision_smoke_tables(report: dict[str, Any]) -> str:
                 "Actual",
                 "Projected",
                 "Active Spot",
-                "Stash",
             ],
             [
                 [
@@ -162,7 +165,6 @@ def render_decision_smoke_tables(report: dict[str, Any]) -> str:
                     points_text(row.get("actual_points")),
                     points_text(row.get("projected_points")),
                     row.get("active_roster_spot"),
-                    row.get("stash_value"),
                 ]
                 for row in lineup.get("lineup_table", [])
             ],
@@ -190,6 +192,29 @@ def render_decision_smoke_tables(report: dict[str, Any]) -> str:
             ],
             waiver_table_rows(waivers.get("by_position", {})),
         ),
+        "## Waiver Diagnostics",
+        markdown_table(
+            [
+                "Pos",
+                "Add",
+                "Team",
+                "Market",
+                "Action",
+                "Urgency",
+                "Recommendation",
+                "Move Score",
+                "Reasoning",
+                "Drop",
+                "Drop Status",
+                "Projected",
+                "Gain",
+                "Week Delta",
+                "3W Delta",
+                "Season Delta",
+                "Warnings",
+            ],
+            waiver_table_rows(waivers.get("diagnostics_by_position", {})),
+        ),
         "## Trade Opportunities",
         markdown_table(
             [
@@ -207,6 +232,23 @@ def render_decision_smoke_tables(report: dict[str, Any]) -> str:
                 "Reasoning Summary",
             ],
             trade_table_rows(trades.get("teams", [])),
+        ),
+        "## Trade Diagnostics",
+        markdown_table(
+            [
+                "Team",
+                "Package Type",
+                "Ask",
+                "Offer",
+                "My Gain",
+                "Opponent Gain",
+                "Value Balance",
+                "Trade Score",
+                "Recommendation",
+                "Rejection Reasons",
+                "Reasoning Summary",
+            ],
+            trade_diagnostic_rows(trades.get("teams", [])),
         ),
         "## Trade Evidence",
         markdown_table(["Evidence"], [[item] for item in trades.get("evidence", [])]),
@@ -282,6 +324,54 @@ def trade_table_rows(teams: list[dict[str, Any]]) -> list[list[Any]]:
                 ]
             )
     return rows
+
+
+def trade_diagnostic_rows(teams: list[dict[str, Any]]) -> list[list[Any]]:
+    rows = []
+    for team in teams:
+        for angle in team.get("diagnostic_angles", []) or []:
+            rows.append(
+                [
+                    team.get("team_name"),
+                    angle.get("package_type"),
+                    player_names_text(angle.get("ask", [])),
+                    player_names_text(angle.get("offer", [])),
+                    points_text(angle.get("my_gain")),
+                    points_text(angle.get("opponent_gain")),
+                    points_text(angle.get("value_balance")),
+                    points_text(angle.get("trade_score")),
+                    angle.get("recommendation"),
+                    list_text(angle.get("rejection_reasons", [])),
+                    angle.get("reasoning_summary"),
+                ]
+            )
+    return rows
+
+
+def top_trade_diagnostics(
+    package_matrix: Any,
+    offer_angles: Any,
+    limit: int,
+) -> list[dict[str, Any]]:
+    if not isinstance(package_matrix, list):
+        return []
+    accepted_signatures = {
+        trade_angle_signature(row)
+        for row in offer_angles or []
+    }
+    diagnostics = [
+        row
+        for row in package_matrix
+        if trade_angle_signature(row) not in accepted_signatures
+    ]
+    return diagnostics[: max(1, limit)]
+
+
+def trade_angle_signature(row: dict[str, Any]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    return (
+        tuple(sorted(str(player.get("player_id") or player.get("name") or "") for player in row.get("ask", []))),
+        tuple(sorted(str(player.get("player_id") or player.get("name") or "") for player in row.get("offer", []))),
+    )
 
 
 def player_names_text(players: Any) -> str:
@@ -421,6 +511,7 @@ def compact_trade_angle(row: dict[str, Any]) -> dict[str, Any]:
         "my_need_solved": row.get("my_need_solved", []),
         "backup_risk": (row.get("backup_risk") or {}).get("level"),
         "bye_week_risk": (row.get("bye_week_risk") or {}).get("level"),
+        "rejection_reasons": row.get("rejection_reasons", []),
     }
 
 

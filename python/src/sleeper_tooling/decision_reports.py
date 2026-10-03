@@ -1216,8 +1216,8 @@ def waiver_recommendation(
 ) -> str:
     if not drop_candidate:
         return "reject"
-    if projected_gain <= 0 and move_score < 8:
-        return "reject"
+    if projected_gain <= 0:
+        return "watch" if move_score >= 8 else "reject"
     if backup_qb_suppression_applies(candidate, roster_players):
         return "watch"
     if damage_score >= 20 or streamer_penalty >= 20 or stash_penalty >= 16:
@@ -1489,12 +1489,36 @@ def drop_protection_reason(
         player
         for player in roster_players
         if str(player.get("lineup_status") or "").lower() == "starter"
-        and same_position_family(row, player)
+        and primary_position(player) == position
         and is_availability_risk(player)
     ]
-    if risky_starters and float(row.get("projected_points") or 0) > 0:
+    if risky_starters and is_best_risky_starter_cover(row, roster_players, position):
         return "coverage for questionable starter"
     return ""
+
+
+def is_best_risky_starter_cover(
+    row: dict[str, Any],
+    roster_players: list[dict[str, Any]],
+    position: str,
+) -> bool:
+    if float(row.get("projected_points") or 0) <= 0:
+        return False
+    same_position_bench = [
+        player
+        for player in roster_players
+        if str(player.get("lineup_status") or "").lower() == "bench"
+        and primary_position(player) == position
+        and player.get("active_roster_spot", True)
+        and float(player.get("projected_points") or 0) > 0
+    ]
+    if not same_position_bench:
+        return False
+    best_cover = max(
+        same_position_bench,
+        key=lambda player: float(player.get("projected_points") or 0),
+    )
+    return str(best_cover.get("player_id") or "") == str(row.get("player_id") or "")
 
 
 def drop_ease_score(
@@ -1605,26 +1629,63 @@ def group_waiver_options_by_position(
     positions: list[str],
     per_position_limit: int,
 ) -> dict[str, list[dict[str, Any]]]:
-    grouped = {position: [] for position in positions}
-    for candidate in candidates:
-        position = str(candidate.get("position") or "").upper()
-        if position not in grouped:
-            continue
-        row = compare_available_player(candidate, roster_players)
-        if (
-            float(row.get("projected_gain_over_drop") or 0) > 0
-            and row.get("recommendation") in {"recommend", "watch"}
-        ):
-            grouped[position].append(row)
-
+    grouped = evaluate_waiver_options_by_position(
+        candidates=candidates,
+        roster_players=roster_players,
+        positions=positions,
+    )
     return {
         position: sorted(
-            rows,
+            [
+                row
+                for row in rows
+                if float(row.get("projected_gain_over_drop") or 0) > 0
+                and row.get("recommendation") in {"recommend", "watch"}
+            ],
             key=waiver_move_sort_key,
             reverse=True,
         )[:per_position_limit]
         for position, rows in grouped.items()
     }
+
+
+def evaluate_waiver_options_by_position(
+    *,
+    candidates: list[dict[str, Any]],
+    roster_players: list[dict[str, Any]],
+    positions: list[str],
+) -> dict[str, list[dict[str, Any]]]:
+    grouped = {position: [] for position in positions}
+    for candidate in candidates:
+        position = str(candidate.get("position") or "").upper()
+        if position not in grouped:
+            continue
+        grouped[position].append(compare_available_player(candidate, roster_players))
+    return {
+        position: sorted(rows, key=waiver_move_sort_key, reverse=True)
+        for position, rows in grouped.items()
+    }
+
+
+def waiver_diagnostics_by_position(
+    *,
+    evaluated: dict[str, list[dict[str, Any]]],
+    accepted: dict[str, list[dict[str, Any]]],
+    per_position_limit: int,
+) -> dict[str, list[dict[str, Any]]]:
+    diagnostics: dict[str, list[dict[str, Any]]] = {}
+    for position, rows in evaluated.items():
+        accepted_ids = {
+            str(row.get("add_player_id") or "")
+            for row in accepted.get(position, [])
+        }
+        rejected_or_blocked = [
+            row
+            for row in rows
+            if str(row.get("add_player_id") or "") not in accepted_ids
+        ]
+        diagnostics[position] = rejected_or_blocked[:per_position_limit]
+    return diagnostics
 
 
 def acquisition_action(market_type: Any, *, projected_gain: float) -> str:

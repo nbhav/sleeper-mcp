@@ -1,0 +1,7 @@
+interface:
+  display_name: "Sleeper TE Evaluator"
+  short_description: "Evaluate fantasy tight ends"
+  default_prompt: "Use $sleeper-te-evaluator to evaluate tight end data with league scoring, routes/targets proxy, touchdown dependency, injury, bye, and roster-context discipline."
+
+policy:
+  allow_implicit_invocation: true

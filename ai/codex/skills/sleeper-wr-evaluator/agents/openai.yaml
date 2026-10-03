@@ -1,0 +1,7 @@
+interface:
+  display_name: "Sleeper WR Evaluator"
+  short_description: "Evaluate fantasy wide receivers"
+  default_prompt: "Use $sleeper-wr-evaluator to evaluate wide receiver data with league scoring, targets, role, matchup, injury, bye, and roster-context discipline."
+
+policy:
+  allow_implicit_invocation: true

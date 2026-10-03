@@ -1,0 +1,7 @@
+interface:
+  display_name: "Sleeper QB Evaluator"
+  short_description: "Evaluate fantasy quarterbacks"
+  default_prompt: "Use $sleeper-qb-evaluator to evaluate quarterback data with league scoring, matchup, rushing floor, injury, bye, and roster-context discipline."
+
+policy:
+  allow_implicit_invocation: true

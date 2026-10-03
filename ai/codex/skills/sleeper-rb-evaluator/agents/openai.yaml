@@ -1,0 +1,7 @@
+interface:
+  display_name: "Sleeper RB Evaluator"
+  short_description: "Evaluate fantasy running backs"
+  default_prompt: "Use $sleeper-rb-evaluator to evaluate running back data with league scoring, volume, receiving role, injury, depth chart, bye, and roster-context discipline."
+
+policy:
+  allow_implicit_invocation: true

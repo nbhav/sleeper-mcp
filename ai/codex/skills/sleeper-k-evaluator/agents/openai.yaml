@@ -1,0 +1,7 @@
+interface:
+  display_name: "Sleeper K Evaluator"
+  short_description: "Evaluate fantasy kicker choices"
+  default_prompt: "Use $sleeper-k-evaluator to evaluate kicker data with scoring rules, team environment, weekly streamability, bye, and roster-context discipline."
+
+policy:
+  allow_implicit_invocation: true

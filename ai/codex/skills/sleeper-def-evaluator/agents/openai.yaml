@@ -1,0 +1,7 @@
+interface:
+  display_name: "Sleeper DEF Evaluator"
+  short_description: "Evaluate fantasy defenses"
+  default_prompt: "Use $sleeper-def-evaluator to evaluate defense data with scoring rules, matchup pressure, turnover/sack profile, weekly streamability, bye, and roster-context discipline."
+
+policy:
+  allow_implicit_invocation: true

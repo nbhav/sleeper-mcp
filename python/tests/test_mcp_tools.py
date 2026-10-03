@@ -803,8 +803,11 @@ def test_decision_smoke_report_returns_markdown_tables(tmp_path) -> None:
 
     assert isinstance(report, str)
     assert "## Current Lineup" in report
-    assert "| IR | reserve | IR RB | MIA | RB | Inactive | IR | 0.00 | 18.00 | false | true |" in report
+    assert "| IR | reserve | IR RB | MIA | RB | Inactive | IR | 0.00 | 18.00 | false |" in report
+    assert "Active Spot | Stash" not in report
     assert "## Waiver By Position" in report
+    assert "## Waiver Diagnostics" in report
+    assert "## Trade Diagnostics" in report
 
 
 def test_opponent_watch_returns_matchup_context(tmp_path) -> None:

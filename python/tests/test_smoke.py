@@ -25,8 +25,6 @@ def test_build_decision_smoke_report_summarizes_decision_tools() -> None:
         "current_total": 12,
         "projected_starter_total": 42,
         "projected_total": 42,
-        "projected_active_roster_total": 50,
-        "projected_roster_total": 50,
         "active_bench_count": 0,
         "reserve_count": 0,
         "bye_week_warnings": [],
@@ -40,7 +38,6 @@ def test_build_decision_smoke_report_summarizes_decision_tools() -> None:
                 "status": "Active",
                 "injury_status": "",
                 "active_roster_spot": True,
-                "stash_value": False,
                 "actual_points": 7,
                 "projected_points": 14,
             }
@@ -82,6 +79,7 @@ def test_build_decision_smoke_report_summarizes_decision_tools() -> None:
         },
     }
     assert report["trade_opportunities"]["teams"][0]["team_name"] == "Opponent"
+    assert report["trade_opportunities"]["teams"][0]["diagnostic_angles"][0]["recommendation"] == "reject"
 
 
 def test_render_decision_smoke_tables_returns_markdown_tables() -> None:
@@ -96,15 +94,20 @@ def test_render_decision_smoke_tables_returns_markdown_tables() -> None:
 
     assert "## Current Lineup" in markdown
     assert "| Projected Total (Starters) | 42 |" in markdown
-    assert "| Projected Roster Total | 50 |" in markdown
-    assert "| Slot | Status | Player | Team | Pos | NFL Status | Injury | Actual | Projected | Active Spot | Stash |" in markdown
-    assert "| RB | starter | Starter RB | DEN | RB | Active |  | 7.00 | 14.00 | true | false |" in markdown
+    assert "Projected Roster Total" not in markdown
+    assert "Projected Active Roster Total" not in markdown
+    assert "| Slot | Status | Player | Team | Pos | NFL Status | Injury | Actual | Projected | Active Spot |" in markdown
+    assert "| RB | starter | Starter RB | DEN | RB | Active |  | 7.00 | 14.00 | true |" in markdown
     assert "## Waiver By Position" in markdown
     assert "| Pos | Add | Team | Market | Action | Urgency | Recommendation | Move Score | Reasoning | Drop | Drop Status | Projected | Gain | Week Delta | 3W Delta | Season Delta | Warnings |" in markdown
     assert "| RB | Free RB | DEN | waiver | submit_waiver_claim | medium | recommend | 22.50 | Free RB over Bench RB scores 22.50 | Bench RB | bench | 12.00 | 4.00 | 4.00 | 6.00 | 7.00 | none |" in markdown
+    assert "## Waiver Diagnostics" in markdown
+    assert "| RB | Blocked RB | DEN | waiver | watch | low | reject | -3.00 | blocked by roster balance | Bench RB | bench | 7.00 | -1.00 | -1.00 | -2.00 | -3.00 | none |" in markdown
     assert "## Trade Opportunities" in markdown
     assert "| Team | Needs | Surplus | Package Type | Ask | Offer | My Gain | Opponent Gain | Value Balance | Trade Score | Recommendation | Reasoning Summary |" in markdown
     assert "| Opponent | WR depth | RB depth | 1:1 | Target WR | Bench RB | 6.00 | 4.00 | 2.00 | 78.25 | pursue | 1:1 package; recommendation pursue |" in markdown
+    assert "## Trade Diagnostics" in markdown
+    assert "| Opponent | 2:1 | Target WR | Bench RB, Bench TE | -2.00 | 3.00 | 9.00 | 18.00 | reject | harms my roster balance | 2:1 package; rejected: harms my roster balance |" in markdown
 
 
 class FakeSmokeRunner:
@@ -120,8 +123,6 @@ class FakeSmokeRunner:
             "current_total": 12,
             "projected_starter_total": 42,
             "projected_total": 42,
-            "projected_active_roster_total": 50,
-            "projected_roster_total": 50,
             "lineup_table": [
                 {
                     "slot": "RB",
@@ -131,13 +132,12 @@ class FakeSmokeRunner:
                     "position": "RB",
                     "status": "Active",
                     "injury_status": "",
-                        "actual_points": 7,
-                        "projected_points": 14,
-                        "active_roster_spot": True,
-                        "stash_value": False,
-                        "ignored": "large field",
-                    }
-                ],
+                    "actual_points": 7,
+                    "projected_points": 14,
+                    "active_roster_spot": True,
+                    "ignored": "large field",
+                }
+            ],
         }
 
     def waiver_wire_by_position(self, *, per_position_limit: int, **_):
@@ -181,6 +181,29 @@ class FakeSmokeRunner:
                     }
                 ]
             },
+            "diagnostics_by_position": {
+                "RB": [
+                    {
+                        "add_name": "Blocked RB",
+                        "add_position": "RB",
+                        "add_team": "DEN",
+                        "status": "Active",
+                        "add_projected_points": 7,
+                        "drop_name": "Bench RB",
+                        "drop_lineup_status": "bench",
+                        "projected_gain_over_drop": -1,
+                        "week_value_delta": -1,
+                        "three_week_value_delta": -2,
+                        "season_value_delta": -3,
+                        "move_score": -3,
+                        "recommendation": "reject",
+                        "reasoning_summary": "blocked by roster balance",
+                        "market_type": "waiver",
+                        "acquisition_action": "watch",
+                        "urgency": "low",
+                    }
+                ]
+            },
         }
 
     def trade_opportunities(self, *, targets_per_team: int, offers_per_team: int, **_):
@@ -204,6 +227,31 @@ class FakeSmokeRunner:
                             "recommendation": "pursue",
                             "reasoning_summary": "1:1 package; recommendation pursue",
                         }
+                    ],
+                    "package_matrix": [
+                        {
+                            "package_type": "1:1",
+                            "ask": [{"name": "Target WR"}],
+                            "offer": [{"name": "Bench RB"}],
+                            "my_gain": 6,
+                            "opponent_gain": 4,
+                            "value_balance": 2,
+                            "trade_score": 78.25,
+                            "recommendation": "pursue",
+                            "reasoning_summary": "1:1 package; recommendation pursue",
+                        },
+                        {
+                            "package_type": "2:1",
+                            "ask": [{"name": "Target WR"}],
+                            "offer": [{"name": "Bench RB"}, {"name": "Bench TE"}],
+                            "my_gain": -2,
+                            "opponent_gain": 3,
+                            "value_balance": 9,
+                            "trade_score": 18,
+                            "recommendation": "reject",
+                            "rejection_reasons": ["harms my roster balance"],
+                            "reasoning_summary": "2:1 package; rejected: harms my roster balance",
+                        },
                     ],
                 }
             ],
