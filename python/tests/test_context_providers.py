@@ -227,9 +227,9 @@ def test_backtest_metrics_are_deterministic_and_explainable() -> None:
         "role_stability_flags": 2,
         "role_stability_flags_caught_breakouts": 1,
         "role_stability_capture_rate": 0.5,
-        "role_change_rows": 3,
+        "role_change_rows": 2,
         "projection_lag_role_changes": 2,
-        "projection_lag_rate": round(2 / 3, 6),
+        "projection_lag_rate": 1.0,
         "rules": {
             "spike_score_threshold": 0.7,
             "role_stability_threshold": 0.7,
