@@ -25,6 +25,7 @@ def test_mcp_tools_list_exposes_curated_decision_tools() -> None:
         "sync_decision_data",
         "player_stat_trends",
         "position_stat_leaders",
+        "player_matchup_context",
         "weekly_briefing",
         "weekly_performance_backtest",
         "waiver_watch",
