@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import httpx
 import pytest
 
@@ -10,6 +13,107 @@ from sleeper_tooling.client import (
     load_or_fetch_players,
 )
 from sleeper_tooling.db import ApiResponseCache
+
+
+EXPECTED_PLAYER_CONTEXT_REASON_CODES = (
+    "role_change_recent",
+    "role_loss_recent",
+    "projection_lagging_role_change",
+    "season_average_stale",
+    "recent_spike_against_stable_usage",
+    "insufficient_post_change_sample",
+    "low_touch_big_points",
+    "low_target_big_points",
+    "low_route_big_points",
+    "td_only_low_usage",
+    "def_td_spike",
+    "turnover_spike_without_pressure",
+    "long_kick_spike",
+    "matchup_opponent_label_present",
+    "not_evaluable_missing_nfl_schedule",
+    "not_evaluable_missing_matchup_strength",
+    "not_evaluable_missing_matchup_weather",
+    "not_evaluable_missing_matchup_implied_total",
+    "not_evaluable_missing_matchup_pressure",
+    "current_metadata_only_depth_chart",
+    "current_metadata_only_injury",
+    "qb_volume_rise",
+    "qb_rushing_role_rise",
+    "pass_td_spike_low_volume",
+    "rushing_td_spike",
+    "garbage_time_unconfirmed",
+    "rb_touch_share_rise",
+    "rb_receiving_role_rise",
+    "injury_replacement",
+    "long_run_spike_unconfirmed",
+    "wr_target_role_rise",
+    "wr_depth_chart_breakout",
+    "long_td_spike",
+    "multi_td_low_volume",
+    "te_target_role_rise",
+    "te_red_zone_role_rise",
+    "te_td_only_week",
+    "not_evaluable_missing_routes",
+    "k_team_opportunity_rise",
+    "low_attempt_kicker_spike",
+    "def_pressure_rise",
+    "score_dependent_def_week",
+    "td_spike_low_usage",
+    "turnover_td_spike",
+    "projection_disagreement",
+    "depth_chart_disagreement",
+    "change_point_unconfirmed",
+)
+
+PLAYER_CONTEXT_TIERS = {
+    "computed",
+    "partial",
+    "not_evaluable_missing_source",
+    "current_metadata_only",
+}
+PLAYER_CONTEXT_WINDOWS = {
+    "last_1_week",
+    "last_2_weeks",
+    "last_2_weeks + season_to_date",
+    "last_2_weeks + same-week delta",
+    "last_3_weeks + season_to_date",
+    "post_change_window",
+    "current_week",
+    "current_week + post_change_window",
+    "same-week actual/projection delta",
+    "post_change_window + season_to_date",
+}
+
+
+def test_player_context_source_audit_matrix_matches_contract() -> None:
+    audit_path = Path(__file__).parents[1] / "docs" / "player-context-source-audit.md"
+    lines = audit_path.read_text(encoding="utf-8").splitlines()
+    heading = "## Planned Reason-Code Computability Matrix"
+    start = lines.index(heading) + 1
+    header_index = next(i for i in range(start, len(lines)) if lines[i].startswith("| Reason code |"))
+
+    rows: list[list[str]] = []
+    for line in lines[header_index + 2 :]:
+        if not line.startswith("|"):
+            break
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        assert len(cells) == 7, f"matrix row must have seven columns: {line}"
+        assert re.fullmatch(r"`[^`]+`", cells[0]), f"invalid reason-code cell: {cells[0]}"
+        rows.append(cells)
+
+    reason_codes = [cells[0][1:-1] for cells in rows]
+    assert len(reason_codes) == len(set(reason_codes)), "reason codes must be unique"
+    assert set(reason_codes) == set(EXPECTED_PLAYER_CONTEXT_REASON_CODES)
+    assert len(reason_codes) == len(EXPECTED_PLAYER_CONTEXT_REASON_CODES)
+
+    for code, position, tier, window, actual, projection, missing_input in rows:
+        assert code[1:-1].strip(), "reason code must not be empty"
+        assert position.strip(), f"{code}: position is required"
+        assert tier in PLAYER_CONTEXT_TIERS, f"{code}: invalid tier {tier!r}"
+        assert window in PLAYER_CONTEXT_WINDOWS, f"{code}: invalid required window {window!r}"
+        assert actual.strip(), f"{code}: actual-stats qualification is required"
+        assert projection.strip(), f"{code}: projection qualification is required"
+        assert missing_input.strip(), f"{code}: missing-input reason is required"
 
 
 def test_get_user_uses_documented_app_host() -> None:

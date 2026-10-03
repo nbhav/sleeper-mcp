@@ -5,6 +5,7 @@ import os
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -101,6 +102,29 @@ class NormalizedSleeperRepository(Protocol):
     ) -> int | Mapping[str, int] | None:
         ...
 
+    def import_legacy_team_schedule_context(self) -> int | None:
+        ...
+
+    def replace_team_week_schedule_source(
+        self,
+        *,
+        season: int,
+        rows: list[dict[str, Any]],
+        source: str,
+        weeks: Sequence[int] | None = None,
+    ) -> int | None:
+        ...
+
+    def upsert_current_player_metadata_snapshots(
+        self,
+        *,
+        season: int,
+        week: int,
+        players: dict[str, dict[str, Any]],
+        snapshot_at: float,
+    ) -> Mapping[str, int] | None:
+        ...
+
 
 class SyncStatusRepository(Protocol):
     def sync_status(self) -> dict[str, Any]:
@@ -157,6 +181,8 @@ EXPECTED_REPOSITORY_METHODS = [
     "upsert_matchups",
     "upsert_transactions",
     "upsert_player_week_rows",
+    "import_legacy_team_schedule_context",
+    "upsert_current_player_metadata_snapshots",
     "sync_status",
     "clear_normalized",
 ]
@@ -249,6 +275,12 @@ class SleeperSyncService:
                 self.repository.upsert_players(players),
                 fallback=len(players),
             )
+            _add_count(
+                row_counts,
+                "team_week_schedule",
+                self.repository.import_legacy_team_schedule_context(),
+                fallback=0,
+            )
             leagues_by_season = self._sync_leagues(target=target, row_counts=row_counts)
 
             for season in target.seasons:
@@ -257,18 +289,38 @@ class SleeperSyncService:
                 ]
                 season_league_id = str(league.get("league_id") or target.league_id)
                 scoring_settings = league.get("scoring_settings") or {}
+                if season == _int_or_default(state.get("season"), max(target.seasons)):
+                    metadata_counts = self.repository.upsert_current_player_metadata_snapshots(
+                        season=season,
+                        week=_int_or_default(state.get("week"), max(target.weeks)),
+                        players=players,
+                        snapshot_at=started_at,
+                    )
+                    _add_count(row_counts, "player_role_snapshots", metadata_counts, fallback=0)
                 self._sync_league_members(
                     league_id=season_league_id,
                     row_counts=row_counts,
                 )
+                schedule_rows: list[dict[str, Any]] = []
                 for week in target.weeks:
-                    self._sync_league_week(
+                    schedule_rows.extend(self._sync_league_week(
                         league_id=season_league_id,
                         season=season,
                         week=week,
                         scoring_settings=scoring_settings,
                         row_counts=row_counts,
-                    )
+                    ))
+                _add_count(
+                    row_counts,
+                    "team_week_schedule",
+                    self.repository.replace_team_week_schedule_source(
+                        season=season,
+                        rows=schedule_rows,
+                        source="sleeper_weekly_data",
+                        weeks=weeks,
+                    ),
+                    fallback=len(schedule_rows),
+                )
         except Exception as exc:
             finished_at = float(self.clock())
             error_text = str(exc)
@@ -442,6 +494,96 @@ class SleeperSyncService:
             ),
             fallback=len(projections),
         )
+        return _weekly_schedule_rows(
+            season=season,
+            week=week,
+            rows=[*stats, *projections],
+        )
+
+
+def _weekly_schedule_rows(
+    *,
+    season: int,
+    week: int,
+    rows: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    schedule: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for raw_row in rows:
+        row = dict(raw_row)
+        nested = row.get("stats") if isinstance(row.get("stats"), Mapping) else {}
+        team = _schedule_text(row.get("team") or row.get("team_abbr") or nested.get("team"))
+        opponent = _schedule_text(
+            row.get("opponent") or row.get("opp") or nested.get("opponent") or nested.get("opp")
+        )
+        if not team or not opponent:
+            continue
+        game_id = _schedule_text(row.get("game_id") or nested.get("game_id"))
+        game_timestamp = _schedule_timestamp(
+            row.get("game_timestamp")
+            or row.get("start_time")
+            or row.get("game_date")
+            or row.get("date")
+            or row.get("timestamp")
+            or nested.get("game_timestamp")
+            or nested.get("start_time")
+            or nested.get("game_date")
+            or nested.get("date")
+            or nested.get("timestamp")
+        )
+        if game_id is None and game_timestamp is None:
+            continue
+        key = (team, game_id or opponent, str(game_timestamp or ""))
+        schedule[key] = {
+            "week": int(week),
+            "team": team,
+            "opponent": opponent,
+            "home_away": _schedule_home_away(row, nested),
+            "game_timestamp": game_timestamp,
+            "game_id": game_id,
+            "season": int(season),
+        }
+    return list(schedule.values())
+
+
+def _schedule_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text.upper() if text else None
+
+
+def _schedule_timestamp(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        number = float(value)
+        return number / 1000 if number > 10_000_000_000 else number
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        number = float(text)
+        return number / 1000 if number > 10_000_000_000 else number
+    except ValueError:
+        pass
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
+
+
+def _schedule_home_away(row: Mapping[str, Any], nested: Mapping[str, Any]) -> str | None:
+    value = row.get("home_away") or row.get("homeAway") or nested.get("home_away") or nested.get("homeAway")
+    if value is None:
+        home = row.get("home", nested.get("home"))
+        if isinstance(home, bool):
+            return "home" if home else "away"
+        return None
+    normalized = str(value).strip().lower()
+    return {"h": "home", "a": "away"}.get(normalized, normalized or None)
 
 
 def resolve_sync_target(
@@ -596,6 +738,39 @@ class SQLiteNormalizedRepositoryAdapter:
             source=source,
             rows=rows,
             scoring_settings=scoring_settings,
+        )
+
+    def import_legacy_team_schedule_context(self) -> int | None:
+        return self.repository.import_legacy_team_schedule_context()
+
+    def replace_team_week_schedule_source(
+        self,
+        *,
+        season: int,
+        rows: list[dict[str, Any]],
+        source: str,
+        weeks: Sequence[int] | None = None,
+    ) -> int:
+        return self.repository.replace_team_week_schedule_source(
+            season=season,
+            rows=rows,
+            source=source,
+            weeks=weeks,
+        )
+
+    def upsert_current_player_metadata_snapshots(
+        self,
+        *,
+        season: int,
+        week: int,
+        players: dict[str, dict[str, Any]],
+        snapshot_at: float,
+    ) -> Mapping[str, int] | None:
+        return self.repository.upsert_current_player_metadata_snapshots(
+            season=season,
+            week=week,
+            players=players,
+            snapshot_at=snapshot_at,
         )
 
     def sync_status(self) -> dict[str, Any]:
@@ -756,10 +931,16 @@ NORMALIZED_TABLES = [
     "player_week_rows",
     "player_week_stat_values",
     "player_week_scoring_values",
+    "team_week_schedule",
+    "player_role_snapshots",
+    "player_week_availability",
     "sync_runs",
 ]
 
 NORMALIZED_TABLE_DELETE_ORDER = [
+    "player_week_availability",
+    "player_role_snapshots",
+    "team_week_schedule",
     "player_week_scoring_values",
     "player_week_stat_values",
     "player_week_rows",

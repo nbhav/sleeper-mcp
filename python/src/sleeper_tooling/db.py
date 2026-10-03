@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +13,7 @@ from sleeper_tooling.scoring import calculate_fantasy_points
 JsonObject = Mapping[str, Any]
 
 PLAYER_EXTERNAL_ID_SOURCE = "sleeper_players"
+LEGACY_SCHEDULE_SOURCES = ("local_db", "manual_fixture")
 
 PLAYER_EXTERNAL_ID_FIELDS = {
     "espn_id": "espn",
@@ -974,6 +975,463 @@ class SleeperNormalizedRepository:
         ).fetchall()
         return [_decode_row(row) for row in rows if row is not None]
 
+    def upsert_team_week_schedule(
+        self,
+        *,
+        season: int,
+        week: int,
+        rows: Iterable[JsonObject],
+        source: str,
+    ) -> int:
+        updated_at = time.time()
+        count = 0
+        for row in rows:
+            team = _required_text(row, "team").upper()
+            self._connection.execute(
+                """
+                INSERT INTO team_week_schedule (
+                    season,
+                    week,
+                    team,
+                    opponent,
+                    home_away,
+                    game_timestamp,
+                    is_bye,
+                    source,
+                    raw_json,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(season, week, team, source) DO UPDATE SET
+                    opponent = excluded.opponent,
+                    home_away = excluded.home_away,
+                    game_timestamp = excluded.game_timestamp,
+                    is_bye = excluded.is_bye,
+                    raw_json = excluded.raw_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    int(season),
+                    int(week),
+                    team,
+                    _text(row.get("opponent")).upper()
+                    if row.get("opponent") is not None
+                    else None,
+                    _normalize_home_away(row.get("home_away")),
+                    _number_or_none(row.get("game_timestamp")),
+                    _bool_int(row.get("is_bye", row.get("bye", False))),
+                    str(source),
+                    _json_dumps(row),
+                    updated_at,
+                ),
+            )
+            count += 1
+        self._connection.commit()
+        return count
+
+    def replace_team_week_schedule_source(
+        self,
+        *,
+        season: int,
+        rows: Iterable[JsonObject],
+        source: str,
+        weeks: Sequence[int] | None = None,
+    ) -> int:
+        """Replace a source snapshot for selected weeks or the full season."""
+        materialized_rows = list(rows)
+        delete_params: list[Any] = [int(season), str(source)]
+        delete_sql = "DELETE FROM team_week_schedule WHERE season = ? AND source = ?"
+        if weeks is not None:
+            normalized_weeks = sorted({int(week) for week in weeks})
+            if not normalized_weeks:
+                return 0
+            placeholders = ", ".join("?" for _ in normalized_weeks)
+            delete_sql += f" AND week IN ({placeholders})"
+            delete_params.extend(normalized_weeks)
+        self._connection.execute(delete_sql, delete_params)
+        self._connection.commit()
+        count = 0
+        if materialized_rows:
+            by_week: dict[int, list[JsonObject]] = {}
+            for row in materialized_rows:
+                by_week.setdefault(_int_or_none(row.get("week")) or 0, []).append(row)
+            for week, week_rows in by_week.items():
+                count += self.upsert_team_week_schedule(
+                    season=season,
+                    week=week,
+                    rows=week_rows,
+                    source=source,
+                )
+        return count
+
+    def get_team_week_schedule(
+        self,
+        *,
+        season: int,
+        week: int,
+        team: str,
+        source: str | None = None,
+        sources: Sequence[str] | None = None,
+    ) -> dict[str, Any] | None:
+        params: list[Any] = [int(season), int(week), str(team).upper()]
+        where = "season = ? AND week = ? AND team = ?"
+        if source is not None:
+            where += " AND source = ?"
+            params.append(str(source))
+        elif sources:
+            placeholders = ", ".join("?" for _ in sources)
+            where += f" AND source IN ({placeholders})"
+            params.extend(str(value) for value in sources)
+        row = self._connection.execute(
+            f"""
+            SELECT * FROM team_week_schedule
+            WHERE {where}
+            ORDER BY {_schedule_source_priority_sql()} DESC, updated_at DESC, source
+            LIMIT 1
+            """,
+            params,
+        ).fetchone()
+        return _decode_row(row)
+
+    def team_week_schedule_status(
+        self,
+        *,
+        season: int,
+        week: int,
+        teams: Iterable[str] | None = None,
+        source: str | None = None,
+        sources: Sequence[str] | None = None,
+    ) -> dict[str, Any]:
+        requested_teams = sorted({str(team).upper() for team in teams or [] if team})
+        params: list[Any] = [int(season), int(week)]
+        where = "season = ? AND week = ?"
+        if requested_teams:
+            placeholders = ", ".join("?" for _ in requested_teams)
+            where += f" AND team IN ({placeholders})"
+            params.extend(requested_teams)
+        if source is not None:
+            where += " AND source = ?"
+            params.append(str(source))
+        elif sources:
+            placeholders = ", ".join("?" for _ in sources)
+            where += f" AND source IN ({placeholders})"
+            params.extend(str(value) for value in sources)
+        rows = self._connection.execute(
+            f"""
+            SELECT DISTINCT team
+            FROM team_week_schedule
+            WHERE {where}
+            ORDER BY team
+            """,
+            params,
+        ).fetchall()
+        available_teams = [str(row["team"]) for row in rows]
+        missing_teams = [
+            team for team in requested_teams if team not in set(available_teams)
+        ]
+        evaluable = bool(available_teams) and not missing_teams
+        status: dict[str, Any] = {
+            "season": int(season),
+            "week": int(week),
+            "evaluable": evaluable,
+            "available_teams": available_teams,
+            "missing_teams": missing_teams,
+        }
+        if not evaluable:
+            status["reason"] = "not_evaluable_missing_nfl_schedule"
+        return status
+
+    def import_legacy_team_schedule_context(self) -> int:
+        """Refresh normalized rows from the retained local context table."""
+        grouped: dict[tuple[int, str], list[JsonObject]] = {}
+        known_legacy_seasons = self._connection.execute(
+            """
+            SELECT DISTINCT season, source
+            FROM team_week_schedule
+            WHERE source IN (?, ?)
+            """,
+            LEGACY_SCHEDULE_SOURCES,
+        ).fetchall()
+        rows = self._connection.execute(
+            "SELECT season, team, bye_week, schedule_json, source FROM team_schedule_context"
+        ).fetchall()
+        for row in rows:
+            source = str(row["source"] or "local_db")
+            key = (int(row["season"]), source)
+            grouped.setdefault(key, []).extend(
+                _legacy_schedule_rows(
+                    season=int(row["season"]),
+                    team=str(row["team"]),
+                    bye_week=row["bye_week"],
+                    schedule_json=row["schedule_json"],
+                )
+            )
+        for row in known_legacy_seasons:
+            grouped.setdefault((int(row["season"]), str(row["source"])), [])
+        count = 0
+        for (season, source), schedule_rows in grouped.items():
+            count += self.replace_team_week_schedule_source(
+                season=season,
+                rows=schedule_rows,
+                source=source,
+            )
+        return count
+
+    def upsert_player_role_snapshots(
+        self,
+        *,
+        season: int,
+        week: int,
+        rows: Iterable[JsonObject],
+        source: str,
+        current_metadata_only: bool = False,
+        snapshot_at: float | None = None,
+    ) -> int:
+        updated_at = time.time()
+        observed_at = updated_at if snapshot_at is None else float(snapshot_at)
+        count = 0
+        for row in rows:
+            team = _required_text(row, "team").upper()
+            player_id = _required_text(row, "player_id")
+            row_current_only = row.get("current_metadata_only", current_metadata_only)
+            self._connection.execute(
+                """
+                INSERT INTO player_role_snapshots (
+                    season,
+                    week,
+                    team,
+                    player_id,
+                    depth_chart_order,
+                    depth_chart_position,
+                    projected_role_label,
+                    status,
+                    injury_status,
+                    source,
+                    snapshot_at,
+                    current_metadata_only,
+                    raw_json,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(season, week, team, player_id, source) DO UPDATE SET
+                    depth_chart_order = excluded.depth_chart_order,
+                    depth_chart_position = excluded.depth_chart_position,
+                    projected_role_label = excluded.projected_role_label,
+                    status = excluded.status,
+                    injury_status = excluded.injury_status,
+                    snapshot_at = excluded.snapshot_at,
+                    current_metadata_only = excluded.current_metadata_only,
+                    raw_json = excluded.raw_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    int(season),
+                    int(week),
+                    team,
+                    player_id,
+                    _int_or_none(row.get("depth_chart_order")),
+                    _text(row.get("depth_chart_position")),
+                    _text(row.get("projected_role_label") or row.get("role_label")),
+                    _text(row.get("status")),
+                    _text(row.get("injury_status")),
+                    str(source),
+                    observed_at,
+                    _bool_int(row_current_only),
+                    _json_dumps(row),
+                    updated_at,
+                ),
+            )
+            count += 1
+        self._connection.commit()
+        return count
+
+    def replace_player_role_snapshot_source(
+        self,
+        *,
+        season: int,
+        week: int,
+        rows: Iterable[JsonObject],
+        source: str,
+        current_metadata_only: bool = False,
+        snapshot_at: float | None = None,
+    ) -> int:
+        self._connection.execute(
+            "DELETE FROM player_role_snapshots WHERE season = ? AND week = ? AND source = ?",
+            (int(season), int(week), str(source)),
+        )
+        return self.upsert_player_role_snapshots(
+            season=season,
+            week=week,
+            rows=rows,
+            source=source,
+            current_metadata_only=current_metadata_only,
+            snapshot_at=snapshot_at,
+        )
+
+    def list_player_role_snapshots(
+        self,
+        *,
+        season: int,
+        week: int,
+        team: str | None = None,
+        player_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        params: list[Any] = [int(season), int(week)]
+        where = "season = ? AND week = ?"
+        if team is not None:
+            where += " AND team = ?"
+            params.append(str(team).upper())
+        if player_id is not None:
+            where += " AND player_id = ?"
+            params.append(str(player_id))
+        rows = self._connection.execute(
+            f"""
+            SELECT * FROM player_role_snapshots
+            WHERE {where}
+            ORDER BY team, depth_chart_order IS NULL, depth_chart_order, player_id, source
+            """,
+            params,
+        ).fetchall()
+        return [_decode_row(row) for row in rows if row is not None]
+
+    def upsert_player_week_availability(
+        self,
+        *,
+        season: int,
+        week: int,
+        rows: Iterable[JsonObject],
+        source: str,
+        snapshot_at: float | None = None,
+    ) -> int:
+        updated_at = time.time()
+        observed_at = updated_at if snapshot_at is None else float(snapshot_at)
+        count = 0
+        for row in rows:
+            team = _required_text(row, "team").upper()
+            player_id = _required_text(row, "player_id")
+            self._connection.execute(
+                """
+                INSERT INTO player_week_availability (
+                    season,
+                    week,
+                    team,
+                    player_id,
+                    status,
+                    injury_status,
+                    reserve_tags_json,
+                    source,
+                    snapshot_at,
+                    raw_json,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(season, week, team, player_id, source) DO UPDATE SET
+                    status = excluded.status,
+                    injury_status = excluded.injury_status,
+                    reserve_tags_json = excluded.reserve_tags_json,
+                    snapshot_at = excluded.snapshot_at,
+                    raw_json = excluded.raw_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    int(season),
+                    int(week),
+                    team,
+                    player_id,
+                    _text(row.get("status")),
+                    _text(row.get("injury_status")),
+                    _json_dumps(_reserve_tags(row)),
+                    str(source),
+                    observed_at,
+                    _json_dumps(row),
+                    updated_at,
+                ),
+            )
+            count += 1
+        self._connection.commit()
+        return count
+
+    def replace_player_week_availability_source(
+        self,
+        *,
+        season: int,
+        week: int,
+        rows: Iterable[JsonObject],
+        source: str,
+        snapshot_at: float | None = None,
+    ) -> int:
+        self._connection.execute(
+            "DELETE FROM player_week_availability WHERE season = ? AND week = ? AND source = ?",
+            (int(season), int(week), str(source)),
+        )
+        return self.upsert_player_week_availability(
+            season=season,
+            week=week,
+            rows=rows,
+            source=source,
+            snapshot_at=snapshot_at,
+        )
+
+    def list_player_week_availability(
+        self,
+        *,
+        season: int,
+        week: int,
+        team: str | None = None,
+        player_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        params: list[Any] = [int(season), int(week)]
+        where = "season = ? AND week = ?"
+        if team is not None:
+            where += " AND team = ?"
+            params.append(str(team).upper())
+        if player_id is not None:
+            where += " AND player_id = ?"
+            params.append(str(player_id))
+        rows = self._connection.execute(
+            f"""
+            SELECT * FROM player_week_availability
+            WHERE {where}
+            ORDER BY team, player_id, source
+            """,
+            params,
+        ).fetchall()
+        return [_decode_row(row) for row in rows if row is not None]
+
+    def upsert_current_player_metadata_snapshots(
+        self,
+        *,
+        season: int,
+        week: int,
+        players: Mapping[str, JsonObject] | Iterable[JsonObject],
+        source: str = "sleeper_players_current_metadata",
+        snapshot_at: float | None = None,
+    ) -> dict[str, int]:
+        rows = [
+            _current_player_snapshot_row(player_id, player)
+            for player_id, player in _iter_player_map(players)
+            if player.get("team")
+        ]
+        role_count = self.replace_player_role_snapshot_source(
+            season=season,
+            week=week,
+            rows=rows,
+            source=source,
+            current_metadata_only=True,
+            snapshot_at=snapshot_at,
+        )
+        availability_count = self.replace_player_week_availability_source(
+            season=season,
+            week=week,
+            rows=rows,
+            source=source,
+            snapshot_at=snapshot_at,
+        )
+        return {
+            "player_role_snapshots": role_count,
+            "player_week_availability": availability_count,
+        }
+
     def create_sync_run(
         self,
         *,
@@ -1339,6 +1797,63 @@ def _migrate_normalized_schema(connection: sqlite3.Connection) -> None:
     )
     connection.execute(
         """
+        CREATE TABLE IF NOT EXISTS team_week_schedule (
+            season INTEGER NOT NULL,
+            week INTEGER NOT NULL,
+            team TEXT NOT NULL,
+            opponent TEXT,
+            home_away TEXT,
+            game_timestamp REAL,
+            is_bye INTEGER NOT NULL DEFAULT 0,
+            source TEXT NOT NULL,
+            raw_json TEXT NOT NULL DEFAULT '{}',
+            updated_at REAL NOT NULL,
+            PRIMARY KEY (season, week, team, source)
+        )
+        """
+    )
+    _ensure_columns(connection, "team_week_schedule", {"is_bye": "INTEGER NOT NULL DEFAULT 0"})
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS player_role_snapshots (
+            season INTEGER NOT NULL,
+            week INTEGER NOT NULL,
+            team TEXT NOT NULL,
+            player_id TEXT NOT NULL,
+            depth_chart_order INTEGER,
+            depth_chart_position TEXT,
+            projected_role_label TEXT,
+            status TEXT,
+            injury_status TEXT,
+            source TEXT NOT NULL,
+            snapshot_at REAL NOT NULL,
+            current_metadata_only INTEGER NOT NULL DEFAULT 0,
+            raw_json TEXT NOT NULL DEFAULT '{}',
+            updated_at REAL NOT NULL,
+            PRIMARY KEY (season, week, team, player_id, source)
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS player_week_availability (
+            season INTEGER NOT NULL,
+            week INTEGER NOT NULL,
+            team TEXT NOT NULL,
+            player_id TEXT NOT NULL,
+            status TEXT,
+            injury_status TEXT,
+            reserve_tags_json TEXT NOT NULL DEFAULT '[]',
+            source TEXT NOT NULL,
+            snapshot_at REAL NOT NULL,
+            raw_json TEXT NOT NULL DEFAULT '{}',
+            updated_at REAL NOT NULL,
+            PRIMARY KEY (season, week, team, player_id, source)
+        )
+        """
+    )
+    connection.execute(
+        """
         CREATE TABLE IF NOT EXISTS sync_runs (
             sync_run_id INTEGER PRIMARY KEY AUTOINCREMENT,
             target TEXT NOT NULL,
@@ -1413,12 +1928,128 @@ def _create_normalized_indexes(connection: sqlite3.Connection) -> None:
         ON player_week_scoring_values(player_id, stat_key, source, season, week)
         """,
         """
+        CREATE INDEX IF NOT EXISTS idx_team_week_schedule_lookup
+        ON team_week_schedule(season, week, team)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_player_role_snapshots_lookup
+        ON player_role_snapshots(player_id, season, week)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_player_role_snapshots_current_metadata
+        ON player_role_snapshots(current_metadata_only, season, week)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_player_week_availability_lookup
+        ON player_week_availability(player_id, season, week)
+        """,
+        """
         CREATE INDEX IF NOT EXISTS idx_sync_runs_freshness
         ON sync_runs(target, league_id, source, status, started_at)
         """,
     ]
     for statement in statements:
         connection.execute(statement)
+    _migrate_legacy_schedule_context(connection)
+
+
+def _migrate_legacy_schedule_context(connection: sqlite3.Connection) -> None:
+    """Copy legacy context rows without overwriting normalized data."""
+    rows = connection.execute(
+        "SELECT season, team, bye_week, schedule_json, source FROM team_schedule_context"
+    ).fetchall()
+    for row in rows:
+        source = str(row["source"] or "local_db")
+        for schedule_row in _legacy_schedule_rows(
+            season=int(row["season"]),
+            team=str(row["team"]),
+            bye_week=row["bye_week"],
+            schedule_json=row["schedule_json"],
+        ):
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO team_week_schedule (
+                    season, week, team, opponent, home_away, game_timestamp,
+                    is_bye, source, raw_json, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(schedule_row["season"]),
+                    int(schedule_row["week"]),
+                    str(schedule_row["team"]).upper(),
+                    _text(schedule_row.get("opponent")).upper()
+                    if schedule_row.get("opponent") is not None
+                    else None,
+                    _normalize_home_away(schedule_row.get("home_away")),
+                    _number_or_none(schedule_row.get("game_timestamp")),
+                    _bool_int(schedule_row.get("is_bye", False)),
+                    source,
+                    _json_dumps(schedule_row),
+                    float(row["updated_at"]) if "updated_at" in row.keys() else time.time(),
+                ),
+            )
+
+
+def _legacy_schedule_rows(
+    *,
+    season: int,
+    team: str,
+    bye_week: Any,
+    schedule_json: Any,
+) -> list[dict[str, Any]]:
+    try:
+        payload = json.loads(schedule_json) if isinstance(schedule_json, str) else schedule_json
+    except json.JSONDecodeError:
+        payload = {}
+    result: list[dict[str, Any]] = []
+    if isinstance(payload, Mapping):
+        entries = payload.items()
+    elif isinstance(payload, list):
+        entries = ((item.get("week"), item) for item in payload if isinstance(item, Mapping))
+    else:
+        entries = ()
+    for week, value in entries:
+        if not isinstance(value, Mapping):
+            value = {"opponent": value}
+        parsed_week = _int_or_none(value.get("week", week))
+        if parsed_week is None:
+            continue
+        result.append(
+            {
+                "season": int(season),
+                "week": parsed_week,
+                "team": team,
+                "opponent": value.get("opponent") or value.get("opp"),
+                "home_away": value.get("home_away") or value.get("homeAway"),
+                "game_timestamp": value.get("game_timestamp") or value.get("timestamp"),
+                "is_bye": bool(value.get("is_bye", value.get("bye", False))),
+            }
+        )
+    parsed_bye = _int_or_none(bye_week)
+    if parsed_bye is not None and not any(row["week"] == parsed_bye for row in result):
+        result.append(
+            {
+                "season": int(season),
+                "week": parsed_bye,
+                "team": team,
+                "opponent": None,
+                "home_away": None,
+                "game_timestamp": None,
+                "is_bye": True,
+            }
+        )
+    return result
+
+
+def _schedule_source_priority_sql() -> str:
+    return (
+        "CASE LOWER(source) "
+        "WHEN 'sleeper_nfl_schedule' THEN 300 "
+        "WHEN 'nfl_schedule' THEN 300 "
+        "WHEN 'manual_fixture' THEN 200 "
+        "WHEN 'local_db' THEN 200 "
+        "ELSE 100 END"
+    )
 
 
 def _iter_player_map(
@@ -1466,6 +2097,49 @@ def _external_id_text(value: Any) -> str | None:
     return external_id or None
 
 
+def _current_player_snapshot_row(player_id: str, player: JsonObject) -> dict[str, Any]:
+    return {
+        "player_id": player_id,
+        "team": player.get("team"),
+        "depth_chart_order": player.get("depth_chart_order"),
+        "depth_chart_position": player.get("depth_chart_position"),
+        "projected_role_label": player.get("depth_chart_position"),
+        "status": player.get("status"),
+        "injury_status": player.get("injury_status"),
+        "reserve_tags": _reserve_tags(player),
+        "current_metadata_only": True,
+        "player": player,
+    }
+
+
+def _reserve_tags(row: JsonObject) -> list[str]:
+    tags: list[str] = []
+    raw_tags = row.get("reserve_tags")
+    if isinstance(raw_tags, str):
+        tags.extend([raw_tags])
+    elif isinstance(raw_tags, Iterable) and not isinstance(raw_tags, Mapping):
+        tags.extend(str(tag) for tag in raw_tags if tag)
+    for key in ("reserve", "ir", "pup"):
+        if row.get(key):
+            tags.append(key.upper())
+    status = str(row.get("status") or row.get("injury_status") or "").upper()
+    for marker in ("IR", "PUP", "NFI", "SUSP"):
+        if marker in status:
+            tags.append(marker)
+    return sorted(set(tags))
+
+
+def _normalize_home_away(value: Any) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    if normalized in {"home", "h"}:
+        return "home"
+    if normalized in {"away", "a"}:
+        return "away"
+    return normalized or None
+
+
 def _normalize_provider(provider: str) -> str:
     return str(provider).strip().lower()
 
@@ -1501,6 +2175,12 @@ def _int_or_none(value: Any) -> int | None:
     if number is None:
         return None
     return int(number)
+
+
+def _bool_int(value: Any) -> int:
+    if isinstance(value, str):
+        return int(value.strip().lower() in {"1", "true", "yes", "y"})
+    return int(bool(value))
 
 
 def _number_or_none(value: Any) -> float | None:

@@ -2,11 +2,77 @@ from __future__ import annotations
 
 import pytest
 
+from sleeper_tooling.db import SleeperNormalizedRepository
 from sleeper_tooling.sync import (
+    SQLiteNormalizedRepositoryAdapter,
     SleeperSyncService,
     SyncError,
     resolve_sync_target,
 )
+
+
+def test_sync_integrates_schedule_and_role_snapshots_and_replaces_stale_rows(tmp_path) -> None:
+    client = FakeContextSyncSleeperClient()
+    repository = SQLiteNormalizedRepositoryAdapter(
+        SleeperNormalizedRepository(tmp_path / "sleeper.db")
+    )
+    repository.repository._connection.execute(
+        """
+        INSERT INTO team_schedule_context
+            (season, team, bye_week, schedule_json, source, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (2026, "DEN", None, '{"1": {"opponent": "KC"}}', "local_db", 1),
+    )
+    repository.repository._connection.commit()
+    service = SleeperSyncService(client=client, repository=repository, clock=FakeClock())
+
+    service.sync(league_id="league-2026", seasons=[2026], weeks=[1])
+    assert repository.repository.get_team_week_schedule(
+        season=2026, week=1, team="DEN"
+    )["opponent"] == "KC"
+    assert len(repository.repository.list_player_role_snapshots(season=2026, week=2)) == 2
+
+    client.players.pop("player-2")
+    service.sync(league_id="league-2026", seasons=[2026], weeks=[1])
+    assert [row["player_id"] for row in repository.repository.list_player_role_snapshots(
+        season=2026, week=2
+    )] == ["player-1"]
+    assert repository.repository.get_team_week_schedule(
+        season=2026, week=1, team="DEN"
+    )["opponent"] == "KC"
+    derived = repository.repository.get_team_week_schedule(
+        season=2026,
+        week=1,
+        team="DEN",
+        source="sleeper_weekly_data",
+    )
+    assert derived["opponent"] == "LAC"
+    assert derived["game_timestamp"] == 1799020800
+    service.close()
+
+
+def test_week_scoped_schedule_refresh_preserves_other_weeks(tmp_path) -> None:
+    client = FakeContextSyncSleeperClient()
+    repository = SQLiteNormalizedRepositoryAdapter(
+        SleeperNormalizedRepository(tmp_path / "sleeper.db")
+    )
+    service = SleeperSyncService(client=client, repository=repository, clock=FakeClock())
+
+    service.sync(league_id="league-2026", seasons=[2026], weeks=[1, 2])
+    assert repository.repository.get_team_week_schedule(
+        season=2026, week=2, team="DEN", source="sleeper_weekly_data"
+    )["opponent"] == "BUF"
+
+    service.sync(league_id="league-2026", seasons=[2026], weeks=[1])
+
+    assert repository.repository.get_team_week_schedule(
+        season=2026, week=1, team="DEN", source="sleeper_weekly_data"
+    )["opponent"] == "LAC"
+    assert repository.repository.get_team_week_schedule(
+        season=2026, week=2, team="DEN", source="sleeper_weekly_data"
+    )["opponent"] == "BUF"
+    service.close()
 
 
 def test_resolve_sync_target_defaults_to_current_and_previous_seasons(monkeypatch) -> None:
@@ -45,6 +111,9 @@ def test_sync_is_idempotent_against_repository_upsert_keys() -> None:
         "rosters": 2,
         "stats": 4,
         "transactions": 4,
+        "team_week_schedule": 0,
+        "player_role_snapshots": 0,
+        "player_week_availability": 0,
     }
     assert second_result.row_counts == {
         "league_users": 0,
@@ -56,6 +125,9 @@ def test_sync_is_idempotent_against_repository_upsert_keys() -> None:
         "rosters": 0,
         "stats": 0,
         "transactions": 0,
+        "team_week_schedule": 0,
+        "player_role_snapshots": 0,
+        "player_week_availability": 0,
     }
     assert len(repository.players) == 2
     assert len(repository.player_week_rows) == 8
@@ -87,6 +159,9 @@ def test_sync_records_partial_failure_without_clearing_previous_rows() -> None:
         "rosters": 1,
         "stats": 1,
         "transactions": 1,
+        "team_week_schedule": 0,
+        "player_role_snapshots": 0,
+        "player_week_availability": 0,
     }
     assert repository.sync_runs[-1]["status"] == "failed"
     assert "transactions unavailable" in str(repository.sync_runs[-1]["error_text"])
@@ -154,6 +229,50 @@ class FakeSyncSleeperClient:
         week: int | None = None,
     ) -> list[dict[str, object]]:
         return [{"player_id": "player-2", "stats": {"pts_ppr": season + int(week or 0)}}]
+
+
+class FakeContextSyncSleeperClient(FakeSyncSleeperClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.players = {
+            "player-1": {
+                "full_name": "One Runner",
+                "position": "RB",
+                "team": "DEN",
+                "depth_chart_order": 1,
+                "depth_chart_position": "RB",
+            },
+            "player-2": {
+                "full_name": "Two Receiver",
+                "position": "WR",
+                "team": "DEN",
+                "depth_chart_order": 2,
+                "depth_chart_position": "WR",
+            },
+        }
+
+    def get_players(self) -> dict[str, dict[str, object]]:
+        return self.players
+
+    def get_stats(self, season: int, *, week: int | None = None) -> list[dict[str, object]]:
+        if week == 2:
+            opponent = "BUF"
+            game_id = "game-2"
+            game_date = "2027-01-11T00:00:00Z"
+        else:
+            opponent = "LAC"
+            game_id = "game-1"
+            game_date = "2027-01-04T00:00:00Z"
+        return [
+            {
+                "player_id": "player-1",
+                "team": "DEN",
+                "opponent": opponent,
+                "game_id": game_id,
+                "date": game_date,
+                "stats": {"pts_ppr": 10},
+            }
+        ]
 
 
 class FakeNormalizedRepository:
@@ -287,6 +406,33 @@ class FakeNormalizedRepository:
                 for row in rows
             ),
         )
+
+    def import_legacy_team_schedule_context(self) -> int:
+        return 0
+
+    def replace_team_week_schedule_source(
+        self,
+        *,
+        season: int,
+        rows: list[dict[str, object]],
+        source: str,
+        weeks: list[int] | None = None,
+    ) -> int:
+        return 0
+
+    def upsert_current_player_metadata_snapshots(
+        self,
+        *,
+        season: int,
+        week: int,
+        players: dict[str, dict[str, object]],
+        snapshot_at: float,
+    ) -> dict[str, int]:
+        rows = sum(1 for player in players.values() if player.get("team"))
+        return {
+            "player_role_snapshots": rows,
+            "player_week_availability": rows,
+        }
 
 
 def _add_one(values: set[object], value: object) -> int:
