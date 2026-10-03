@@ -481,6 +481,22 @@ def test_legacy_team_schedule_context_migrates_without_overwriting_normalized_ro
     repo.upsert_team_week_schedule(
         season=2026,
         week=1,
+        source="sleeper_nfl_schedule",
+        rows=[{"team": "DEN", "opponent": "LAC"}],
+    )
+    repo._connection.execute("DELETE FROM team_schedule_context")
+    repo._connection.commit()
+    assert repo.import_legacy_team_schedule_context() == 0
+    assert repo.get_team_week_schedule(
+        season=2026, week=1, team="DEN", source="local_db"
+    ) is None
+    assert repo.get_team_week_schedule(
+        season=2026, week=1, team="DEN", source="sleeper_nfl_schedule"
+    )["opponent"] == "LAC"
+
+    repo.upsert_team_week_schedule(
+        season=2026,
+        week=1,
         source="local_db",
         rows=[{"team": "DEN", "opponent": "LAC"}],
     )

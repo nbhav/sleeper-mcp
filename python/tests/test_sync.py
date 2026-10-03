@@ -41,6 +41,14 @@ def test_sync_integrates_schedule_and_role_snapshots_and_replaces_stale_rows(tmp
     assert repository.repository.get_team_week_schedule(
         season=2026, week=1, team="DEN"
     )["opponent"] == "KC"
+    derived = repository.repository.get_team_week_schedule(
+        season=2026,
+        week=1,
+        team="DEN",
+        source="sleeper_weekly_data",
+    )
+    assert derived["opponent"] == "LAC"
+    assert derived["game_timestamp"] == 1799020800
     service.close()
 
 
@@ -223,6 +231,18 @@ class FakeContextSyncSleeperClient(FakeSyncSleeperClient):
     def get_players(self) -> dict[str, dict[str, object]]:
         return self.players
 
+    def get_stats(self, season: int, *, week: int | None = None) -> list[dict[str, object]]:
+        return [
+            {
+                "player_id": "player-1",
+                "team": "DEN",
+                "opponent": "LAC",
+                "game_id": "game-1",
+                "date": "2027-01-04T00:00:00Z",
+                "stats": {"pts_ppr": 10},
+            }
+        ]
+
 
 class FakeNormalizedRepository:
     def __init__(self) -> None:
@@ -357,6 +377,15 @@ class FakeNormalizedRepository:
         )
 
     def import_legacy_team_schedule_context(self) -> int:
+        return 0
+
+    def replace_team_week_schedule_source(
+        self,
+        *,
+        season: int,
+        rows: list[dict[str, object]],
+        source: str,
+    ) -> int:
         return 0
 
     def upsert_current_player_metadata_snapshots(

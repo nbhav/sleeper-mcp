@@ -13,6 +13,7 @@ from sleeper_tooling.scoring import calculate_fantasy_points
 JsonObject = Mapping[str, Any]
 
 PLAYER_EXTERNAL_ID_SOURCE = "sleeper_players"
+LEGACY_SCHEDULE_SOURCES = ("local_db", "manual_fixture")
 
 PLAYER_EXTERNAL_ID_FIELDS = {
     "espn_id": "espn",
@@ -1136,6 +1137,14 @@ class SleeperNormalizedRepository:
     def import_legacy_team_schedule_context(self) -> int:
         """Refresh normalized rows from the retained local context table."""
         grouped: dict[tuple[int, str], list[JsonObject]] = {}
+        known_legacy_seasons = self._connection.execute(
+            """
+            SELECT DISTINCT season, source
+            FROM team_week_schedule
+            WHERE source IN (?, ?)
+            """,
+            LEGACY_SCHEDULE_SOURCES,
+        ).fetchall()
         rows = self._connection.execute(
             "SELECT season, team, bye_week, schedule_json, source FROM team_schedule_context"
         ).fetchall()
@@ -1150,6 +1159,8 @@ class SleeperNormalizedRepository:
                     schedule_json=row["schedule_json"],
                 )
             )
+        for row in known_legacy_seasons:
+            grouped.setdefault((int(row["season"]), str(row["source"])), [])
         count = 0
         for (season, source), schedule_rows in grouped.items():
             count += self.replace_team_week_schedule_source(
