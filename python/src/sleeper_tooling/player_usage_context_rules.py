@@ -115,6 +115,13 @@ REASON_CODES: dict[str, dict[str, Any]] = {
     "not_evaluable_missing_targets": _reason("not_evaluable_missing_targets", "opportunity", "neutral", "not_evaluable_missing_source", (), "medium", "targets are missing; this signal is not evaluable", ("targets",)),
     "not_evaluable_missing_rush_attempts": _reason("not_evaluable_missing_rush_attempts", "opportunity", "neutral", "not_evaluable_missing_source", (), "medium", "rush attempts are missing; this signal is not evaluable", ("rush_attempts",)),
     "not_evaluable_missing_pressure_proxy_rise": _reason("not_evaluable_missing_pressure_proxy_rise", "one_off_risk", "neutral", "not_evaluable_missing_source", (), "medium", "turnover spike risk is not evaluable without a pressure proxy", ("pressure_proxy_rise",)),
+    "not_evaluable_missing_total_kick_attempts": _reason("not_evaluable_missing_total_kick_attempts", "opportunity", "neutral", "not_evaluable_missing_source", (), "medium", "total kick attempts are missing; this signal is not evaluable", ("total_kick_attempts",)),
+    "not_evaluable_missing_sacks": _reason("not_evaluable_missing_sacks", "opportunity", "neutral", "not_evaluable_missing_source", (), "medium", "sacks are missing; this signal is not evaluable", ("sacks",)),
+    "not_evaluable_missing_routes": _reason("not_evaluable_missing_routes", "context_confidence", "neutral", "not_evaluable_missing_source", (), "medium", "route participation is not available in normalized Sleeper data", ("routes",)),
+    "not_evaluable_missing_target_share": _reason("not_evaluable_missing_target_share", "context_confidence", "neutral", "not_evaluable_missing_source", (), "medium", "target share is not available in normalized Sleeper data", ("target_share",)),
+    "not_evaluable_missing_red_zone_use": _reason("not_evaluable_missing_red_zone_use", "context_confidence", "neutral", "not_evaluable_missing_source", (), "medium", "red-zone usage is not available in normalized Sleeper data", ("red_zone_use",)),
+    "not_evaluable_missing_air_yards": _reason("not_evaluable_missing_air_yards", "context_confidence", "neutral", "not_evaluable_missing_source", (), "medium", "air yards are not available in normalized Sleeper data", ("air_yards",)),
+    "not_evaluable_missing_touch_share": _reason("not_evaluable_missing_touch_share", "context_confidence", "neutral", "not_evaluable_missing_source", (), "medium", "touch share is not available in normalized Sleeper data", ("touch_share",)),
     "current_metadata_only_depth_chart": _reason("current_metadata_only_depth_chart", "depth_chart_confidence", "neutral", "current_metadata_only", ("current depth metadata",), "medium", "depth chart metadata is current-only and not historical", ("historical depth chart",)),
     "current_metadata_only_injury": _reason("current_metadata_only_injury", "role_stability", "neutral", "current_metadata_only", ("current injury metadata",), "medium", "injury metadata is current-only and not historical", ("historical availability",)),
 }
@@ -237,7 +244,7 @@ def spike_reason_codes(position: str, row: Mapping[str, Any]) -> list[str]:
             codes.append("not_evaluable_missing_targets")
         elif int(row["targets"]) <= thresholds["low_target_floor"]["targets_max"]:
             codes.append("low_target_big_points")
-    td_count = int(row.get("total_tds", 0) or row.get("rec_tds", 0) or row.get("passing_tds", 0))
+    td_count = int(row.get("total_tds", 0) or row.get("rec_tds", 0) or row.get("pass_tds", 0) or row.get("passing_tds", 0))
     if position in {"RB", "WR", "TE", "QB"} and td_count >= (thresholds.get("total_tds") or thresholds.get("rec_tds") or thresholds.get("passing_tds"))["min"]:
         opportunity_field = {"RB": "touches", "WR": "targets", "TE": "targets", "QB": "rush_attempts"}[position]
         if row.get(opportunity_field) is None:
@@ -295,7 +302,10 @@ def evaluate_player_usage_context(position: str, inputs: Mapping[str, Any]) -> d
     rows = season + recent
     reason_codes: list[str] = []
     modifiers: dict[str, float] = {}
-    opportunity_metric = _OPPORTUNITY_METRIC_BY_POSITION.get(position)
+    opportunity_metric = _OPPORTUNITY_METRIC_BY_POSITION.get(position) or {
+        "K": "total_kick_attempts",
+        "DEF": "sacks",
+    }.get(position)
     if rows and opportunity_metric in POSITION_USAGE_THRESHOLDS.get(position, {}):
         signal = opportunity_signal(position, rows, metric=opportunity_metric)
         if signal["status"] == "increased":

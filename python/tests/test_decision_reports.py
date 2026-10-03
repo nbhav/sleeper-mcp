@@ -623,6 +623,19 @@ def test_player_context_position_caps_and_spike_boundaries() -> None:
     assert spike_reason_codes("DEF", {"def_or_special_teams_tds": 1, "takeaways": 3, "pressure_proxy_rise": False}) == ["def_td_spike", "turnover_spike_without_pressure"]
 
 
+def test_player_context_dispatches_k_and_def_opportunity_metrics() -> None:
+    kicker = [{"week": week, "active": True, "total_kick_attempts": attempts} for week, attempts in ((1, 2), (2, 2), (3, 2), (4, 4), (5, 4))]
+    defense = [{"week": week, "active": True, "sacks": sacks} for week, sacks in ((1, 2), (2, 2), (3, 2), (4, 4), (5, 4))]
+
+    assert evaluate_player_usage_context("K", {"season_weeks": kicker[:-2], "recent_weeks": kicker[-2:]})["reason_codes"] == ["role_change_recent"]
+    assert evaluate_player_usage_context("DEF", {"season_weeks": defense[:-2], "recent_weeks": defense[-2:]})["reason_codes"] == ["role_change_recent"]
+
+
+def test_player_context_uses_canonical_qb_passing_td_names() -> None:
+    assert spike_reason_codes("QB", {"points": 24, "passing_tds": 3, "rush_attempts": 2}) == ["td_only_low_usage"]
+    assert spike_reason_codes("QB", {"points": 24, "pass_tds": 3, "rush_attempts": 2}) == ["td_only_low_usage"]
+
+
 def test_player_context_thresholds_and_contract_are_exported_without_aliasing() -> None:
     assert set(POSITION_USAGE_THRESHOLDS) == set(POSITION_FAMILIES)
     assert POSITION_USAGE_THRESHOLDS["QB"]["dropbacks"] == {"increase_pct": 0.15, "window": "last_2_weeks"}
