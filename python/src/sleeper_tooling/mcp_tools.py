@@ -26,6 +26,7 @@ from sleeper_tooling.league_context import (
     resolve_league_context as build_league_context,
 )
 from sleeper_tooling.player_values import build_player_values
+from sleeper_tooling.player_usage_context import PlayerUsageContextService
 from sleeper_tooling.roster_analysis import (
     build_league_roster_analysis,
     build_roster_analysis,
@@ -203,6 +204,22 @@ class FantasyToolRunner:
             "shape": list(GRAPH_ROW_FIELDS),
             "rows": rows,
         }
+
+    def player_usage_context(
+        self,
+        *,
+        player_id: str,
+        season: int,
+        week: int,
+        position: str | None = None,
+    ) -> dict[str, Any]:
+        """Return an actual-first usage and role profile for one player."""
+        return PlayerUsageContextService(self._require_decision_repository()).build(
+            player_id=player_id,
+            season=season,
+            week=week,
+            position=position,
+        )
 
     def position_stat_leaders(
         self,
