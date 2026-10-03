@@ -157,17 +157,23 @@ def projection_actual_deltas(
         season=season,
         start_week=week,
         end_week=week,
-        stat_keys=stat_keys,
         player_ids=player_ids,
         positions=positions,
     )
     projected_by_key = {_stat_identity(row): row for row in projection_rows}
+    projected_by_player_week = {
+        _player_week_identity(row)
+        for row in projection_rows
+    }
     rows: list[dict[str, Any]] = []
     for actual in actual_rows:
         projected = projected_by_key.get(_stat_identity(actual))
         projected_value = float(projected["stat_value"]) if projected else 0.0
         actual_value = float(actual["stat_value"])
         delta = round(actual_value - projected_value, 4)
+        projection_row_present = (
+            _player_week_identity(actual) in projected_by_player_week
+        )
         rows.append(
             {
                 **actual,
@@ -175,6 +181,8 @@ def projection_actual_deltas(
                 "actual_value": _compact_number(actual_value),
                 "projected_value": _compact_number(projected_value),
                 "delta_value": _compact_number(delta),
+                "projection_row_present": projection_row_present,
+                "projection_key_present": projected is not None,
             }
         )
     rows = sorted(
@@ -402,6 +410,14 @@ def _stat_identity(row: dict[str, Any]) -> tuple[int, int, str, str]:
         int(row["week"]),
         str(row["player_id"]),
         str(row["stat_key"]),
+    )
+
+
+def _player_week_identity(row: dict[str, Any]) -> tuple[int, int, str]:
+    return (
+        int(row["season"]),
+        int(row["week"]),
+        str(row["player_id"]),
     )
 
 

@@ -87,9 +87,11 @@ def test_projection_actual_deltas_use_stat_value_for_delta() -> None:
     assert rows[0]["actual_value"] == 6
     assert rows[0]["projected_value"] == 3
     assert rows[0]["delta_value"] == 3
+    assert rows[0]["projection_row_present"] is True
+    assert rows[0]["projection_key_present"] is True
 
 
-def test_projection_actual_deltas_zero_fills_missing_projection_key() -> None:
+def test_projection_actual_deltas_marks_missing_projection_key_within_row() -> None:
     rows = projection_actual_deltas(
         FakeTrendRepository(),
         season=2026,
@@ -102,6 +104,51 @@ def test_projection_actual_deltas_zero_fills_missing_projection_key() -> None:
     assert rows[0]["actual_value"] == 10
     assert rows[0]["projected_value"] == 0
     assert rows[0]["delta_value"] == 10
+    assert rows[0]["projection_row_present"] is True
+    assert rows[0]["projection_key_present"] is False
+
+
+def test_projection_actual_deltas_marks_missing_projection_row() -> None:
+    rows = projection_actual_deltas(
+        FakeTrendRepository(),
+        season=2026,
+        week=1,
+        stat_keys=["rush_att"],
+        player_ids=["rb-2"],
+    )
+
+    assert rows[0]["player_id"] == "rb-2"
+    assert rows[0]["projected_value"] == 0
+    assert rows[0]["projection_row_present"] is False
+    assert rows[0]["projection_key_present"] is False
+
+
+def test_projection_actual_deltas_omits_projection_only_row() -> None:
+    rows = projection_actual_deltas(
+        FakeTrendRepository(),
+        season=2026,
+        week=1,
+        stat_keys=["targets"],
+        positions=["WR"],
+    )
+
+    assert rows == []
+
+
+def test_projection_actual_deltas_distinguishes_genuine_projected_zero() -> None:
+    rows = projection_actual_deltas(
+        FakeTrendRepository(),
+        season=2026,
+        week=3,
+        stat_keys=["targets"],
+        player_ids=["rb-1"],
+    )
+
+    assert rows[0]["actual_value"] == 0
+    assert rows[0]["projected_value"] == 0
+    assert rows[0]["delta_value"] == 0
+    assert rows[0]["projection_row_present"] is True
+    assert rows[0]["projection_key_present"] is True
 
 
 def test_week_over_week_movers_returns_risers_and_fallers() -> None:
@@ -170,6 +217,8 @@ class FakeTrendRepository:
             for row in rows
             if row["season"] == season
             and start_week <= row["week"] <= end_week
+            and (not player_ids or row["player_id"] in player_ids)
+            and (not positions or row["position"] in positions)
         ]
 
     def _stat_rows(self):
@@ -184,12 +233,16 @@ class FakeTrendRepository:
             self._row(2, "rb-2", "Runner Two", "RB", "rush_att", 18),
             self._row(2, "rb-2", "Runner Two", "RB", "targets", 1),
             self._row(3, "rb-1", "Runner One", "RB", "rush_att", 14),
+            self._row(3, "rb-1", "Runner One", "RB", "targets", 0),
         ]
 
     def _projection_rows(self):
         return [
+            self._row(1, "rb-1", "Runner One", "RB", "targets", 3),
+            self._row(1, "wr-1", "Wide One", "WR", "targets", 4),
             self._row(2, "rb-1", "Runner One", "RB", "targets", 3),
             self._row(2, "rb-2", "Runner Two", "RB", "targets", 2),
+            self._row(3, "rb-1", "Runner One", "RB", "targets", 0),
         ]
 
     def _row(self, week, player_id, name, position, stat_key, stat_value):
