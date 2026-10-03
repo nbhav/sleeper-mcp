@@ -101,6 +101,19 @@ class NormalizedSleeperRepository(Protocol):
     ) -> int | Mapping[str, int] | None:
         ...
 
+    def import_legacy_team_schedule_context(self) -> int | None:
+        ...
+
+    def upsert_current_player_metadata_snapshots(
+        self,
+        *,
+        season: int,
+        week: int,
+        players: dict[str, dict[str, Any]],
+        snapshot_at: float,
+    ) -> Mapping[str, int] | None:
+        ...
+
 
 class SyncStatusRepository(Protocol):
     def sync_status(self) -> dict[str, Any]:
@@ -157,6 +170,8 @@ EXPECTED_REPOSITORY_METHODS = [
     "upsert_matchups",
     "upsert_transactions",
     "upsert_player_week_rows",
+    "import_legacy_team_schedule_context",
+    "upsert_current_player_metadata_snapshots",
     "sync_status",
     "clear_normalized",
 ]
@@ -249,6 +264,12 @@ class SleeperSyncService:
                 self.repository.upsert_players(players),
                 fallback=len(players),
             )
+            _add_count(
+                row_counts,
+                "team_week_schedule",
+                self.repository.import_legacy_team_schedule_context(),
+                fallback=0,
+            )
             leagues_by_season = self._sync_leagues(target=target, row_counts=row_counts)
 
             for season in target.seasons:
@@ -257,6 +278,14 @@ class SleeperSyncService:
                 ]
                 season_league_id = str(league.get("league_id") or target.league_id)
                 scoring_settings = league.get("scoring_settings") or {}
+                if season == _int_or_default(state.get("season"), max(target.seasons)):
+                    metadata_counts = self.repository.upsert_current_player_metadata_snapshots(
+                        season=season,
+                        week=_int_or_default(state.get("week"), max(target.weeks)),
+                        players=players,
+                        snapshot_at=started_at,
+                    )
+                    _add_count(row_counts, "player_role_snapshots", metadata_counts, fallback=0)
                 self._sync_league_members(
                     league_id=season_league_id,
                     row_counts=row_counts,
@@ -598,6 +627,24 @@ class SQLiteNormalizedRepositoryAdapter:
             scoring_settings=scoring_settings,
         )
 
+    def import_legacy_team_schedule_context(self) -> int | None:
+        return self.repository.import_legacy_team_schedule_context()
+
+    def upsert_current_player_metadata_snapshots(
+        self,
+        *,
+        season: int,
+        week: int,
+        players: dict[str, dict[str, Any]],
+        snapshot_at: float,
+    ) -> Mapping[str, int] | None:
+        return self.repository.upsert_current_player_metadata_snapshots(
+            season=season,
+            week=week,
+            players=players,
+            snapshot_at=snapshot_at,
+        )
+
     def sync_status(self) -> dict[str, Any]:
         return {
             "repository_available": True,
@@ -756,10 +803,16 @@ NORMALIZED_TABLES = [
     "player_week_rows",
     "player_week_stat_values",
     "player_week_scoring_values",
+    "team_week_schedule",
+    "player_role_snapshots",
+    "player_week_availability",
     "sync_runs",
 ]
 
 NORMALIZED_TABLE_DELETE_ORDER = [
+    "player_week_availability",
+    "player_role_snapshots",
+    "team_week_schedule",
     "player_week_scoring_values",
     "player_week_stat_values",
     "player_week_rows",
