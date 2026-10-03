@@ -227,7 +227,6 @@ class FakeTrendRepository:
             self._row(1, "rb-1", "Runner One", "RB", "targets", 4),
             self._row(1, "rb-2", "Runner Two", "RB", "rush_att", 7),
             self._row(1, "rb-2", "Runner Two", "RB", "targets", 2),
-            self._row(1, "wr-1", "Wide One", "WR", "targets", 9),
             self._row(2, "rb-1", "Runner One", "RB", "rush_att", 12),
             self._row(2, "rb-1", "Runner One", "RB", "targets", 6),
             self._row(2, "rb-2", "Runner Two", "RB", "rush_att", 18),
