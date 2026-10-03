@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from decimal import Decimal
 from typing import Any, Iterable, Mapping, Sequence
 
 PLAYER_USAGE_CONTEXT_SCHEMA_VERSION = "player_usage_context.v1"
@@ -85,32 +86,32 @@ REASON_CODE_FIELDS: dict[str, dict[str, Any]] = {
 }
 
 
-def _reason(component: str, polarity: str, tier: str, evidence: Sequence[str], severity: str, description: str, missing_inputs: Sequence[str] = ()) -> dict[str, Any]:
-    return {"component": component, "polarity": polarity, "computability_tier": tier, "evidence": list(evidence), "severity": severity, "missing_inputs": list(missing_inputs), "description": description}
+def _reason(code: str, component: str, polarity: str, tier: str, evidence: Sequence[str], severity: str, description: str, missing_inputs: Sequence[str] = ()) -> dict[str, Any]:
+    return {"code": code, "component": component, "polarity": polarity, "computability_tier": tier, "evidence": list(evidence), "severity": severity, "missing_inputs": list(missing_inputs), "description": description}
 
 
 REASON_CODES: dict[str, dict[str, Any]] = {
-    "role_change_recent": _reason("opportunity", "positive", "partial", ("recent opportunity", "season baseline"), "medium", "recent opportunity increased beyond the position threshold"),
-    "role_loss_recent": _reason("opportunity", "negative", "partial", ("recent opportunity", "season baseline"), "medium", "recent opportunity declined beyond the position threshold"),
-    "projection_lagging_role_change": _reason("trend_change_score", "positive", "partial", ("recent opportunity", "projection delta"), "medium", "usage movement is ahead of the projection baseline"),
-    "season_average_stale": _reason("season_context_score", "negative", "computed", ("recent points", "season points"), "low", "season average is stale relative to the recent active-week window"),
-    "recent_spike_against_stable_usage": _reason("one_off_risk", "negative", "partial", ("recent points", "stable opportunity"), "medium", "points rose without matching opportunity growth"),
-    "insufficient_post_change_sample": _reason("small_sample_risk", "negative", "computed", ("post-change active weeks",), "high", "too few active weeks exist after the detected role change"),
-    "low_touch_big_points": _reason("one_off_risk", "negative", "computed", ("fantasy points", "rush attempts", "receptions"), "high", "skill-player points spiked on a low-touch week"),
-    "low_target_big_points": _reason("one_off_risk", "negative", "computed", ("fantasy points", "targets"), "high", "receiving points spiked on a low-target week"),
-    "low_route_big_points": _reason("one_off_risk", "negative", "not_evaluable_missing_source", (), "high", "route-based spike cannot be evaluated without route data", ("routes",)),
-    "td_only_low_usage": _reason("td_dependency", "negative", "computed", ("touches or targets", "touchdown stats"), "high", "touchdown points dominate a low-usage performance"),
-    "def_td_spike": _reason("one_off_risk", "negative", "computed", ("defensive touchdown stats",), "high", "defensive value was inflated by a touchdown"),
-    "turnover_spike_without_pressure": _reason("one_off_risk", "negative", "partial", ("turnovers", "sacks or qb hits"), "medium", "turnovers rose without the available pressure proxy rising"),
-    "long_kick_spike": _reason("one_off_risk", "negative", "computed", ("long field goals", "kicking points"), "medium", "kicker value was inflated by long field goals"),
-    "matchup_opponent_label_present": _reason("matchup_adjustment", "neutral", "current_metadata_only", ("raw opponent label",), "low", "only the current weekly opponent label is available", ("matchup strength",)),
-    "not_evaluable_missing_nfl_schedule": _reason("matchup_adjustment", "neutral", "not_evaluable_missing_source", (), "high", "NFL schedule/opponent join is missing; matchup adjustment is disabled", ("nfl schedule",)),
-    "not_evaluable_missing_matchup_strength": _reason("matchup_adjustment", "neutral", "not_evaluable_missing_source", (), "medium", "opponent strength data is missing", ("matchup strength",)),
-    "not_evaluable_missing_matchup_weather": _reason("matchup_adjustment", "neutral", "not_evaluable_missing_source", (), "low", "weather and stadium data are missing", ("weather",)),
-    "not_evaluable_missing_matchup_implied_total": _reason("matchup_adjustment", "neutral", "not_evaluable_missing_source", (), "low", "betting and implied-total data are missing", ("implied total",)),
-    "not_evaluable_missing_matchup_pressure": _reason("matchup_adjustment", "neutral", "not_evaluable_missing_source", (), "medium", "opponent pressure context is missing", ("pressure matchup",)),
-    "current_metadata_only_depth_chart": _reason("depth_chart_confidence", "neutral", "current_metadata_only", ("current depth metadata",), "medium", "depth chart metadata is current-only and not historical", ("historical depth chart",)),
-    "current_metadata_only_injury": _reason("role_stability", "neutral", "current_metadata_only", ("current injury metadata",), "medium", "injury metadata is current-only and not historical", ("historical availability",)),
+    "role_change_recent": _reason("role_change_recent", "opportunity", "positive", "partial", ("recent opportunity", "season baseline"), "medium", "recent opportunity increased beyond the position threshold"),
+    "role_loss_recent": _reason("role_loss_recent", "opportunity", "negative", "partial", ("recent opportunity", "season baseline"), "medium", "recent opportunity declined beyond the position threshold"),
+    "projection_lagging_role_change": _reason("projection_lagging_role_change", "trend_change_score", "positive", "partial", ("recent opportunity", "projection delta"), "medium", "usage movement is ahead of the projection baseline"),
+    "season_average_stale": _reason("season_average_stale", "season_context_score", "negative", "computed", ("recent points", "season points"), "low", "season average is stale relative to the recent active-week window"),
+    "recent_spike_against_stable_usage": _reason("recent_spike_against_stable_usage", "one_off_risk", "negative", "partial", ("recent points", "stable opportunity"), "medium", "points rose without matching opportunity growth"),
+    "insufficient_post_change_sample": _reason("insufficient_post_change_sample", "small_sample_risk", "negative", "computed", ("post-change active weeks",), "high", "too few active weeks exist after the detected role change"),
+    "low_touch_big_points": _reason("low_touch_big_points", "one_off_risk", "negative", "computed", ("fantasy points", "rush attempts", "receptions"), "high", "skill-player points spiked on a low-touch week"),
+    "low_target_big_points": _reason("low_target_big_points", "one_off_risk", "negative", "computed", ("fantasy points", "targets"), "high", "receiving points spiked on a low-target week"),
+    "low_route_big_points": _reason("low_route_big_points", "one_off_risk", "negative", "not_evaluable_missing_source", (), "high", "route-based spike cannot be evaluated without route data", ("routes",)),
+    "td_only_low_usage": _reason("td_only_low_usage", "td_dependency", "negative", "computed", ("touches or targets", "touchdown stats"), "high", "touchdown points dominate a low-usage performance"),
+    "def_td_spike": _reason("def_td_spike", "one_off_risk", "negative", "computed", ("defensive touchdown stats",), "high", "defensive value was inflated by a touchdown"),
+    "turnover_spike_without_pressure": _reason("turnover_spike_without_pressure", "one_off_risk", "negative", "partial", ("turnovers", "sacks or qb hits"), "medium", "turnovers rose without the available pressure proxy rising"),
+    "long_kick_spike": _reason("long_kick_spike", "one_off_risk", "negative", "computed", ("long field goals", "kicking points"), "medium", "kicker value was inflated by long field goals"),
+    "matchup_opponent_label_present": _reason("matchup_opponent_label_present", "matchup_adjustment", "neutral", "current_metadata_only", ("raw opponent label",), "low", "only the current weekly opponent label is available", ("matchup strength",)),
+    "not_evaluable_missing_nfl_schedule": _reason("not_evaluable_missing_nfl_schedule", "matchup_adjustment", "neutral", "not_evaluable_missing_source", (), "high", "NFL schedule/opponent join is missing; matchup adjustment is disabled", ("nfl schedule",)),
+    "not_evaluable_missing_matchup_strength": _reason("not_evaluable_missing_matchup_strength", "matchup_adjustment", "neutral", "not_evaluable_missing_source", (), "medium", "opponent strength data is missing", ("matchup strength",)),
+    "not_evaluable_missing_matchup_weather": _reason("not_evaluable_missing_matchup_weather", "matchup_adjustment", "neutral", "not_evaluable_missing_source", (), "low", "weather and stadium data are missing", ("weather",)),
+    "not_evaluable_missing_matchup_implied_total": _reason("not_evaluable_missing_matchup_implied_total", "matchup_adjustment", "neutral", "not_evaluable_missing_source", (), "low", "betting and implied-total data are missing", ("implied total",)),
+    "not_evaluable_missing_matchup_pressure": _reason("not_evaluable_missing_matchup_pressure", "matchup_adjustment", "neutral", "not_evaluable_missing_source", (), "medium", "opponent pressure context is missing", ("pressure matchup",)),
+    "current_metadata_only_depth_chart": _reason("current_metadata_only_depth_chart", "depth_chart_confidence", "neutral", "current_metadata_only", ("current depth metadata",), "medium", "depth chart metadata is current-only and not historical", ("historical depth chart",)),
+    "current_metadata_only_injury": _reason("current_metadata_only_injury", "role_stability", "neutral", "current_metadata_only", ("current injury metadata",), "medium", "injury metadata is current-only and not historical", ("historical availability",)),
 }
 
 SCORE_COMPONENT_SCHEMA: dict[str, dict[str, Any]] = {
@@ -148,22 +149,53 @@ def compare_recent_to_baseline(recent: Sequence[Mapping[str, Any]], baseline: Se
         return None
     if baseline_average == 0:
         return None if recent_average == 0 else float("inf")
-    return (recent_average - baseline_average) / abs(baseline_average)
+    return float((Decimal(str(recent_average)) - Decimal(str(baseline_average))) / abs(Decimal(str(baseline_average))))
 
 
-def opportunity_signal(position: str, rows: Sequence[Mapping[str, Any]], *, metric: str) -> dict[str, Any]:
-    threshold = POSITION_USAGE_THRESHOLDS[position.upper()][metric]
+def _missing_metric_reason(metric: str, *, component: str = "opportunity") -> dict[str, Any]:
+    normalized = "".join(character if character.isalnum() else "_" for character in metric.lower()).strip("_")
+    code = f"not_evaluable_missing_{normalized}"
+    return _reason(
+        code,
+        component,
+        "neutral",
+        "not_evaluable_missing_source",
+        (),
+        "medium",
+        f"{metric} is missing; this signal is not evaluable",
+        (metric,),
+    )
+
+
+def opportunity_signal(position: str, rows: Sequence[Mapping[str, Any]], *, metric: str, signal_code: str = "role_change_recent") -> dict[str, Any]:
+    position = position.upper()
+    threshold = POSITION_USAGE_THRESHOLDS[position][metric]
     window = trend_window(rows, threshold["window"])
     all_rows = _eligible_rows(rows)
     baseline = all_rows[:-len(window)] if len(all_rows) > len(window) else []
-    minimum = TREND_WINDOWS[threshold["window"]]["minimum_samples"]
-    if len(window) < minimum or not baseline:
-        return {"status": "insufficient_sample", "delta_pct": None, "recent": window, "baseline": baseline}
+    if signal_code not in MINIMUM_SAMPLE_REQUIREMENTS:
+        raise KeyError(f"unknown minimum-sample signal: {signal_code}")
+    requirements = MINIMUM_SAMPLE_REQUIREMENTS[signal_code]
+    if not any(row.get(metric) is not None for row in all_rows):
+        reason = _missing_metric_reason(metric)
+        return {"status": reason["code"], "delta_pct": None, "delta_per_game": None, "recent": window, "baseline": baseline, "reason_codes": [reason["code"]], "reasons": [reason]}
+    if len(window) < requirements["recent"] or len(baseline) < requirements["baseline"]:
+        return {"status": "insufficient_sample", "delta_pct": None, "delta_per_game": None, "recent": window, "baseline": baseline, "reason_codes": [], "reasons": []}
     delta_pct = compare_recent_to_baseline(window, baseline, metric)
-    delta_per_game = (_average(window, metric) or 0) - (_average(baseline, metric) or 0)
-    increased = ((threshold.get("increase_pct") is not None and delta_pct is not None and delta_pct >= threshold["increase_pct"]) or (threshold.get("increase_per_game") is not None and delta_per_game >= threshold["increase_per_game"]))
-    improved = threshold.get("improvement_pct") is not None and delta_pct is not None and delta_pct <= -threshold["improvement_pct"]
-    return {"status": "increased" if increased or improved else "stable", "delta_pct": delta_pct, "delta_per_game": delta_per_game, "recent": window, "baseline": baseline}
+    recent_average = _average(window, metric)
+    baseline_average = _average(baseline, metric)
+    if recent_average is None or baseline_average is None:
+        reason = _missing_metric_reason(metric)
+        return {"status": reason["code"], "delta_pct": None, "delta_per_game": None, "recent": window, "baseline": baseline, "reason_codes": [reason["code"]], "reasons": [reason]}
+    delta_per_game = recent_average - baseline_average
+    increase_checks = []
+    if threshold.get("increase_pct") is not None:
+        increase_checks.append(delta_pct is not None and Decimal(str(delta_pct)) > Decimal(str(threshold["increase_pct"])))
+    if threshold.get("increase_per_game") is not None:
+        increase_checks.append(Decimal(str(delta_per_game)) >= Decimal(str(threshold["increase_per_game"])))
+    increased = any(increase_checks)
+    improved = threshold.get("improvement_pct") is not None and delta_pct is not None and Decimal(str(delta_pct)) <= -Decimal(str(threshold["improvement_pct"]))
+    return {"status": "increased" if increased or improved else "stable", "delta_pct": delta_pct, "delta_per_game": delta_per_game, "recent": window, "baseline": baseline, "reason_codes": [], "reasons": []}
 
 
 def compute_matchup_modifier(position: str, raw_modifier: float | None, *, nfl_schedule_available: bool, opponent_strength_available: bool = True) -> dict[str, Any]:
@@ -203,17 +235,89 @@ def cap_modifier(cap_name: str, value: float, *, position: str | None = None) ->
     if cap_name not in caps:
         raise KeyError(f"unknown modifier cap: {cap_name}")
     cap = caps[cap_name]
-    return round(max(cap["min"], min(cap["max"], float(value))), 2)
+    bounded = max(Decimal(str(cap["min"])), min(Decimal(str(cap["max"])), Decimal(str(value))))
+    return float(bounded.quantize(Decimal("0.01")))
+
+
+_OPPORTUNITY_METRIC_BY_POSITION = {
+    "QB": "dropbacks",
+    "RB": "touches",
+    "WR": "targets",
+    "TE": "targets",
+}
+_REASON_MODIFIERS = {
+    "role_change_recent": ("context", 4.0),
+    "role_loss_recent": ("context", -4.0),
+    "projection_lagging_role_change": ("trend", 4.0),
+    "season_average_stale": ("context", -3.0),
+    "low_touch_big_points": ("context", -3.0),
+    "low_target_big_points": ("context", -3.0),
+    "td_only_low_usage": ("context", -3.0),
+    "def_td_spike": ("context", -3.0),
+    "turnover_spike_without_pressure": ("context", -3.0),
+    "long_kick_spike": ("context", -4.5),
+    "current_metadata_only_depth_chart": ("context", 2.0),
+}
+
+
+def evaluate_player_usage_context(position: str, inputs: Mapping[str, Any]) -> dict[str, Any]:
+    """Evaluate the deterministic V1 rule subset used by the golden fixtures."""
+
+    position = position.upper()
+    recent = list(inputs.get("recent_weeks", ()))
+    season = list(inputs.get("season_weeks", ()))
+    rows = season + recent
+    reason_codes: list[str] = []
+    modifiers: dict[str, float] = {}
+    opportunity_metric = _OPPORTUNITY_METRIC_BY_POSITION.get(position)
+    if rows and opportunity_metric in POSITION_USAGE_THRESHOLDS.get(position, {}):
+        signal = opportunity_signal(position, rows, metric=opportunity_metric)
+        if signal["status"] == "increased":
+            reason_codes.append("role_change_recent")
+        elif signal["status"] == "decreased":
+            reason_codes.append("role_loss_recent")
+        elif signal["status"].startswith("not_evaluable_missing_"):
+            reason_codes.extend(signal["reason_codes"])
+
+    if any(row.get("projection_delta") is not None and float(row["projection_delta"]) < 0 for row in recent) and "role_change_recent" in reason_codes:
+        reason_codes.append("projection_lagging_role_change")
+    recent_points = _average(_eligible_rows(recent), "points")
+    season_points = _average(_eligible_rows(season), "points")
+    if recent_points is not None and season_points is not None and recent_points < season_points:
+        if len(_eligible_rows(recent)) >= MINIMUM_SAMPLE_REQUIREMENTS["season_average_stale"]["recent"] and len(_eligible_rows(season)) >= MINIMUM_SAMPLE_REQUIREMENTS["season_average_stale"]["baseline"]:
+            reason_codes.append("season_average_stale")
+
+    spike_rows = trend_window(recent, "season_to_date")
+    if spike_rows:
+        reason_codes.extend(spike_reason_codes(position, spike_rows[-1]))
+    metadata = inputs.get("current_metadata", {})
+    if metadata.get("depth_chart_role"):
+        reason_codes.append("current_metadata_only_depth_chart")
+
+    matchup = inputs.get("matchup")
+    if matchup is not None:
+        matchup_result = compute_matchup_modifier(position, matchup.get("raw_modifier"), nfl_schedule_available=bool(matchup.get("nfl_schedule_available", False)), opponent_strength_available=bool(matchup.get("opponent_strength_available", True)))
+        modifiers["matchup"] = matchup_result["modifier"]
+        reason_codes.extend(matchup_result["reason_codes"])
+
+    for code in reason_codes:
+        cap_name, amount = _REASON_MODIFIERS.get(code, (None, 0.0))
+        if cap_name:
+            modifiers[cap_name] = modifiers.get(cap_name, 0.0) + amount
+    capped_modifiers = {name: cap_modifier(name, value, position=position) for name, value in modifiers.items()}
+    reasons = [deepcopy(REASON_CODES[code]) for code in reason_codes if code in REASON_CODES]
+    reasons.extend(_missing_metric_reason(code.removeprefix("not_evaluable_missing_")) for code in reason_codes if code not in REASON_CODES and code.startswith("not_evaluable_missing_"))
+    return {"reason_codes": reason_codes, "reasons": reasons, "modifiers": capped_modifiers, "capped_modifiers": capped_modifiers}
 
 
 PLAYER_USAGE_CONTEXT_GOLDEN_FIXTURES: tuple[dict[str, Any], ...] = (
-    {"id": "wr_high_points_low_usage", "case": "high_points_with_low_usage", "position": "WR", "inputs": {"recent_weeks": [{"week": 4, "active": True, "targets": 3, "points": 24, "rec_tds": 2}], "season_weeks": [{"week": 1, "active": True, "targets": 7, "points": 12}, {"week": 2, "active": True, "targets": 8, "points": 13}, {"week": 3, "active": True, "targets": 7, "points": 12}]}, "expected": {"reason_codes": ["low_target_big_points", "td_only_low_usage"], "capped_modifiers": {"context": -6.0}}},
-    {"id": "rb_rising_usage_lagging_projection", "case": "rising_usage_with_lagging_projections", "position": "RB", "inputs": {"recent_weeks": [{"week": 4, "active": True, "touches": 20, "projection_delta": -2}], "season_weeks": [{"week": 1, "active": True, "touches": 14}, {"week": 2, "active": True, "touches": 14}, {"week": 3, "active": True, "touches": 14}]}, "expected": {"reason_codes": ["role_change_recent", "projection_lagging_role_change"], "capped_modifiers": {"trend": 4.0}}},
-    {"id": "qb_high_projection_weak_actuals", "case": "high_projections_with_weak_actuals", "position": "QB", "inputs": {"recent_weeks": [{"week": 4, "active": True, "dropbacks": 25, "points": 11, "projected_points": 23}], "season_weeks": [{"week": 1, "active": True, "dropbacks": 35, "points": 18}, {"week": 2, "active": True, "dropbacks": 36, "points": 19}, {"week": 3, "active": True, "dropbacks": 34, "points": 18}]}, "expected": {"reason_codes": ["season_average_stale"], "capped_modifiers": {"context": -3.0}}},
-    {"id": "rb_injury_fill_in", "case": "injury_fill_in", "position": "RB", "inputs": {"recent_weeks": [{"week": 4, "active": True, "touches": 17, "injury_fill_in": True}], "season_weeks": [{"week": 1, "active": True, "touches": 6}, {"week": 2, "active": True, "touches": 7}, {"week": 3, "active": True, "touches": 6}]}, "expected": {"reason_codes": ["role_change_recent"], "capped_modifiers": {"context": 4.0}}},
-    {"id": "te_buried_depth_breakout", "case": "buried_depth_chart_breakout", "position": "TE", "inputs": {"recent_weeks": [{"week": 4, "active": True, "targets": 5, "red_zone_targets": 1}], "season_weeks": [{"week": 1, "active": True, "targets": 2}, {"week": 2, "active": True, "targets": 2}, {"week": 3, "active": True, "targets": 2}], "current_metadata": {"depth_chart_role": "third_te"}}, "expected": {"reason_codes": ["role_change_recent", "current_metadata_only_depth_chart"], "capped_modifiers": {"context": 6.0}}},
-    {"id": "k_long_kick_spike", "case": "k_long_kick_spike", "position": "K", "inputs": {"recent_weeks": [{"week": 4, "active": True, "made_50_plus": 2, "long_kick_point_share": 0.56}], "season_weeks": [{"week": 1, "active": True, "made_50_plus": 0}, {"week": 2, "active": True, "made_50_plus": 0}, {"week": 3, "active": True, "made_50_plus": 0}]}, "expected": {"reason_codes": ["long_kick_spike"], "capped_modifiers": {"context": -4.5}}},
-    {"id": "def_td_turnover_spike", "case": "def_touchdown_or_turnover_spike", "position": "DEF", "inputs": {"recent_weeks": [{"week": 4, "active": True, "def_or_special_teams_tds": 1, "takeaways": 4, "sacks": 1}], "season_weeks": [{"week": 1, "active": True, "def_or_special_teams_tds": 0, "takeaways": 1, "sacks": 4}, {"week": 2, "active": True, "def_or_special_teams_tds": 0, "takeaways": 1, "sacks": 4}, {"week": 3, "active": True, "def_or_special_teams_tds": 0, "takeaways": 1, "sacks": 4}]}, "expected": {"reason_codes": ["def_td_spike", "turnover_spike_without_pressure"], "capped_modifiers": {"context": -6.0, "def_streaming_matchup": 3.0}}},
+    {"id": "wr_high_points_low_usage", "case": "high_points_with_low_usage", "position": "WR", "inputs": {"recent_weeks": [{"week": 4, "active": True, "targets": 3, "points": 24, "rec_tds": 2}, {"week": 5, "active": True, "targets": 3, "points": 24, "rec_tds": 2}], "season_weeks": [{"week": 1, "active": True, "targets": 7, "points": 12}, {"week": 2, "active": True, "targets": 8, "points": 13}, {"week": 3, "active": True, "targets": 7, "points": 12}]}, "expected": {"reason_codes": ["low_target_big_points", "td_only_low_usage"], "capped_modifiers": {"context": -6.0}}},
+    {"id": "rb_rising_usage_lagging_projection", "case": "rising_usage_with_lagging_projections", "position": "RB", "inputs": {"recent_weeks": [{"week": 4, "active": True, "touches": 19, "projection_delta": -2}, {"week": 5, "active": True, "touches": 20, "projection_delta": -2}], "season_weeks": [{"week": 1, "active": True, "touches": 14}, {"week": 2, "active": True, "touches": 14}, {"week": 3, "active": True, "touches": 14}]}, "expected": {"reason_codes": ["role_change_recent", "projection_lagging_role_change"], "capped_modifiers": {"trend": 4.0, "context": 4.0}}},
+    {"id": "qb_high_projection_weak_actuals", "case": "high_projections_with_weak_actuals", "position": "QB", "inputs": {"recent_weeks": [{"week": 4, "active": True, "dropbacks": 25, "points": 11, "projected_points": 23}, {"week": 5, "active": True, "dropbacks": 25, "points": 11, "projected_points": 23}], "season_weeks": [{"week": 1, "active": True, "dropbacks": 35, "points": 18}, {"week": 2, "active": True, "dropbacks": 36, "points": 19}, {"week": 3, "active": True, "dropbacks": 34, "points": 18}]}, "expected": {"reason_codes": ["season_average_stale"], "capped_modifiers": {"context": -3.0}}},
+    {"id": "rb_injury_fill_in", "case": "injury_fill_in", "position": "RB", "inputs": {"recent_weeks": [{"week": 4, "active": True, "touches": 17, "injury_fill_in": True}, {"week": 5, "active": True, "touches": 17, "injury_fill_in": True}], "season_weeks": [{"week": 1, "active": True, "touches": 6}, {"week": 2, "active": True, "touches": 7}, {"week": 3, "active": True, "touches": 6}]}, "expected": {"reason_codes": ["role_change_recent"], "capped_modifiers": {"context": 4.0}}},
+    {"id": "te_buried_depth_breakout", "case": "buried_depth_chart_breakout", "position": "TE", "inputs": {"recent_weeks": [{"week": 4, "active": True, "targets": 5, "red_zone_targets": 1}, {"week": 5, "active": True, "targets": 5, "red_zone_targets": 1}], "season_weeks": [{"week": 1, "active": True, "targets": 2}, {"week": 2, "active": True, "targets": 2}, {"week": 3, "active": True, "targets": 2}], "current_metadata": {"depth_chart_role": "third_te"}}, "expected": {"reason_codes": ["role_change_recent", "current_metadata_only_depth_chart"], "capped_modifiers": {"context": 6.0}}},
+    {"id": "k_long_kick_spike", "case": "k_long_kick_spike", "position": "K", "inputs": {"recent_weeks": [{"week": 4, "active": True, "made_50_plus": 2, "long_kick_point_share": 0.56}, {"week": 5, "active": True, "made_50_plus": 2, "long_kick_point_share": 0.56}], "season_weeks": [{"week": 1, "active": True, "made_50_plus": 0}, {"week": 2, "active": True, "made_50_plus": 0}, {"week": 3, "active": True, "made_50_plus": 0}]}, "expected": {"reason_codes": ["long_kick_spike"], "capped_modifiers": {"context": -4.5}}},
+    {"id": "def_td_turnover_spike", "case": "def_touchdown_or_turnover_spike", "position": "DEF", "inputs": {"recent_weeks": [{"week": 4, "active": True, "def_or_special_teams_tds": 1, "takeaways": 4, "sacks": 1}, {"week": 5, "active": True, "def_or_special_teams_tds": 1, "takeaways": 4, "sacks": 1}], "season_weeks": [{"week": 1, "active": True, "def_or_special_teams_tds": 0, "takeaways": 1, "sacks": 4}, {"week": 2, "active": True, "def_or_special_teams_tds": 0, "takeaways": 1, "sacks": 4}, {"week": 3, "active": True, "def_or_special_teams_tds": 0, "takeaways": 1, "sacks": 4}], "matchup": {"raw_modifier": 4, "nfl_schedule_available": True}}, "expected": {"reason_codes": ["def_td_spike", "turnover_spike_without_pressure"], "capped_modifiers": {"context": -6.0, "matchup": 3.0}}},
     {"id": "qb_missing_matchup_source", "case": "missing_matchup_source", "position": "QB", "inputs": {"matchup": {"raw_modifier": 2.75, "nfl_schedule_available": False}}, "expected": {"reason_codes": ["not_evaluable_missing_nfl_schedule"], "capped_modifiers": {"matchup": 0.0}}},
 )
 

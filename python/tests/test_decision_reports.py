@@ -15,6 +15,7 @@ from sleeper_tooling.player_usage_context_rules import (
     COMPUTABILITY_TIERS,
     MINIMUM_SAMPLE_REQUIREMENTS,
     MODIFIER_CAPS,
+    PLAYER_USAGE_CONTEXT_GOLDEN_FIXTURES,
     PLAYER_USAGE_CONTEXT_SCHEMA_VERSION,
     POSITION_FAMILIES,
     POSITION_MODIFIER_CAPS,
@@ -27,6 +28,7 @@ from sleeper_tooling.player_usage_context_rules import (
     cap_modifier,
     compare_recent_to_baseline,
     compute_matchup_modifier,
+    evaluate_player_usage_context,
     opportunity_signal,
     player_usage_context_contract,
     reason_codes_by_component,
@@ -510,6 +512,7 @@ def test_player_context_contract_uses_documented_tiers_and_reason_metadata() -> 
     assert REASON_CODES["not_evaluable_missing_nfl_schedule"]["computability_tier"] == "not_evaluable_missing_source"
     assert REASON_CODES["current_metadata_only_depth_chart"]["computability_tier"] == "current_metadata_only"
     for code, definition in REASON_CODES.items():
+        assert definition["code"] == code
         assert definition["component"] in SCORE_COMPONENT_KEYS, code
         assert definition["evidence"] or definition["missing_inputs"], code
         assert definition["severity"] in {"low", "medium", "high"}, code
@@ -532,6 +535,24 @@ def test_player_context_role_boundary_requires_position_threshold_and_sample() -
     assert MINIMUM_SAMPLE_REQUIREMENTS["role_change_recent"] == {"recent": 2, "baseline": 1}
 
 
+def test_player_context_exact_thresholds_and_missing_metrics_are_deterministic() -> None:
+    exact = [{"week": 1, "active": True, "touches": 10}, {"week": 2, "active": True, "touches": 10}, {"week": 3, "active": True, "touches": 15}, {"week": 4, "active": True, "touches": 15}]
+    assert opportunity_signal("RB", exact, metric="touches")["status"] == "increased"
+    absent = opportunity_signal("RB", [{"week": 1, "active": True}, {"week": 2, "active": True}], metric="touches")
+    assert absent["status"] == "not_evaluable_missing_touches"
+    assert absent["reasons"][0]["code"] == "not_evaluable_missing_touches"
+    assert absent["reasons"][0]["computability_tier"] == "not_evaluable_missing_source"
+
+
+def test_player_context_golden_fixtures_execute_behaviorally() -> None:
+    for fixture in PLAYER_USAGE_CONTEXT_GOLDEN_FIXTURES:
+        result = evaluate_player_usage_context(fixture["position"], fixture["inputs"])
+        expected = fixture["expected"]
+        assert result["reason_codes"] == expected["reason_codes"], fixture["id"]
+        assert result["capped_modifiers"] == expected["capped_modifiers"], fixture["id"]
+        assert all(reason["code"] in result["reason_codes"] for reason in result["reasons"]), fixture["id"]
+
+
 def test_player_context_recent_window_is_compared_against_earlier_season_rows() -> None:
     season = [{"week": 1, "active": True, "points": 10}, {"week": 2, "active": True, "points": 10}, {"week": 3, "active": True, "points": 10}, {"week": 4, "active": True, "points": 20}, {"week": 5, "active": True, "points": 20}]
     assert compare_recent_to_baseline(trend_window(season, "last_2_weeks"), season[:-2], "points") == pytest.approx(1.0)
@@ -550,7 +571,8 @@ def test_player_context_position_caps_and_spike_boundaries() -> None:
     assert cap_modifier("context", 8.25, position="RB") == 6.0
     assert cap_modifier("trend", -5.5, position="WR") == -4.0
     assert cap_modifier("matchup", 2.5, position="QB") == 2.0
-    assert cap_modifier("matchup", 2.5, position="DEF") == 3.0
+    assert cap_modifier("matchup", 2.5, position="DEF") == 2.5
+    assert cap_modifier("matchup", 4, position="DEF") == 3.0
     assert POSITION_MODIFIER_CAPS["DEF"]["matchup"] == MODIFIER_CAPS["def_streaming_matchup"]
     assert spike_reason_codes("RB", {"points": 20, "touches": 12, "total_tds": 1}) == ["low_touch_big_points"]
     assert spike_reason_codes("RB", {"points": 20, "touches": 13, "total_tds": 1}) == []
