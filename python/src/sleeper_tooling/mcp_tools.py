@@ -16,8 +16,10 @@ from sleeper_tooling.decision_reports import (
     build_opponent_watch,
     build_trade_opportunities,
     build_waiver_watch,
+    evaluate_waiver_options_by_position,
     group_waiver_options_by_position,
     merge_available_candidates,
+    waiver_diagnostics_by_position,
 )
 from sleeper_tooling.league_context import (
     render_context_env,
@@ -915,6 +917,17 @@ class FantasyToolRunner:
                 for row in lineup["lineup_table"]
                 if row.get("player_id") != "0"
             ]
+            evaluated_by_position = evaluate_waiver_options_by_position(
+                candidates=available_candidates,
+                roster_players=roster_players,
+                positions=position_list,
+            )
+            by_position = group_waiver_options_by_position(
+                candidates=available_candidates,
+                roster_players=roster_players,
+                positions=position_list,
+                per_position_limit=per_position_limit,
+            )
             return self._with_decision_metadata(
                 {
                     "season": resolved_season,
@@ -923,15 +936,16 @@ class FantasyToolRunner:
                     "roster_id": resolved_roster_id,
                     "positions": position_list,
                     "per_position_limit": per_position_limit,
-                    "by_position": group_waiver_options_by_position(
-                        candidates=available_candidates,
-                        roster_players=roster_players,
-                        positions=position_list,
+                    "by_position": by_position,
+                    "diagnostics_by_position": waiver_diagnostics_by_position(
+                        evaluated=evaluated_by_position,
+                        accepted=by_position,
                         per_position_limit=per_position_limit,
                     ),
                     "evidence": [
                         "options are grouped by position and exclude rostered players",
                         "projected_gain_over_drop compares against an unprotected active roster drop candidate",
+                        "diagnostics_by_position includes top scored candidates that were not recommended",
                         "FAAB hints are included only when the acquisition market is known to be waiver",
                     ],
                 },
@@ -1530,6 +1544,17 @@ class FantasyToolRunner:
             for row in lineup["lineup_table"]
             if row.get("player_id") != "0"
         ]
+        evaluated_by_position = evaluate_waiver_options_by_position(
+            candidates=available_candidates,
+            roster_players=roster_players,
+            positions=positions,
+        )
+        by_position = group_waiver_options_by_position(
+            candidates=available_candidates,
+            roster_players=roster_players,
+            positions=positions,
+            per_position_limit=per_position_limit,
+        )
         return self._with_decision_metadata(
             {
                 "season": season,
@@ -1538,15 +1563,16 @@ class FantasyToolRunner:
                 "roster_id": roster_id,
                 "positions": positions,
                 "per_position_limit": per_position_limit,
-                "by_position": group_waiver_options_by_position(
-                    candidates=available_candidates,
-                    roster_players=roster_players,
-                    positions=positions,
+                "by_position": by_position,
+                "diagnostics_by_position": waiver_diagnostics_by_position(
+                    evaluated=evaluated_by_position,
+                    accepted=by_position,
                     per_position_limit=per_position_limit,
                 ),
                 "evidence": [
                     "options are grouped by position and exclude rostered players",
                     "projected_gain_over_drop compares against an unprotected active roster drop candidate",
+                    "diagnostics_by_position includes top scored candidates that were not recommended",
                     "FAAB hints are included only when the acquisition market is known to be waiver",
                 ],
             },

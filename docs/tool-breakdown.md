@@ -155,6 +155,12 @@ Decision matrix rows include:
 
 `decision_smoke_report` keeps JSON structured and renders Markdown tables with
 those same deterministic waiver and trade columns for review.
+Smoke tables intentionally show only starter projection totals in the lineup
+summary; bench-inclusive roster projection totals remain in JSON when deeper
+debugging needs them. Reserve/IR rows already imply stash context, so the smoke
+lineup table does not include a separate stash column. Empty waiver or trade
+recommendation sections are paired with diagnostic tables that expose top
+rejected candidates/packages and their deterministic reasons.
 
 Sleeper often omits zero-value stat fields. Scoring code treats missing fields as `0`.
 

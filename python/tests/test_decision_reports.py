@@ -167,6 +167,35 @@ def test_waiver_matrix_downgrades_k_def_streamer_over_skill_depth() -> None:
     assert row["streamer_penalty"] >= 20
 
 
+def test_waiver_drop_protection_only_keeps_best_same_position_injury_cover() -> None:
+    roster_players = [
+        roster_row("starter-rb", "Starter RB", "RB", 14, lineup_status="starter", injury_status="Questionable"),
+        roster_row("starter-wr", "Starter WR", "WR", 13, lineup_status="starter", injury_status="Questionable"),
+        roster_row("starter-te", "Starter TE", "TE", 10, lineup_status="starter", injury_status="Questionable"),
+        roster_row("best-rb-cover", "Best RB Cover", "RB", 5, lineup_status="bench"),
+        roster_row("weaker-rb-cover", "Weaker RB Cover", "RB", 4, lineup_status="bench"),
+        roster_row("best-wr-cover", "Best WR Cover", "WR", 6, lineup_status="bench"),
+        roster_row("weaker-wr-cover", "Weaker WR Cover", "WR", 3, lineup_status="bench"),
+        roster_row("te-cover", "TE Cover", "TE", 7, lineup_status="bench"),
+    ]
+
+    row = compare_available_player(
+        waiver_candidate("free-wr", "Free WR", "WR", 9, market_type="waiver"),
+        roster_players,
+    )
+
+    assert row["drop_player_id"] == "weaker-wr-cover"
+    rejected = {
+        rejected["player_id"]: rejected["reason"]
+        for rejected in row["rejected_drop_reasoning"]
+    }
+    assert rejected["best-rb-cover"] == "coverage for questionable starter"
+    assert rejected["best-wr-cover"] == "coverage for questionable starter"
+    assert rejected["te-cover"] == "coverage for questionable starter"
+    assert "weaker-rb-cover" not in rejected
+    assert "weaker-wr-cover" not in rejected
+
+
 def test_waiver_matrix_keeps_roster_sensible_positive_move() -> None:
     roster_players = [
         roster_row("starter-rb", "Starter RB", "RB", 13, lineup_status="starter"),
@@ -182,6 +211,21 @@ def test_waiver_matrix_keeps_roster_sensible_positive_move() -> None:
     assert row["acquisition_action"] == "submit_waiver_claim"
     assert row["move_score"] > 0
     assert row["week_value_delta"] == 7
+
+
+def test_waiver_matrix_does_not_recommend_negative_gain_even_with_position_need() -> None:
+    roster_players = [
+        roster_row("starter-rb", "Starter RB", "RB", 13, lineup_status="starter"),
+        roster_row("drop-wr", "Drop WR", "WR", 4, lineup_status="bench"),
+    ]
+    row = compare_available_player(
+        waiver_candidate("free-rb", "Free RB", "RB", 3, market_type="free_agent"),
+        roster_players,
+    )
+
+    assert row["projected_gain_over_drop"] == -1
+    assert row["recommendation"] in {"watch", "reject"}
+    assert row["acquisition_action"] == "watch"
 
 
 def test_waiver_grouping_ranks_by_move_score_and_keeps_watch_rows() -> None:
