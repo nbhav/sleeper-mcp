@@ -304,7 +304,7 @@ def test_player_week_upsert_extracts_numeric_stats_and_scoring_values(tmp_path) 
     repo.close()
 
 
-def test_player_week_raw_json_preserves_nonnumeric_stats(tmp_path) -> None:
+def test_player_week_raw_json_preserves_week_fields_and_numeric_stat_keys(tmp_path) -> None:
     repo = SleeperNormalizedRepository(tmp_path / "sleeper.db")
 
     repo.upsert_player_week_rows(
@@ -315,8 +315,14 @@ def test_player_week_raw_json_preserves_nonnumeric_stats(tmp_path) -> None:
             {
                 "player_id": "2",
                 "player": {"full_name": "Receiver Two"},
+                "opponent": "KC",
+                "game_id": "2026_02_DEN_KC",
+                "date": "2026-09-17T20:15:00Z",
                 "stats": {
                     "rec": 6,
+                    "off_snp": 42,
+                    "tm_off_snp": 63,
+                    "rec_air_yd": 118,
                     "opponent": "KC",
                     "note": {"source": "manual"},
                 },
@@ -337,9 +343,17 @@ def test_player_week_raw_json_preserves_nonnumeric_stats(tmp_path) -> None:
         player_id="2",
     )[0]
 
-    assert {row["stat_key"] for row in stat_values} == {"rec"}
+    assert {row["stat_key"] for row in stat_values} == {
+        "off_snp",
+        "rec",
+        "rec_air_yd",
+        "tm_off_snp",
+    }
     assert weekly_row["raw"]["stats"]["opponent"] == "KC"
     assert weekly_row["raw"]["stats"]["note"] == {"source": "manual"}
+    assert weekly_row["raw"]["opponent"] == "KC"
+    assert weekly_row["raw"]["game_id"] == "2026_02_DEN_KC"
+    assert weekly_row["raw"]["date"] == "2026-09-17T20:15:00Z"
     repo.close()
 
 
