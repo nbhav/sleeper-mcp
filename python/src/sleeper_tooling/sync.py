@@ -111,6 +111,7 @@ class NormalizedSleeperRepository(Protocol):
         season: int,
         rows: list[dict[str, Any]],
         source: str,
+        weeks: Sequence[int] | None = None,
     ) -> int | None:
         ...
 
@@ -316,6 +317,7 @@ class SleeperSyncService:
                         season=season,
                         rows=schedule_rows,
                         source="sleeper_weekly_data",
+                        weeks=weeks,
                     ),
                     fallback=len(schedule_rows),
                 )
@@ -747,11 +749,13 @@ class SQLiteNormalizedRepositoryAdapter:
         season: int,
         rows: list[dict[str, Any]],
         source: str,
+        weeks: Sequence[int] | None = None,
     ) -> int:
         return self.repository.replace_team_week_schedule_source(
             season=season,
             rows=rows,
             source=source,
+            weeks=weeks,
         )
 
     def upsert_current_player_metadata_snapshots(

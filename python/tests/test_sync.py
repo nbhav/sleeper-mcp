@@ -52,6 +52,29 @@ def test_sync_integrates_schedule_and_role_snapshots_and_replaces_stale_rows(tmp
     service.close()
 
 
+def test_week_scoped_schedule_refresh_preserves_other_weeks(tmp_path) -> None:
+    client = FakeContextSyncSleeperClient()
+    repository = SQLiteNormalizedRepositoryAdapter(
+        SleeperNormalizedRepository(tmp_path / "sleeper.db")
+    )
+    service = SleeperSyncService(client=client, repository=repository, clock=FakeClock())
+
+    service.sync(league_id="league-2026", seasons=[2026], weeks=[1, 2])
+    assert repository.repository.get_team_week_schedule(
+        season=2026, week=2, team="DEN", source="sleeper_weekly_data"
+    )["opponent"] == "BUF"
+
+    service.sync(league_id="league-2026", seasons=[2026], weeks=[1])
+
+    assert repository.repository.get_team_week_schedule(
+        season=2026, week=1, team="DEN", source="sleeper_weekly_data"
+    )["opponent"] == "LAC"
+    assert repository.repository.get_team_week_schedule(
+        season=2026, week=2, team="DEN", source="sleeper_weekly_data"
+    )["opponent"] == "BUF"
+    service.close()
+
+
 def test_resolve_sync_target_defaults_to_current_and_previous_seasons(monkeypatch) -> None:
     monkeypatch.setenv("SLEEPER_DEFAULT_LEAGUE_ID", "league-2026")
 
@@ -232,13 +255,21 @@ class FakeContextSyncSleeperClient(FakeSyncSleeperClient):
         return self.players
 
     def get_stats(self, season: int, *, week: int | None = None) -> list[dict[str, object]]:
+        if week == 2:
+            opponent = "BUF"
+            game_id = "game-2"
+            game_date = "2027-01-11T00:00:00Z"
+        else:
+            opponent = "LAC"
+            game_id = "game-1"
+            game_date = "2027-01-04T00:00:00Z"
         return [
             {
                 "player_id": "player-1",
                 "team": "DEN",
-                "opponent": "LAC",
-                "game_id": "game-1",
-                "date": "2027-01-04T00:00:00Z",
+                "opponent": opponent,
+                "game_id": game_id,
+                "date": game_date,
                 "stats": {"pts_ppr": 10},
             }
         ]
@@ -385,6 +416,7 @@ class FakeNormalizedRepository:
         season: int,
         rows: list[dict[str, object]],
         source: str,
+        weeks: list[int] | None = None,
     ) -> int:
         return 0
 

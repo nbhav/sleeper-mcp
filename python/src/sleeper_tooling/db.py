@@ -1035,13 +1035,20 @@ class SleeperNormalizedRepository:
         season: int,
         rows: Iterable[JsonObject],
         source: str,
+        weeks: Sequence[int] | None = None,
     ) -> int:
-        """Replace one source snapshot while retaining every other source."""
+        """Replace a source snapshot for selected weeks or the full season."""
         materialized_rows = list(rows)
-        self._connection.execute(
-            "DELETE FROM team_week_schedule WHERE season = ? AND source = ?",
-            (int(season), str(source)),
-        )
+        delete_params: list[Any] = [int(season), str(source)]
+        delete_sql = "DELETE FROM team_week_schedule WHERE season = ? AND source = ?"
+        if weeks is not None:
+            normalized_weeks = sorted({int(week) for week in weeks})
+            if not normalized_weeks:
+                return 0
+            placeholders = ", ".join("?" for _ in normalized_weeks)
+            delete_sql += f" AND week IN ({placeholders})"
+            delete_params.extend(normalized_weeks)
+        self._connection.execute(delete_sql, delete_params)
         self._connection.commit()
         count = 0
         if materialized_rows:
