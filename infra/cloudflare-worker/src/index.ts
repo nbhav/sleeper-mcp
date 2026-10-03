@@ -41,6 +41,20 @@ const tools = [
     }
   },
   {
+    name: "player_matchup_context",
+    description: "Return bounded NFL opponent matchup context, or explicit normalized-source availability reasons.",
+    inputSchema: {
+      type: "object",
+      required: ["player_id", "season", "week"],
+      properties: {
+        player_id: { type: "string" },
+        season: { type: "integer" },
+        week: { type: "integer" },
+        source: { type: "string", enum: ["stats", "projections"], default: "stats" }
+      }
+    }
+  },
+  {
     name: "weekly_briefing",
     description: "League-aware weekly leaders plus waiver signal for the current or requested week.",
     inputSchema: {
@@ -320,6 +334,8 @@ async function callTool(name: string, args: JsonMap, env: Env): Promise<unknown>
   switch (name) {
     case "resolve_league_context":
       return resolveLeagueContext(args, env);
+    case "player_matchup_context":
+      return playerMatchupContext(args, env);
     case "weekly_briefing":
       return weeklyBriefing(args, env);
     case "weekly_performance_backtest":
@@ -351,6 +367,40 @@ async function callTool(name: string, args: JsonMap, env: Env): Promise<unknown>
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
+}
+
+async function playerMatchupContext(args: JsonMap, _env: Env): Promise<JsonMap> {
+  const playerId = String(args.player_id || "").trim();
+  const season = numberValue(args.season);
+  const week = numberValue(args.week);
+  const source = stringArg(args, "source", "stats");
+  if (!playerId) throw new Error("player_id is required");
+  if (season === undefined || week === undefined) throw new Error("season and week are required");
+  if (source !== "stats" && source !== "projections") throw new Error("source must be stats or projections");
+  return {
+    model_version: "matchup.v1",
+    season,
+    week,
+    player_id: playerId,
+    position: null,
+    team: null,
+    opponent: null,
+    matchup_adjustment: 0,
+    matchup_cap: null,
+    source_availability: {
+      normalized_player_stats: false,
+      nfl_schedule: false,
+      historical_opponent_stats: false,
+      enriched_provider: false,
+      weekly_availability: false
+    },
+    missing_inputs: ["not_evaluable_missing_normalized_decision_source"],
+    reason_codes: ["worker_normalized_source_unavailable"],
+    evidence: {
+      source,
+      note: "Worker D1 currently caches raw API responses; normalized matchup rows and weekly availability are not yet materialized."
+    }
+  };
 }
 
 async function resolveLeagueContext(args: JsonMap, env: Env): Promise<JsonMap> {

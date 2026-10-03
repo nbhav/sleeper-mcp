@@ -189,6 +189,33 @@ def test_mcp_tool_call_dispatches_new_normalized_data_tool() -> None:
     assert json.loads(content["text"])["rows"] == [{"week": 1, "stat_value": 7}]
 
 
+def test_mcp_tool_call_dispatches_player_matchup_context() -> None:
+    class Runner:
+        def player_matchup_context(self, *, player_id: str, season: int, week: int, source: str = "stats"):
+            return {
+                "player_id": player_id,
+                "season": season,
+                "week": week,
+                "source": source,
+                "missing_inputs": ["not_evaluable_missing_weekly_availability"],
+            }
+
+    response = McpServer(Runner()).handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/call",
+            "params": {
+                "name": "player_matchup_context",
+                "arguments": {"player_id": "qb-1", "season": 2026, "week": 1},
+            },
+        }
+    )
+    payload = json.loads(response["result"]["content"][0]["text"])
+    assert payload["player_id"] == "qb-1"
+    assert payload["missing_inputs"] == ["not_evaluable_missing_weekly_availability"]
+
+
 def test_mcp_tool_call_returns_raw_markdown_text_content() -> None:
     class Runner:
         def decision_smoke_report(self, *, format: str = "markdown"):

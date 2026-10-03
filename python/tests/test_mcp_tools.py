@@ -833,6 +833,30 @@ def test_opponent_watch_returns_matchup_context(tmp_path) -> None:
     assert report["opponent_injuries"][0]["player_id"] == "hurt-wr"
 
 
+def test_player_matchup_context_uses_repository_call_path(tmp_path) -> None:
+    repository = SleeperNormalizedRepository(tmp_path / "normalized.sqlite")
+    repository.upsert_player_week_rows(
+        season=2026,
+        week=1,
+        source="stats",
+        rows=[
+            {"player_id": "qb-1", "team": "DEN", "position": "QB", "opponent": "KC", "fantasy_points": 20},
+            {"player_id": "oak-qb", "team": "OAK", "position": "QB", "opponent": "KC", "fantasy_points": 10},
+        ],
+    )
+    repository.upsert_team_week_schedule(
+        season=2026,
+        week=1,
+        rows=[{"team": "DEN", "opponent": "KC"}],
+        source="test",
+    )
+    runner = FantasyToolRunner(decision_repository=repository)
+    result = runner.player_matchup_context(player_id="qb-1", season=2026, week=1)
+    assert result["opponent"] == "KC"
+    assert result["evidence"]["historical_games"] == 1
+    repository.close()
+
+
 def test_opponent_watch_uses_default_league_and_roster_ids(tmp_path) -> None:
     fake_client = FakeMcpClient()
     runner = FantasyToolRunner(

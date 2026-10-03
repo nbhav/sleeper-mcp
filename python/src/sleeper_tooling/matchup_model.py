@@ -25,6 +25,7 @@ _ALIASES = {
     "targets": ("targets", "rec_tgt", "targets_total"),
     "pass_att": ("pass_att", "passing_attempts"),
     "pass_int": ("pass_int", "interceptions", "pass_interceptions"),
+    "pass_sack": ("pass_sack", "pass_sacks", "sacks_taken"),
     "sack": ("sack", "sacks", "def_sacks"),
     "fum_lost": ("fum_lost", "fumbles_lost"),
     "fg_att": ("fg_att", "field_goals_attempted"),
@@ -45,11 +46,11 @@ def build_matchup_profile(
     opponent_rows: Sequence[Mapping[str, Any]] = (),
     league_rows: Sequence[Mapping[str, Any]] = (),
     provider_context: Mapping[str, Any] | None = None,
+    availability: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return the stable JSON contract for one player's matchup context."""
     position = str(player.get("position") or "").upper()
-    if position not in POSITIONS:
-        position = "WR"
+    supported_position = position in POSITIONS
     stats = _stats(player, player_stats)
     provider = dict(provider_context or {})
     missing: list[str] = []
@@ -59,15 +60,20 @@ def build_matchup_profile(
         "nfl_schedule": bool(schedule_available and opponent),
         "historical_opponent_stats": bool(opponent_rows),
         "enriched_provider": bool(provider),
+        "weekly_availability": availability is not None,
     }
 
     if not schedule_available or not opponent:
         missing.append("not_evaluable_missing_nfl_schedule")
     if not opponent_rows:
         missing.append("not_evaluable_missing_opponent_position_stats")
+    if availability is None:
+        missing.append("not_evaluable_missing_weekly_availability")
+    if not supported_position:
+        missing.append("unsupported_position")
 
-    features = _features(position, opponent_rows)
-    league_features = _features(position, league_rows)
+    features = _features(position, opponent_rows) if supported_position else {}
+    league_features = _features(position, league_rows) if supported_position else {}
     modifier = 0.0
     evidence: dict[str, Any] = {
         "position": position,
@@ -96,20 +102,24 @@ def build_matchup_profile(
         "TE": ("explosive_plays", "target_efficiency"),
         "K": ("weather", "implied_totals"),
         "DEF": ("implied_totals", "pressure"),
-    }[position]
+    }.get(position, ())
     for input_name in required_provider_inputs:
         if input_name not in provider or provider[input_name] is None:
             missing.append(f"not_evaluable_missing_{input_name}")
     if provider:
         evidence["provider_context"] = provider
+    if availability is not None:
+        evidence["weekly_availability"] = dict(availability)
     if not source_availability["historical_opponent_stats"]:
         reasons.append("opponent_position_stats_unavailable")
+    if not supported_position:
+        reasons.append("unsupported_position")
     if missing:
         reasons.extend(code for code in missing if code == "not_evaluable_missing_nfl_schedule")
 
     # A schedule join is a hard prerequisite. Provider data may add evidence,
     # but must not manufacture a matchup score without it.
-    if not source_availability["nfl_schedule"]:
+    if not source_availability["nfl_schedule"] or not supported_position:
         modifier = 0.0
     return {
         "model_version": MATCHUP_MODEL_VERSION,
@@ -120,8 +130,9 @@ def build_matchup_profile(
         "team": player.get("team"),
         "opponent": opponent,
         "home_away": player.get("home_away"),
+        "availability": dict(availability) if availability is not None else None,
         "matchup_adjustment": round(_cap(modifier, position), 3),
-        "matchup_cap": CAPS[position],
+        "matchup_cap": CAPS.get(position),
         "source_availability": source_availability,
         "missing_inputs": sorted(set(missing)),
         "reason_codes": sorted(set(reasons)),
@@ -143,7 +154,9 @@ def build_repository_matchup_profile(
         season=season, week=week, source=source, player_id=player_id
     )
     if not player_rows:
-        raise ValueError(f"no normalized {source} row for player {player_id}")
+        return _missing_source_profile(
+            player_id=player_id, season=season, week=week, source=source
+        )
     player = player_rows[0]
     team = str(player.get("team") or "").upper()
     schedule = repository.get_team_week_schedule(season=season, week=week, team=team)
@@ -154,21 +167,14 @@ def build_repository_matchup_profile(
         rows = repository.list_player_week_rows(
             season=season, week=historical_week, source=source
         )
-        teams = {str(row.get("team") or "").upper() for row in rows if row.get("team")}
-        schedules = {
-            row_team: repository.get_team_week_schedule(
-                season=season, week=historical_week, team=row_team
-            )
-            for row_team in teams
-        }
         for row in rows:
-            row_team = str(row.get("team") or "").upper()
+            if str(row.get("player_id") or "") == str(player_id):
+                continue
             row_position = str(row.get("position") or "").upper()
             if row_position != str(player.get("position") or "").upper():
                 continue
-            row_schedule = schedules.get(row_team) or {}
-            row_opponent = str(row_schedule.get("opponent") or "").upper()
-            if row_team == str(opponent or "").upper():
+            row_opponent = _row_opponent(row)
+            if row_opponent == str(opponent or "").upper():
                 opponent_rows.append(row)
             if row_opponent:
                 league_rows.append(row)
@@ -176,6 +182,13 @@ def build_repository_matchup_profile(
         season=season, week=week, source=source, player_id=player_id
     )
     stats = {str(row["stat_key"]): row.get("stat_value") for row in stats_rows}
+    availability_rows = []
+    list_availability = getattr(repository, "list_player_week_availability", None)
+    if callable(list_availability):
+        availability_rows = list_availability(
+            season=season, week=week, player_id=player_id
+        )
+    availability = availability_rows[0] if availability_rows else None
     return build_matchup_profile(
         player_id=player_id,
         season=season,
@@ -187,14 +200,63 @@ def build_repository_matchup_profile(
         opponent_rows=opponent_rows,
         league_rows=league_rows,
         provider_context=provider_context,
+        availability=availability,
     )
+
+
+def _missing_source_profile(*, player_id: str, season: int, week: int, source: str) -> dict[str, Any]:
+    return {
+        "model_version": MATCHUP_MODEL_VERSION,
+        "season": int(season),
+        "week": int(week),
+        "player_id": str(player_id),
+        "position": None,
+        "team": None,
+        "opponent": None,
+        "home_away": None,
+        "availability": None,
+        "matchup_adjustment": 0.0,
+        "matchup_cap": None,
+        "source_availability": {
+            "normalized_player_stats": False,
+            "nfl_schedule": False,
+            "historical_opponent_stats": False,
+            "enriched_provider": False,
+            "weekly_availability": False,
+        },
+        "missing_inputs": [f"not_evaluable_missing_normalized_{source}_row"],
+        "reason_codes": ["normalized_player_source_unavailable"],
+        "evidence": {"source": source},
+    }
+
+
+def _row_opponent(row: Mapping[str, Any]) -> str:
+    for candidate in (row, _mapping_value(row, "raw"), _mapping_value(row, "player"), _mapping_value(row, "stats")):
+        for key in ("opponent", "opp", "row_opponent"):
+            value = candidate.get(key) if isinstance(candidate, Mapping) else None
+            if value:
+                return str(value).strip().upper()
+    return ""
+
+
+def _mapping_value(row: Mapping[str, Any], key: str) -> Mapping[str, Any]:
+    value = row.get(key)
+    return value if isinstance(value, Mapping) else {}
 
 
 def _stats(row: Mapping[str, Any], explicit: Mapping[str, Any] | None) -> dict[str, float]:
     values: dict[str, Any] = {}
+    values.update(row)
     raw = row.get("stats")
     if isinstance(raw, Mapping):
         values.update(raw)
+    for nested_row in (row.get("raw"), row.get("player_json")):
+        if not isinstance(nested_row, Mapping):
+            continue
+        values.update(nested_row)
+        nested_stats = nested_row.get("stats")
+        if isinstance(nested_stats, Mapping):
+            values.update(nested_stats)
     values.update(explicit or {})
     return {key: _number(_first(values, aliases)) for key, aliases in _ALIASES.items() if _first(values, aliases) is not None}
 
@@ -214,7 +276,7 @@ def _features(position: str, rows: Sequence[Mapping[str, Any]]) -> dict[str, flo
     elif position in {"WR", "TE"}:
         feature["targets_per_game"] = round(sum(_stats(row, None).get("targets", 0.0) for row in rows) / len(rows), 3)
     elif position == "QB":
-        feature["sacks_per_game"] = round(sum(_stats(row, None).get("sack", 0.0) for row in rows) / len(rows), 3)
+        feature["pass_sacks_per_game"] = round(sum(_stats(row, None).get("pass_sack", 0.0) for row in rows) / len(rows), 3)
     return feature
 
 

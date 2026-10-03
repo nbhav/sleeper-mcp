@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from sleeper_tooling.db import SleeperNormalizedRepository
 from sleeper_tooling.matchup_model import (
     MATCHUP_MODEL_VERSION,
     build_matchup_profile,
+    build_repository_matchup_profile,
 )
 
 
@@ -35,6 +37,7 @@ def test_supported_schedule_join_computes_position_matchup_and_availability() ->
         "nfl_schedule": True,
         "historical_opponent_stats": True,
         "enriched_provider": False,
+        "weekly_availability": False,
     }
     assert "not_evaluable_missing_nfl_schedule" not in result["missing_inputs"]
     assert "not_evaluable_missing_pressure" in result["missing_inputs"]
@@ -89,3 +92,76 @@ def test_provider_fields_are_used_without_removing_other_missing_reasons() -> No
     assert "not_evaluable_missing_weather" not in result["missing_inputs"]
     assert "not_evaluable_missing_implied_totals" not in result["missing_inputs"]
     assert result["evidence"]["provider_context"]["implied_totals"] == 23.5
+
+
+def test_qb_features_use_pass_sack_and_unsupported_position_is_explicit() -> None:
+    result = build_matchup_profile(
+        player_id="qb-1",
+        season=2026,
+        week=4,
+        player={"position": "QB", "team": "DEN"},
+        opponent="KC",
+        opponent_rows=[_row("QB", 10, pass_sack=4)],
+        league_rows=[_row("QB", 10, pass_sack=1)],
+        availability={"status": "Active"},
+    )
+    assert result["evidence"]["opponent_features"]["pass_sacks_per_game"] == 4.0
+    assert result["source_availability"]["weekly_availability"] is True
+
+    unsupported = build_matchup_profile(
+        player_id="idp-1",
+        season=2026,
+        week=4,
+        player={"position": "DL", "team": "DEN"},
+        opponent="KC",
+        availability={"status": "Active"},
+    )
+    assert unsupported["position"] == "DL"
+    assert unsupported["matchup_adjustment"] == 0.0
+    assert "unsupported_position" in unsupported["missing_inputs"]
+
+
+def test_repository_profile_joins_historical_row_opponent_and_availability(tmp_path) -> None:
+    repository = SleeperNormalizedRepository(tmp_path / "normalized.sqlite")
+    repository.upsert_player_week_rows(
+        season=2026,
+        week=1,
+        source="stats",
+        rows=[
+            {"player_id": "qb-1", "team": "DEN", "position": "QB", "stats": {"pass_sack": 1}, "opponent": "KC", "fantasy_points": 20},
+            {"player_id": "kc-qb", "team": "KC", "position": "QB", "stats": {"pass_sack": 9}, "opponent": "DEN", "fantasy_points": 99},
+            {"player_id": "oak-qb", "team": "OAK", "position": "QB", "stats": {"pass_sack": 2}, "opponent": "KC", "fantasy_points": 10},
+        ],
+    )
+    repository.upsert_team_week_schedule(
+        season=2026,
+        week=1,
+        rows=[{"team": "DEN", "opponent": "KC", "home_away": "away"}],
+        source="test",
+    )
+    repository.upsert_player_week_availability(
+        season=2026,
+        week=1,
+        rows=[{"team": "DEN", "player_id": "qb-1", "status": "Active"}],
+        source="test",
+    )
+
+    result = build_repository_matchup_profile(
+        repository, player_id="qb-1", season=2026, week=1
+    )
+
+    assert result["evidence"]["historical_games"] == 1
+    assert result["evidence"]["opponent_features"]["points_allowed_per_game"] == 10.0
+    assert result["evidence"]["weekly_availability"]["status"] == "Active"
+    assert result["source_availability"]["weekly_availability"] is True
+    repository.close()
+
+
+def test_repository_profile_returns_missing_source_result(tmp_path) -> None:
+    repository = SleeperNormalizedRepository(tmp_path / "normalized.sqlite")
+    result = build_repository_matchup_profile(
+        repository, player_id="missing", season=2026, week=1
+    )
+    assert result["matchup_adjustment"] == 0.0
+    assert "not_evaluable_missing_normalized_stats_row" in result["missing_inputs"]
+    repository.close()
