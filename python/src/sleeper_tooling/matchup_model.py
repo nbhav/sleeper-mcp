@@ -209,6 +209,7 @@ def build_repository_matchup_profile(
 def _missing_source_profile(*, player_id: str, season: int, week: int, source: str) -> dict[str, Any]:
     return {
         "model_version": MATCHUP_MODEL_VERSION,
+        "status": "unavailable",
         "season": int(season),
         "week": int(week),
         "player_id": str(player_id),

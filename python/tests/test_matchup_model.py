@@ -162,6 +162,7 @@ def test_repository_profile_returns_missing_source_result(tmp_path) -> None:
     result = build_repository_matchup_profile(
         repository, player_id="missing", season=2026, week=1
     )
+    assert result["status"] == "unavailable"
     assert result["matchup_adjustment"] == 0.0
     assert "not_evaluable_missing_normalized_stats_row" in result["missing_inputs"]
     repository.close()
