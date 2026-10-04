@@ -160,7 +160,9 @@ def test_player_usage_context_is_actual_first_and_explicit_about_missing_sources
     assert result["role_label"] == "emerging_rotation"
     assert result["windows"]["season_to_date"]["actual"][-1]["week"] == 5
     assert result["scores"]["context_confidence"] < 100
-    assert "routes" in result["missing_inputs"]
+    assert result["primary_source"] == "stats"
+    assert "touch_share" in result["missing_inputs"]
+    assert "routes" not in result["missing_inputs"]
     assert "not_evaluable_missing_nfl_schedule" in result["reason_codes"]
 
 
