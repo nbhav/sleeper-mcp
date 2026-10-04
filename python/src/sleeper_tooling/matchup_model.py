@@ -72,13 +72,15 @@ def build_matchup_profile(
     if not supported_position:
         missing.append("unsupported_position")
 
-    features = _features(position, opponent_rows) if supported_position else {}
-    league_features = _features(position, league_rows) if supported_position else {}
+    opponent_games = _aggregate_game_rows(opponent_rows)
+    league_games = _aggregate_game_rows(league_rows)
+    features = _features(position, opponent_games) if supported_position else {}
+    league_features = _features(position, league_games) if supported_position else {}
     modifier = 0.0
     evidence: dict[str, Any] = {
         "position": position,
         "opponent": opponent,
-        "historical_games": len(opponent_rows),
+        "historical_games": len(opponent_games),
         "opponent_features": features,
     }
     if features and league_features and source_availability["nfl_schedule"]:
@@ -278,6 +280,21 @@ def _features(position: str, rows: Sequence[Mapping[str, Any]]) -> dict[str, flo
     elif position == "QB":
         feature["pass_sacks_per_game"] = round(sum(_stats(row, None).get("pass_sack", 0.0) for row in rows) / len(rows), 3)
     return feature
+
+
+def _aggregate_game_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse player rows to one positional total per game/week."""
+    grouped: dict[str, dict[str, Any]] = {}
+    stat_keys = ("fantasy_points", "rush_yd", "rush_td", "rec", "rec_yd", "rec_td", "targets", "pass_sack", "sack")
+    for row in rows:
+        key = str(row.get("game_id") or row.get("week") or len(grouped))
+        aggregate = grouped.setdefault(key, {"game_id": row.get("game_id"), "week": row.get("week")})
+        stats = _stats(row, None)
+        for stat_key in stat_keys:
+            value = stats.get(stat_key)
+            if value is not None:
+                aggregate[stat_key] = float(aggregate.get(stat_key, 0.0)) + float(value)
+    return list(grouped.values())
 
 
 def _rushing_points(row: Mapping[str, Any]) -> float:

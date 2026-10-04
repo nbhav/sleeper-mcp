@@ -165,3 +165,25 @@ def test_repository_profile_returns_missing_source_result(tmp_path) -> None:
     assert result["matchup_adjustment"] == 0.0
     assert "not_evaluable_missing_normalized_stats_row" in result["missing_inputs"]
     repository.close()
+
+
+def test_matchup_features_aggregate_multiple_players_per_game() -> None:
+    result = build_matchup_profile(
+        player_id="rb-1",
+        season=2026,
+        week=4,
+        player={"position": "RB", "team": "DEN"},
+        opponent="KC",
+        opponent_rows=[
+            _row("RB", 30, week=1, game_id="game-1"),
+            _row("RB", 20, week=1, game_id="game-1"),
+            _row("RB", 10, week=2, game_id="game-2"),
+        ],
+        league_rows=[
+            _row("RB", 20, week=1, game_id="league-1"),
+            _row("RB", 20, week=2, game_id="league-2"),
+        ],
+    )
+
+    assert result["evidence"]["historical_games"] == 2
+    assert result["evidence"]["opponent_features"]["points_allowed_per_game"] == 30.0
