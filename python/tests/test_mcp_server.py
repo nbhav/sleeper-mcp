@@ -25,6 +25,7 @@ def test_mcp_tools_list_exposes_curated_decision_tools() -> None:
         "sync_decision_data",
         "player_stat_trends",
         "player_usage_context",
+        "compare_player_usage_context",
         "position_stat_leaders",
         "player_matchup_context",
         "weekly_briefing",
@@ -57,6 +58,12 @@ def test_mcp_tools_list_exposes_curated_decision_tools() -> None:
     ]
     assert tools_by_name["player_usage_context"]["inputSchema"]["required"] == [
         "player_id",
+        "season",
+        "week",
+    ]
+    assert tools_by_name["compare_player_usage_context"]["inputSchema"]["required"] == [
+        "player_a_id",
+        "player_b_id",
         "season",
         "week",
     ]
@@ -220,6 +227,40 @@ def test_mcp_tool_call_dispatches_player_matchup_context() -> None:
     payload = json.loads(response["result"]["content"][0]["text"])
     assert payload["player_id"] == "qb-1"
     assert payload["missing_inputs"] == ["not_evaluable_missing_weekly_availability"]
+
+
+def test_mcp_tool_call_dispatches_compare_player_usage_context() -> None:
+    class Runner:
+        def compare_player_usage_context(
+            self, *, player_a_id: str, player_b_id: str, season: int, week: int
+        ):
+            return {
+                "players": {"a": player_a_id, "b": player_b_id},
+                "season": season,
+                "week": week,
+                "recommendation": {"status": "recommend", "preferred_player": "a"},
+            }
+
+    response = McpServer(Runner()).handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 8,
+            "method": "tools/call",
+            "params": {
+                "name": "compare_player_usage_context",
+                "arguments": {
+                    "player_a_id": "rb-a",
+                    "player_b_id": "rb-b",
+                    "season": 2026,
+                    "week": 5,
+                },
+            },
+        }
+    )
+
+    payload = json.loads(response["result"]["content"][0]["text"])
+    assert payload["players"] == {"a": "rb-a", "b": "rb-b"}
+    assert payload["recommendation"]["preferred_player"] == "a"
 
 
 def test_mcp_tool_call_returns_raw_markdown_text_content() -> None:

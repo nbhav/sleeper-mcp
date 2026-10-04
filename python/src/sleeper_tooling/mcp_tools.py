@@ -241,6 +241,73 @@ class FantasyToolRunner:
             position=position,
         )
 
+    def compare_player_usage_context(
+        self,
+        *,
+        player_a_id: str,
+        player_b_id: str,
+        season: int,
+        week: int,
+    ) -> dict[str, Any]:
+        """Compare two actual-first usage profiles using the same decision inputs."""
+        service = PlayerUsageContextService(self._require_decision_repository())
+        left = service.build(player_id=player_a_id, season=season, week=week)
+        right = service.build(player_id=player_b_id, season=season, week=week)
+        score_keys = (
+            "opportunity_score",
+            "role_stability_score",
+            "production_quality_score",
+            "td_dependency_score",
+            "context_confidence",
+        )
+        deltas = {
+            key: round(float(left["scores"].get(key, 0)) - float(right["scores"].get(key, 0)), 2)
+            for key in score_keys
+        }
+        decision_scores = {
+            label: _usage_decision_score(profile)
+            for label, profile in (("a", left), ("b", right))
+        }
+        decision_delta = round(decision_scores["a"] - decision_scores["b"], 2)
+        preferred = "a" if decision_delta > 0 else "b" if decision_delta < 0 else None
+        severe_one_off = {
+            label
+            for label, profile in (("a", left), ("b", right))
+            if float(profile["scores"].get("one_off_risk", 0)) >= 50
+            or any(
+                code in profile["reason_codes"]
+                for code in ("low_touch_big_points", "low_target_big_points", "td_only_low_usage")
+            )
+        }
+        if not left["actual_first"] and not right["actual_first"]:
+            status = "insufficient_context"
+        elif abs(decision_delta) < 10:
+            status = "watch"
+        elif preferred in severe_one_off:
+            status = "watch"
+        elif decision_delta > 0:
+            status = "recommend"
+        else:
+            status = "avoid"
+        return {
+            "schema_version": "compare_player_usage_context.v1",
+            "season": season,
+            "week": week,
+            "players": {"a": left, "b": right},
+            "score_deltas_a_minus_b": deltas,
+            "decision_scores": decision_scores,
+            "decision_score_delta_a_minus_b": decision_delta,
+            "recommendation": {
+                "status": status,
+                "preferred_player": preferred,
+                "severe_one_off_players": sorted(severe_one_off),
+            },
+            "disagreement": _usage_context_disagreement(left, right),
+            "reason_codes": sorted(set(left["reason_codes"]) | set(right["reason_codes"])),
+            "missing_inputs": sorted(set(left["missing_inputs"]) | set(right["missing_inputs"])),
+            "evidence": {"a": left["evidence"], "b": right["evidence"]},
+        }
+
     def position_stat_leaders(
         self,
         *,
@@ -2003,6 +2070,76 @@ def enrich_waiver_candidates(
 
 def parse_positions(positions: str) -> list[str]:
     return [position.strip().upper() for position in positions.split(",") if position.strip()]
+
+
+def _usage_decision_score(profile: dict[str, Any]) -> float:
+    scores = profile.get("scores", {})
+    positive = sum(
+        float(scores.get(key, 0))
+        for key in ("opportunity_score", "role_stability_score", "production_quality_score", "context_confidence")
+    )
+    risk = sum(
+        float(scores.get(key, 0))
+        for key in ("td_dependency_score", "small_sample_risk", "one_off_risk")
+    )
+    return round(positive - risk, 2)
+
+
+def _usage_context_disagreement(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+    values: dict[str, dict[str, float | None]] = {}
+    unmatched_weeks: dict[str, list[int]] = {}
+    for label, profile in (("a", left), ("b", right)):
+        windows = profile.get("windows", {}).get("last_2_weeks", {})
+        actual_rows = {int(row["week"]): row for row in windows.get("actual", []) if row.get("week") is not None}
+        projection_rows = {int(row["week"]): row for row in windows.get("projection", []) if row.get("week") is not None}
+        common_weeks = sorted(set(actual_rows) & set(projection_rows))
+        actual = _average_usage_points([actual_rows[week] for week in common_weeks])
+        projected = _average_usage_points([projection_rows[week] for week in common_weeks])
+        unmatched_weeks[label] = sorted((set(actual_rows) ^ set(projection_rows)))
+        values[label] = {
+            "recent_actual_points": actual,
+            "recent_projected_points": projected,
+            "actual_minus_projection": round(actual - projected, 2)
+            if actual is not None and projected is not None
+            else None,
+            "context_score": _usage_decision_score(profile),
+            "comparison_weeks": common_weeks,
+        }
+
+    def winner(key: str) -> str | None:
+        left_value = values["a"][key]
+        right_value = values["b"][key]
+        if left_value is None or right_value is None or left_value == right_value:
+            return None
+        return "a" if left_value > right_value else "b"
+
+    actual_winner = winner("recent_actual_points")
+    projection_winner = winner("recent_projected_points")
+    context_winner = winner("context_score")
+    return {
+        "by_player": values,
+        "winner": {
+            "recent_actual_points": actual_winner,
+            "recent_projected_points": projection_winner,
+            "context_score": context_winner,
+        },
+        "actual_vs_projection_conflict": (
+            actual_winner is not None
+            and projection_winner is not None
+            and actual_winner != projection_winner
+        ),
+        "missing_inputs": [
+            f"unmatched_{label}_actual_projection_weeks"
+            for label, weeks in unmatched_weeks.items()
+            if weeks
+        ],
+        "unmatched_weeks": unmatched_weeks,
+    }
+
+
+def _average_usage_points(rows: list[dict[str, Any]]) -> float | None:
+    points = [float(row["points"]) for row in rows if row.get("points") is not None]
+    return round(sum(points) / len(points), 2) if points else None
 
 
 def validate_stat_source(source: str) -> None:
