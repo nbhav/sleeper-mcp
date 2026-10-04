@@ -1140,6 +1140,17 @@ async function playerUsageContext(args: JsonMap, env: Env): Promise<JsonMap> {
   const primaryRows = actualFirst ? actualRows : projectionRows;
   const opportunityKey = position === "QB" ? "dropbacks" : position === "RB" ? "touches" : ["WR", "TE"].includes(position) ? "targets" : position === "K" ? "total_kick_attempts" : "sacks";
   const opportunity = averageUsage(primaryRows, opportunityKey);
+  const reasonCodes = ["not_evaluable_missing_nfl_schedule", "not_evaluable_missing_matchup_implied_total"];
+  const reasons: JsonMap[] = [
+    { code: "not_evaluable_missing_nfl_schedule", component: "matchup_adjustment", polarity: "neutral", computability_tier: "not_evaluable_missing_source", evidence: [], severity: "high", description: "NFL schedule/opponent join is missing; matchup adjustment is disabled", missing_inputs: ["nfl schedule"] },
+    { code: "not_evaluable_missing_matchup_implied_total", component: "matchup_adjustment", polarity: "neutral", computability_tier: "not_evaluable_missing_source", evidence: [], severity: "low", description: "betting and implied-total data are missing", missing_inputs: ["implied total"] }
+  ];
+  const missingInputs = ["nfl_schedule", "implied_total"];
+  if (!actualFirst) {
+    reasonCodes.unshift("not_evaluable_missing_actual_stats");
+    reasons.unshift({ code: "not_evaluable_missing_actual_stats", component: "context_confidence", polarity: "neutral", computability_tier: "not_evaluable_missing_source", evidence: [], severity: "high", description: "No actual Sleeper stats were available; projections are shown separately", missing_inputs: ["actual stats"] });
+    missingInputs.unshift("actual_stats");
+  }
   return {
     schema_version: "player_usage_context.v1",
     data_source: "sleeper_worker_raw_data",
@@ -1165,12 +1176,9 @@ async function playerUsageContext(args: JsonMap, env: Env): Promise<JsonMap> {
       season_context_score: 50,
       context_confidence: actualFirst ? 60 : 40
     },
-    reason_codes: ["not_evaluable_missing_nfl_schedule", "not_evaluable_missing_matchup_implied_total"],
-    reasons: [
-      { code: "not_evaluable_missing_nfl_schedule", component: "matchup_adjustment", polarity: "neutral", computability_tier: "not_evaluable_missing_source", evidence: [], severity: "high", description: "NFL schedule/opponent join is missing; matchup adjustment is disabled", missing_inputs: ["nfl schedule"] },
-      { code: "not_evaluable_missing_matchup_implied_total", component: "matchup_adjustment", polarity: "neutral", computability_tier: "not_evaluable_missing_source", evidence: [], severity: "low", description: "betting and implied-total data are missing", missing_inputs: ["implied total"] }
-    ],
-    missing_inputs: ["nfl_schedule", "implied_total"],
+    reason_codes: reasonCodes,
+    reasons,
+    missing_inputs: missingInputs,
     depth_chart: {},
     role_snapshots: [],
     availability_snapshots: [],
@@ -1203,9 +1211,14 @@ function appendUsageRow(target: JsonMap[], rows: JsonMap[], playerId: string, po
   normalized.def_tds = numberValue(stats.def_td) ?? numberValue(stats.td);
   normalized.takeaways = (numberValue(stats.int) || 0) + (numberValue(stats.fum_rec) || 0);
   normalized.field_goal_attempts = numberValue(stats.fga);
-  normalized.total_kick_attempts = normalized.field_goal_attempts === undefined && numberValue(stats.xpa) === undefined ? undefined : (normalized.field_goal_attempts || 0) + (numberValue(stats.xpa) || 0);
-  normalized.dropbacks = normalized.pass_attempts === undefined && normalized.sacks === undefined ? undefined : (normalized.pass_attempts || 0) + (normalized.sacks || 0);
-  normalized.touches = normalized.rush_attempts === undefined && normalized.targets === undefined ? undefined : (normalized.rush_attempts || 0) + (normalized.targets || 0);
+  const extraPointAttempts = numberValue(stats.xpa);
+  const passAttempts = numberValue(normalized.pass_attempts);
+  const sacks = numberValue(normalized.sacks);
+  const rushAttempts = numberValue(normalized.rush_attempts);
+  const targets = numberValue(normalized.targets);
+  normalized.total_kick_attempts = normalized.field_goal_attempts === undefined && extraPointAttempts === undefined ? undefined : (numberValue(normalized.field_goal_attempts) || 0) + (extraPointAttempts || 0);
+  normalized.dropbacks = passAttempts === undefined && sacks === undefined ? undefined : (passAttempts || 0) + (sacks || 0);
+  normalized.touches = rushAttempts === undefined && targets === undefined ? undefined : (rushAttempts || 0) + (targets || 0);
   target.push(normalized);
 }
 
