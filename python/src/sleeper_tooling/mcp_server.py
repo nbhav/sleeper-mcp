@@ -79,6 +79,20 @@ TOOLS = [
         },
     },
     {
+        "name": "compare_player_usage_context",
+        "description": "Compare two players using aligned actual-first usage context, evidence, and missing-source reasons.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["player_a_id", "player_b_id", "season", "week"],
+            "properties": {
+                "player_a_id": {"type": "string"},
+                "player_b_id": {"type": "string"},
+                "season": {"type": "integer"},
+                "week": {"type": "integer"},
+            },
+        },
+    },
+    {
         "name": "position_stat_leaders",
         "description": "Return graph-friendly normalized stat leaders for a position, week, and stat key.",
         "inputSchema": {
