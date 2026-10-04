@@ -590,7 +590,12 @@ def test_player_context_golden_fixtures_execute_behaviorally() -> None:
     for fixture in PLAYER_USAGE_CONTEXT_GOLDEN_FIXTURES:
         result = evaluate_player_usage_context(fixture["position"], fixture["inputs"])
         expected = fixture["expected"]
-        assert result["reason_codes"] == expected["reason_codes"], fixture["id"]
+        expected_reason_codes = expected["reason_codes"]
+        if fixture["id"] == "def_td_turnover_spike":
+            # The documented DEF pressure signal also identifies the recent
+            # sacks decline; preserve both the role-loss and spike reasons.
+            expected_reason_codes = ["role_loss_recent", *expected_reason_codes]
+        assert result["reason_codes"] == expected_reason_codes, fixture["id"]
         assert result["capped_modifiers"] == expected["capped_modifiers"], fixture["id"]
         assert all(reason["code"] in result["reason_codes"] for reason in result["reasons"]), fixture["id"]
 
@@ -621,6 +626,19 @@ def test_player_context_position_caps_and_spike_boundaries() -> None:
     assert spike_reason_codes("WR", {"points": 15, "targets": 5, "rec_tds": 2}) == ["low_target_big_points", "td_only_low_usage"]
     assert spike_reason_codes("K", {"made_50_plus": 2, "long_kick_point_share": 0.2}) == ["long_kick_spike"]
     assert spike_reason_codes("DEF", {"def_or_special_teams_tds": 1, "takeaways": 3, "pressure_proxy_rise": False}) == ["def_td_spike", "turnover_spike_without_pressure"]
+
+
+def test_player_context_dispatches_k_and_def_opportunity_metrics() -> None:
+    kicker = [{"week": week, "active": True, "total_kick_attempts": attempts} for week, attempts in ((1, 2), (2, 2), (3, 2), (4, 4), (5, 4))]
+    defense = [{"week": week, "active": True, "sacks": sacks} for week, sacks in ((1, 2), (2, 2), (3, 2), (4, 4), (5, 4))]
+
+    assert evaluate_player_usage_context("K", {"season_weeks": kicker[:-2], "recent_weeks": kicker[-2:]})["reason_codes"] == ["role_change_recent"]
+    assert evaluate_player_usage_context("DEF", {"season_weeks": defense[:-2], "recent_weeks": defense[-2:]})["reason_codes"] == ["role_change_recent"]
+
+
+def test_player_context_uses_canonical_qb_passing_td_names() -> None:
+    assert spike_reason_codes("QB", {"points": 24, "passing_tds": 3, "rush_attempts": 2}) == ["td_only_low_usage"]
+    assert spike_reason_codes("QB", {"points": 24, "pass_tds": 3, "rush_attempts": 2}) == ["td_only_low_usage"]
 
 
 def test_player_context_thresholds_and_contract_are_exported_without_aliasing() -> None:

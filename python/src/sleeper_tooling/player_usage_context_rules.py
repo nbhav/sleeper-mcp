@@ -115,6 +115,13 @@ REASON_CODES: dict[str, dict[str, Any]] = {
     "not_evaluable_missing_targets": _reason("not_evaluable_missing_targets", "opportunity", "neutral", "not_evaluable_missing_source", (), "medium", "targets are missing; this signal is not evaluable", ("targets",)),
     "not_evaluable_missing_rush_attempts": _reason("not_evaluable_missing_rush_attempts", "opportunity", "neutral", "not_evaluable_missing_source", (), "medium", "rush attempts are missing; this signal is not evaluable", ("rush_attempts",)),
     "not_evaluable_missing_pressure_proxy_rise": _reason("not_evaluable_missing_pressure_proxy_rise", "one_off_risk", "neutral", "not_evaluable_missing_source", (), "medium", "turnover spike risk is not evaluable without a pressure proxy", ("pressure_proxy_rise",)),
+    "not_evaluable_missing_total_kick_attempts": _reason("not_evaluable_missing_total_kick_attempts", "opportunity", "neutral", "not_evaluable_missing_source", (), "medium", "total kick attempts are missing; this signal is not evaluable", ("total_kick_attempts",)),
+    "not_evaluable_missing_sacks": _reason("not_evaluable_missing_sacks", "opportunity", "neutral", "not_evaluable_missing_source", (), "medium", "sacks are missing; this signal is not evaluable", ("sacks",)),
+    "not_evaluable_missing_routes": _reason("not_evaluable_missing_routes", "context_confidence", "neutral", "not_evaluable_missing_source", (), "medium", "route participation is not available in normalized Sleeper data", ("routes",)),
+    "not_evaluable_missing_target_share": _reason("not_evaluable_missing_target_share", "context_confidence", "neutral", "not_evaluable_missing_source", (), "medium", "target share is not available in normalized Sleeper data", ("target_share",)),
+    "not_evaluable_missing_red_zone_use": _reason("not_evaluable_missing_red_zone_use", "context_confidence", "neutral", "not_evaluable_missing_source", (), "medium", "red-zone usage is not available in normalized Sleeper data", ("red_zone_use",)),
+    "not_evaluable_missing_air_yards": _reason("not_evaluable_missing_air_yards", "context_confidence", "neutral", "not_evaluable_missing_source", (), "medium", "air yards are not available in normalized Sleeper data", ("air_yards",)),
+    "not_evaluable_missing_touch_share": _reason("not_evaluable_missing_touch_share", "context_confidence", "neutral", "not_evaluable_missing_source", (), "medium", "touch share is not available in normalized Sleeper data", ("touch_share",)),
     "current_metadata_only_depth_chart": _reason("current_metadata_only_depth_chart", "depth_chart_confidence", "neutral", "current_metadata_only", ("current depth metadata",), "medium", "depth chart metadata is current-only and not historical", ("historical depth chart",)),
     "current_metadata_only_injury": _reason("current_metadata_only_injury", "role_stability", "neutral", "current_metadata_only", ("current injury metadata",), "medium", "injury metadata is current-only and not historical", ("historical availability",)),
 }
@@ -237,7 +244,7 @@ def spike_reason_codes(position: str, row: Mapping[str, Any]) -> list[str]:
             codes.append("not_evaluable_missing_targets")
         elif int(row["targets"]) <= thresholds["low_target_floor"]["targets_max"]:
             codes.append("low_target_big_points")
-    td_count = int(row.get("total_tds", 0) or row.get("rec_tds", 0) or row.get("passing_tds", 0))
+    td_count = int(row.get("total_tds", 0) or row.get("rec_tds", 0) or row.get("pass_tds", 0) or row.get("passing_tds", 0))
     if position in {"RB", "WR", "TE", "QB"} and td_count >= (thresholds.get("total_tds") or thresholds.get("rec_tds") or thresholds.get("passing_tds"))["min"]:
         opportunity_field = {"RB": "touches", "WR": "targets", "TE": "targets", "QB": "rush_attempts"}[position]
         if row.get(opportunity_field) is None:
@@ -295,7 +302,10 @@ def evaluate_player_usage_context(position: str, inputs: Mapping[str, Any]) -> d
     rows = season + recent
     reason_codes: list[str] = []
     modifiers: dict[str, float] = {}
-    opportunity_metric = _OPPORTUNITY_METRIC_BY_POSITION.get(position)
+    opportunity_metric = _OPPORTUNITY_METRIC_BY_POSITION.get(position) or {
+        "K": "total_kick_attempts",
+        "DEF": "sacks",
+    }.get(position)
     if rows and opportunity_metric in POSITION_USAGE_THRESHOLDS.get(position, {}):
         signal = opportunity_signal(position, rows, metric=opportunity_metric)
         if signal["status"] == "increased":
@@ -342,7 +352,7 @@ PLAYER_USAGE_CONTEXT_GOLDEN_FIXTURES: tuple[dict[str, Any], ...] = (
     {"id": "qb_high_projection_weak_actuals", "case": "high_projections_with_weak_actuals", "position": "QB", "inputs": {"recent_weeks": [{"week": 4, "active": True, "dropbacks": 25, "points": 11, "projected_points": 23}, {"week": 5, "active": True, "dropbacks": 25, "points": 11, "projected_points": 23}], "season_weeks": [{"week": 1, "active": True, "dropbacks": 35, "points": 18}, {"week": 2, "active": True, "dropbacks": 36, "points": 19}, {"week": 3, "active": True, "dropbacks": 34, "points": 18}]}, "expected": {"reason_codes": ["role_loss_recent", "season_average_stale"], "capped_modifiers": {"context": -6.0}}},
     {"id": "rb_injury_fill_in", "case": "injury_fill_in", "position": "RB", "inputs": {"recent_weeks": [{"week": 4, "active": True, "touches": 17, "injury_fill_in": True}, {"week": 5, "active": True, "touches": 17, "injury_fill_in": True}], "season_weeks": [{"week": 1, "active": True, "touches": 6}, {"week": 2, "active": True, "touches": 7}, {"week": 3, "active": True, "touches": 6}]}, "expected": {"reason_codes": ["role_change_recent"], "capped_modifiers": {"context": 4.0}}},
     {"id": "te_buried_depth_breakout", "case": "buried_depth_chart_breakout", "position": "TE", "inputs": {"recent_weeks": [{"week": 4, "active": True, "targets": 5, "red_zone_targets": 1}, {"week": 5, "active": True, "targets": 5, "red_zone_targets": 1}], "season_weeks": [{"week": 1, "active": True, "targets": 2}, {"week": 2, "active": True, "targets": 2}, {"week": 3, "active": True, "targets": 2}], "current_metadata": {"depth_chart_role": "third_te"}}, "expected": {"reason_codes": ["role_change_recent", "current_metadata_only_depth_chart"], "capped_modifiers": {"context": 6.0}}},
-    {"id": "k_long_kick_spike", "case": "k_long_kick_spike", "position": "K", "inputs": {"recent_weeks": [{"week": 4, "active": True, "made_50_plus": 2, "long_kick_point_share": 0.56}, {"week": 5, "active": True, "made_50_plus": 2, "long_kick_point_share": 0.56}], "season_weeks": [{"week": 1, "active": True, "made_50_plus": 0}, {"week": 2, "active": True, "made_50_plus": 0}, {"week": 3, "active": True, "made_50_plus": 0}]}, "expected": {"reason_codes": ["long_kick_spike"], "capped_modifiers": {"context": -4.5}}},
+    {"id": "k_long_kick_spike", "case": "k_long_kick_spike", "position": "K", "inputs": {"recent_weeks": [{"week": 4, "active": True, "total_kick_attempts": 3, "made_50_plus": 2, "long_kick_point_share": 0.56}, {"week": 5, "active": True, "total_kick_attempts": 3, "made_50_plus": 2, "long_kick_point_share": 0.56}], "season_weeks": [{"week": 1, "active": True, "total_kick_attempts": 3, "made_50_plus": 0}, {"week": 2, "active": True, "total_kick_attempts": 3, "made_50_plus": 0}, {"week": 3, "active": True, "total_kick_attempts": 3, "made_50_plus": 0}]}, "expected": {"reason_codes": ["long_kick_spike"], "capped_modifiers": {"context": -4.5}}},
     {"id": "def_td_turnover_spike", "case": "def_touchdown_or_turnover_spike", "position": "DEF", "inputs": {"recent_weeks": [{"week": 4, "active": True, "def_or_special_teams_tds": 1, "takeaways": 4, "sacks": 1, "pressure_proxy_rise": False}, {"week": 5, "active": True, "def_or_special_teams_tds": 1, "takeaways": 4, "sacks": 1, "pressure_proxy_rise": False}], "season_weeks": [{"week": 1, "active": True, "def_or_special_teams_tds": 0, "takeaways": 1, "sacks": 4}, {"week": 2, "active": True, "def_or_special_teams_tds": 0, "takeaways": 1, "sacks": 4}, {"week": 3, "active": True, "def_or_special_teams_tds": 0, "takeaways": 1, "sacks": 4}], "matchup": {"raw_modifier": 4, "nfl_schedule_available": True}}, "expected": {"reason_codes": ["def_td_spike", "turnover_spike_without_pressure"], "capped_modifiers": {"context": -6.0, "matchup": 3.0}}},
     {"id": "qb_missing_matchup_source", "case": "missing_matchup_source", "position": "QB", "inputs": {"matchup": {"raw_modifier": 2.75, "nfl_schedule_available": False}}, "expected": {"reason_codes": ["not_evaluable_missing_nfl_schedule"], "capped_modifiers": {"matchup": 0.0}}},
 )

@@ -127,6 +127,45 @@ def test_decision_data_status_reports_stale_and_missing() -> None:
     assert missing_runner.decision_data_status(max_age_hours=1)["status"] == "missing"
 
 
+def test_player_usage_context_is_actual_first_and_explicit_about_missing_sources() -> None:
+    class UsageRepository:
+        def get_player(self, player_id):
+            return {"player_id": player_id, "full_name": "Context Back", "team": "DEN", "position": "RB", "depth_chart_order": 2}
+
+        def query_numeric_stat_rows(self, *, source, season, start_week, end_week, player_ids):
+            rows = []
+            for current_week, carries, targets in ((1, 10, 2), (2, 10, 2), (4, 16, 3), (5, 17, 3)):
+                if source == "projections" and current_week < 4:
+                    continue
+                rows.extend([
+                    {"week": current_week, "player_id": "rb-1", "team": "DEN", "position": "RB", "stat_key": "rush_att", "stat_value": carries if source == "stats" else 12},
+                    {"week": current_week, "player_id": "rb-1", "team": "DEN", "position": "RB", "stat_key": "rec_tgt", "stat_value": targets if source == "stats" else 3},
+                ])
+            return rows
+
+        def list_player_week_availability(self, **kwargs):
+            return []
+
+        def get_team_week_schedule(self, **kwargs):
+            return None
+
+        def list_player_role_snapshots(self, **kwargs):
+            return []
+
+    result = FantasyToolRunner(decision_repository=UsageRepository()).player_usage_context(
+        player_id="rb-1", season=2026, week=5
+    )
+
+    assert result["actual_first"] is True
+    assert result["role_label"] == "emerging_rotation"
+    assert result["windows"]["season_to_date"]["actual"][-1]["week"] == 5
+    assert result["scores"]["context_confidence"] < 100
+    assert result["primary_source"] == "stats"
+    assert "touch_share" in result["missing_inputs"]
+    assert "routes" not in result["missing_inputs"]
+    assert "not_evaluable_missing_nfl_schedule" in result["reason_codes"]
+
+
 def test_sync_decision_data_delegates_to_configured_sync_service() -> None:
     service = FakeSyncService()
     runner = FantasyToolRunner(

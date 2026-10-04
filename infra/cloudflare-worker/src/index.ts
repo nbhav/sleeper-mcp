@@ -251,6 +251,20 @@ const tools = [
         weeks_back: { type: "integer", default: 6 }
       }
     }
+  },
+  {
+    name: "player_usage_context",
+    description: "Return an actual-first Sleeper player usage, role, volatility, availability, and evidence profile.",
+    inputSchema: {
+      type: "object",
+      required: ["player_id", "season", "week"],
+      properties: {
+        player_id: { type: "string" },
+        season: { type: "integer" },
+        week: { type: "integer" },
+        position: { type: "string", enum: ["QB", "RB", "WR", "TE", "K", "DEF"] }
+      }
+    }
   }
 ];
 
@@ -348,6 +362,8 @@ async function callTool(name: string, args: JsonMap, env: Env): Promise<unknown>
       return leagueTeamWatch(args, env);
     case "player_card":
       return playerCard(args, env);
+    case "player_usage_context":
+      return playerUsageContext(args, env);
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
@@ -1094,6 +1110,174 @@ async function playerCard(args: JsonMap, env: Env): Promise<JsonMap> {
       "missing stat keys are treated as zero"
     ]
   };
+}
+
+async function playerUsageContext(args: JsonMap, env: Env): Promise<JsonMap> {
+  const playerId = String(args.player_id || "").trim();
+  if (!playerId) throw new Error("player_id is required");
+  const season = numberValue(args.season);
+  const week = numberValue(args.week);
+  if (season === undefined || week === undefined || season < 1 || week < 1) {
+    throw new Error("season and week must be positive");
+  }
+  const players = await getPlayers(env);
+  const player = objectValue(players[playerId]);
+  const position = String(args.position || player.position || "").toUpperCase();
+  if (!["QB", "RB", "WR", "TE", "K", "DEF"].includes(position)) {
+    throw new Error("position must be one of QB, RB, WR, TE, K, DEF");
+  }
+  const actualRows: JsonMap[] = [];
+  const projectionRows: JsonMap[] = [];
+  for (let targetWeek = 1; targetWeek <= week; targetWeek += 1) {
+    const [actual, projection] = await Promise.all([
+      getData(`/stats/nfl/${season}/${targetWeek}`, env, { "season_type": "regular", "position[]": position }),
+      getData(`/projections/nfl/${season}/${targetWeek}`, env, { "season_type": "regular", "position[]": position })
+    ]);
+    appendUsageRow(actualRows, arrayValue(actual), playerId, position, "stats", targetWeek, player);
+    appendUsageRow(projectionRows, arrayValue(projection), playerId, position, "projections", targetWeek, player);
+  }
+  const metadata = metadataContext(player);
+  const actualFirst = actualRows.length > 0;
+  const primaryRows = actualFirst ? actualRows : projectionRows;
+  const evaluated = evaluateWorkerUsageContext(position, actualRows, projectionRows, metadata);
+  const evaluatedScores = objectValue(evaluated.scores);
+  return {
+    schema_version: "player_usage_context.v1",
+    data_source: "sleeper_worker_raw_data",
+    player_id: playerId,
+    name: playerName(player, playerId),
+    team: String(player.team || ""),
+    position,
+    season,
+    week,
+    actual_first: actualFirst,
+    primary_source: actualFirst ? "stats" : "projections",
+    role_label: evaluated.role_label,
+    scores: evaluatedScores,
+    ...evaluatedScores,
+    modifiers: evaluated.modifiers,
+    reason_codes: evaluated.reason_codes,
+    reasons: evaluated.reasons,
+    missing_inputs: evaluated.missing_inputs,
+    source_flags: evaluated.source_flags,
+    depth_chart: metadata,
+    role_snapshots: [],
+    availability_snapshots: [],
+    windows: usageWindows(actualRows, projectionRows),
+    evidence: {
+      recent_actual_weeks: actualRows.slice(-2).map((row) => row.week),
+      season_actual_weeks: actualRows.map((row) => row.week),
+      baseline_weeks: actualRows.slice(0, -2).map((row) => row.week),
+      projection_weeks: projectionRows.map((row) => row.week),
+      actual_rows: actualRows,
+      projection_rows: projectionRows,
+      actual_source: "stats",
+      projection_source: "projections"
+    }
+  };
+}
+
+const USAGE_MISSING_CONTEXT: Record<string, string[]> = {
+  QB: ["pressure", "implied_total"],
+  RB: ["touch_share", "red_zone_use", "nfl_schedule", "implied_total"],
+  WR: ["routes", "target_share", "air_yards", "nfl_schedule"],
+  TE: ["routes", "target_share", "red_zone_use", "nfl_schedule"],
+  K: ["nfl_schedule", "weather", "implied_total"],
+  DEF: ["nfl_schedule", "pressure", "implied_total"]
+};
+
+export function evaluateWorkerUsageContext(position: string, actualRows: JsonMap[], projectionRows: JsonMap[], metadata: JsonMap): JsonMap {
+  const primaryRows = actualRows.length ? actualRows : projectionRows;
+  const recent = eligibleRows(primaryRows).slice(-2);
+  const baseline = eligibleRows(actualRows).slice(0, -2);
+  const opportunityKey = position === "QB" ? "dropbacks" : position === "RB" ? "touches" : ["WR", "TE"].includes(position) ? "targets" : position === "K" ? "total_kick_attempts" : "sacks";
+  const recentOpportunity = averageUsage(recent, opportunityKey);
+  const baselineOpportunity = averageUsage(baseline, opportunityKey);
+  const reasonCodes: string[] = [];
+  const reasons: JsonMap[] = [];
+  const modifiers: Record<string, number> = {};
+  if (recentOpportunity !== undefined && baselineOpportunity !== undefined && baselineOpportunity !== 0) {
+    const delta = (recentOpportunity - baselineOpportunity) / Math.abs(baselineOpportunity);
+    const threshold = position === "RB" ? 0.3 : position === "WR" || position === "TE" ? 0.3 : position === "QB" ? 0.15 : position === "K" || position === "DEF" ? 0.25 : 0.3;
+    if (delta >= threshold) {
+      reasonCodes.push("role_change_recent");
+      reasons.push(reason("role_change_recent", "opportunity", "positive", "partial", ["recent opportunity", "season baseline"], "medium", "recent opportunity increased beyond the position threshold"));
+      modifiers.context = 4;
+    } else if (delta <= -threshold) {
+      reasonCodes.push("role_loss_recent");
+      reasons.push(reason("role_loss_recent", "opportunity", "negative", "partial", ["recent opportunity", "season baseline"], "medium", "recent opportunity declined beyond the position threshold"));
+      modifiers.context = -4;
+    }
+  } else if (primaryRows.length && primaryRows.every((row) => numberValue(row[opportunityKey]) === undefined)) {
+    addMissingReason(reasonCodes, reasons, `not_evaluable_missing_${opportunityKey}`, "opportunity", `${opportunityKey} is missing; this signal is not evaluable`, [opportunityKey]);
+  }
+  if (metadata.depth_chart_role) {
+    reasonCodes.push("current_metadata_only_depth_chart");
+    reasons.push(reason("current_metadata_only_depth_chart", "depth_chart_confidence", "neutral", "current_metadata_only", ["current depth metadata"], "medium", "depth chart metadata is current-only and not historical", ["historical depth chart"]));
+    modifiers.context = Math.min(6, (modifiers.context || 0) + 2);
+  }
+  const recentSpike = recent.flatMap((row) => spikeReasons(position, row));
+  for (const code of recentSpike) {
+    if (!reasonCodes.includes(code)) reasonCodes.push(code);
+    const spikeReason = spikeReasonDefinition(code);
+    if (spikeReason) reasons.push(spikeReason);
+    else addMissingReason(reasonCodes, reasons, code, "opportunity", `${code.replace("not_evaluable_missing_", "")} is missing; this signal is not evaluable`, [code.replace("not_evaluable_missing_", "")]);
+    modifiers.context = Math.max(-6, (modifiers.context || 0) - (code === "long_kick_spike" ? 4.5 : 3));
+  }
+  if (!actualRows.length) addMissingReason(reasonCodes, reasons, "not_evaluable_missing_actual_stats", "context_confidence", "No actual Sleeper stats were available; projections are shown separately", ["actual stats"], "high");
+  const missingInputs = new Set(USAGE_MISSING_CONTEXT[position] || []);
+  if (!actualRows.length) missingInputs.add("actual_stats");
+  for (const input of missingInputs) {
+    const code = input === "pressure" ? "not_evaluable_missing_matchup_pressure" : input === "implied_total" ? "not_evaluable_missing_matchup_implied_total" : input === "weather" ? "not_evaluable_missing_matchup_weather" : `not_evaluable_missing_${input}`;
+    const component = ["pressure", "implied_total", "weather", "nfl_schedule"].includes(input) ? "matchup_adjustment" : "context_confidence";
+    if (!reasonCodes.includes(code)) addMissingReason(reasonCodes, reasons, code, component, `${input} is unavailable in Sleeper-only mode`, [input]);
+  }
+  const scores = workerScores(primaryRows, recent, baseline, position, modifiers, missingInputs.size, actualRows.length);
+  const roleLabel = reasonCodes.includes("role_loss_recent") ? "role_declining" : reasonCodes.includes("role_change_recent") ? "emerging_rotation" : Number(metadata.depth_chart_order) === 1 ? "established_role" : "uncertain_role";
+  return { reason_codes: reasonCodes, reasons: uniqueReasons(reasons), missing_inputs: [...missingInputs].sort(), modifiers, scores: { ...scores, matchup_adjustment: 0 }, role_label: roleLabel, source_flags: { actual_stats: actualRows.length > 0, projections: projectionRows.length > 0, player_metadata: Object.keys(metadata).length > 0, role_snapshots: false, availability_snapshots: false, nfl_schedule: false, matchup_implied_total: false } };
+}
+
+function reason(code: string, component: string, polarity: string, tier: string, evidence: string[], severity: string, description: string, missingInputs: string[] = []): JsonMap { return { code, component, polarity, computability_tier: tier, evidence, severity, description, missing_inputs: missingInputs }; }
+function addMissingReason(codes: string[], reasons: JsonMap[], code: string, component: string, description: string, missingInputs: string[], severity = "medium"): void { if (!codes.includes(code)) codes.push(code); reasons.push(reason(code, component, "neutral", "not_evaluable_missing_source", [], severity, description, missingInputs)); }
+function uniqueReasons(reasons: JsonMap[]): JsonMap[] { return reasons.filter((item, index, all) => all.findIndex((candidate) => candidate.code === item.code) === index); }
+function metadataContext(player: JsonMap): JsonMap { return Object.fromEntries(Object.entries({ depth_chart_order: player.depth_chart_order, depth_chart_position: player.depth_chart_position, status: player.status, injury_status: player.injury_status, depth_chart_role: player.depth_chart_position || player.depth_chart_order }).filter(([, value]) => value !== undefined && value !== null)); }
+function eligibleRows(rows: JsonMap[]): JsonMap[] { return rows.filter((row) => row.active !== false && row.bye !== true).sort((a, b) => Number(a.week) - Number(b.week)); }
+function usageWindows(actualRows: JsonMap[], projectionRows: JsonMap[]): JsonMap { const output: JsonMap = {}; for (const [name, count] of [["last_2_weeks", 2], ["last_3_weeks", 3], ["last_4_weeks", 4], ["season_to_date", undefined]] as const) { const actual = eligibleRows(actualRows); const projection = eligibleRows(projectionRows); output[name] = { actual: count === undefined ? actual : actual.slice(-count), projection: count === undefined ? projection : projection.slice(-count), sample_size: count === undefined ? actual.length : actual.slice(-count).length }; } return output; }
+function workerScores(primary: JsonMap[], recent: JsonMap[], baseline: JsonMap[], position: string, modifiers: Record<string, number>, missingCount: number, actualCount: number): JsonMap { const key = position === "QB" ? "dropbacks" : position === "RB" ? "touches" : ["WR", "TE"].includes(position) ? "targets" : position === "K" ? "total_kick_attempts" : "sacks"; const opportunity = averageUsage(recent, key) || 0; const points = averageUsage(recent, "points") || 0; const baselineOpportunity = averageUsage(baseline, key); const td = recent.reduce((sum, row) => sum + (numberValue(row.pass_tds) || 0) + (numberValue(row.rush_tds) || 0) + (numberValue(row.rec_tds) || 0) + (numberValue(row.def_tds) || 0), 0) / Math.max(recent.length, 1); return { opportunity_score: round(Math.min(100, opportunity * 5), 2), role_stability_score: recent.length ? 60 : 0, production_quality_score: round(Math.min(100, Math.max(0, points * 4)), 2), td_dependency_score: round(Math.min(100, td * 20 / Math.max(points, 1)), 2), depth_chart_confidence: 60, small_sample_risk: Math.max(0, 100 - recent.length * 35), one_off_risk: modifiers.context && modifiers.context < 0 ? round(-modifiers.context * 12.5, 2) : 0, trend_change_score: round(Math.max(0, Math.min(100, 50 + (baselineOpportunity ? ((opportunity - baselineOpportunity) / Math.abs(baselineOpportunity)) * 12.5 : 0))), 2), season_context_score: 50, context_confidence: round(Math.max(0, 100 - missingCount * 7 - (actualCount < 2 ? 20 : 0)), 2) }; }
+function spikeReasons(position: string, row: JsonMap): string[] { const points = numberValue(row.points) || 0; const tds = (numberValue(row.pass_tds) || 0) + (numberValue(row.rush_tds) || 0) + (numberValue(row.rec_tds) || 0) + (numberValue(row.def_tds) || 0); const codes: string[] = []; const opportunityKey = position === "QB" ? "rush_attempts" : position === "RB" ? "touches" : ["WR", "TE"].includes(position) ? "targets" : undefined; if (position === "RB" && points >= 20 && numberValue(row.touches) !== undefined && Number(row.touches) <= 12) codes.push("low_touch_big_points"); if (["WR", "TE"].includes(position) && points >= 15 && numberValue(row.targets) !== undefined && Number(row.targets) <= (position === "TE" ? 4 : 5)) codes.push("low_target_big_points"); if (["QB", "RB", "WR", "TE"].includes(position) && tds >= (position === "TE" ? 1 : position === "WR" || position === "RB" ? 2 : 3)) { if (opportunityKey && numberValue(row[opportunityKey]) === undefined) codes.push(`not_evaluable_missing_${opportunityKey}`); else if (opportunityKey) codes.push("td_only_low_usage"); } if (position === "K" && (Number(row.made_50_plus) >= 2 || Number(row.long_kick_point_share) >= 0.4)) codes.push("long_kick_spike"); if (position === "DEF" && Number(row.def_tds) >= 1) codes.push("def_td_spike"); return codes; }
+function spikeReasonDefinition(code: string): JsonMap | undefined { const definitions: Record<string, JsonMap> = { low_touch_big_points: reason(code, "one_off_risk", "negative", "computed", ["fantasy points", "touches"], "high", "skill-player points spiked on a low-touch week"), low_target_big_points: reason(code, "one_off_risk", "negative", "computed", ["fantasy points", "targets"], "high", "receiving points spiked on a low-target week"), td_only_low_usage: reason(code, "td_dependency", "negative", "computed", ["touches or targets", "touchdown stats"], "high", "touchdown points dominate a low-usage performance"), long_kick_spike: reason(code, "one_off_risk", "negative", "computed", ["long field goals", "kicking points"], "medium", "kicker value was inflated by long field goals"), def_td_spike: reason(code, "one_off_risk", "negative", "computed", ["defensive touchdown stats"], "high", "defensive value was inflated by a touchdown") }; return definitions[code]; }
+
+function appendUsageRow(target: JsonMap[], rows: JsonMap[], playerId: string, position: string, source: string, week: number, player: JsonMap): void {
+  const row = rows.find((candidate) => String(candidate.player_id || "") === playerId);
+  if (!row) return;
+  const stats = objectValue(row.stats);
+  const normalized: JsonMap = { week, player_id: playerId, team: String(player.team || ""), position, source, raw: row, raw_stats: stats, points: numberValue(stats.pts_ppr) ?? numberValue(stats.pts_half_ppr) ?? numberValue(stats.pts_std) ?? 0, active: true, bye: false };
+  normalized.pass_attempts = numberValue(stats.pass_att);
+  normalized.sacks = numberValue(stats.pass_sack) ?? numberValue(stats.sack);
+  normalized.rush_attempts = numberValue(stats.rush_att);
+  normalized.targets = numberValue(stats.rec_tgt);
+  normalized.pass_tds = numberValue(stats.pass_td);
+  normalized.rush_tds = numberValue(stats.rush_td);
+  normalized.rec_tds = numberValue(stats.rec_td);
+  normalized.def_tds = numberValue(stats.def_td) ?? numberValue(stats.td);
+  normalized.takeaways = (numberValue(stats.int) || 0) + (numberValue(stats.fum_rec) || 0);
+  normalized.field_goal_attempts = numberValue(stats.fga);
+  normalized.made_50_plus = numberValue(stats.fgm_50_plus) ?? numberValue(stats.fgm_50p);
+  normalized.long_kick_point_share = numberValue(stats.fgm_50_plus) === undefined ? undefined : (numberValue(stats.fgm_50_plus) || 0) / Math.max(numberValue(stats.fgm) || 1, 1);
+  const extraPointAttempts = numberValue(stats.xpa);
+  const passAttempts = numberValue(normalized.pass_attempts);
+  const sacks = numberValue(normalized.sacks);
+  const rushAttempts = numberValue(normalized.rush_attempts);
+  const targets = numberValue(normalized.targets);
+  normalized.total_kick_attempts = normalized.field_goal_attempts === undefined && extraPointAttempts === undefined ? undefined : (numberValue(normalized.field_goal_attempts) || 0) + (extraPointAttempts || 0);
+  normalized.dropbacks = passAttempts === undefined && sacks === undefined ? undefined : (passAttempts || 0) + (sacks || 0);
+  normalized.touches = rushAttempts === undefined && targets === undefined ? undefined : (rushAttempts || 0) + (targets || 0);
+  target.push(normalized);
+}
+
+function averageUsage(rows: JsonMap[], key: string): number | undefined {
+  const values = rows.map((row) => numberValue(row[key])).filter((value): value is number => value !== undefined);
+  return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : undefined;
 }
 
 async function resolveSeasonWeek(args: JsonMap, env: Env): Promise<[number, number]> {

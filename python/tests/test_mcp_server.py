@@ -24,6 +24,7 @@ def test_mcp_tools_list_exposes_curated_decision_tools() -> None:
         "decision_data_status",
         "sync_decision_data",
         "player_stat_trends",
+        "player_usage_context",
         "position_stat_leaders",
         "weekly_briefing",
         "weekly_performance_backtest",
@@ -52,6 +53,11 @@ def test_mcp_tools_list_exposes_curated_decision_tools() -> None:
         "player_id",
         "stat_key",
         "start_week",
+    ]
+    assert tools_by_name["player_usage_context"]["inputSchema"]["required"] == [
+        "player_id",
+        "season",
+        "week",
     ]
     assert tools_by_name["position_stat_leaders"]["inputSchema"]["required"] == [
         "season",

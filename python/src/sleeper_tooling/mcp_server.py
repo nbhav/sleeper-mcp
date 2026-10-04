@@ -65,6 +65,20 @@ TOOLS = [
         },
     },
     {
+        "name": "player_usage_context",
+        "description": "Return an actual-first Sleeper player usage, role, volatility, availability, and evidence profile.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["player_id", "season", "week"],
+            "properties": {
+                "player_id": {"type": "string"},
+                "season": {"type": "integer"},
+                "week": {"type": "integer"},
+                "position": {"type": "string", "enum": ["QB", "RB", "WR", "TE", "K", "DEF"]},
+            },
+        },
+    },
+    {
         "name": "position_stat_leaders",
         "description": "Return graph-friendly normalized stat leaders for a position, week, and stat key.",
         "inputSchema": {
