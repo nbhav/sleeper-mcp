@@ -287,14 +287,27 @@ def _aggregate_game_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, An
     grouped: dict[str, dict[str, Any]] = {}
     stat_keys = ("fantasy_points", "rush_yd", "rush_td", "rec", "rec_yd", "rec_td", "targets", "pass_sack", "sack")
     for row in rows:
-        key = str(row.get("game_id") or row.get("week") or len(grouped))
-        aggregate = grouped.setdefault(key, {"game_id": row.get("game_id"), "week": row.get("week")})
+        metadata = _row_metadata(row)
+        key = str(metadata.get("game_id") or metadata.get("week") or len(grouped))
+        aggregate = grouped.setdefault(key, metadata)
         stats = _stats(row, None)
         for stat_key in stat_keys:
             value = stats.get(stat_key)
             if value is not None:
                 aggregate[stat_key] = float(aggregate.get(stat_key, 0.0)) + float(value)
     return list(grouped.values())
+
+
+def _row_metadata(row: Mapping[str, Any]) -> dict[str, Any]:
+    metadata = {key: row.get(key) for key in ("game_id", "week")}
+    for nested_key in ("stats", "raw", "player_json"):
+        nested = row.get(nested_key)
+        if not isinstance(nested, Mapping):
+            continue
+        for key in metadata:
+            if metadata[key] is None and nested.get(key) is not None:
+                metadata[key] = nested[key]
+    return metadata
 
 
 def _rushing_points(row: Mapping[str, Any]) -> float:
