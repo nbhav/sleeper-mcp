@@ -2087,10 +2087,15 @@ def _usage_decision_score(profile: dict[str, Any]) -> float:
 
 def _usage_context_disagreement(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
     values: dict[str, dict[str, float | None]] = {}
+    unmatched_weeks: dict[str, list[int]] = {}
     for label, profile in (("a", left), ("b", right)):
         windows = profile.get("windows", {}).get("last_2_weeks", {})
-        actual = _average_usage_points(windows.get("actual", []))
-        projected = _average_usage_points(windows.get("projection", []))
+        actual_rows = {int(row["week"]): row for row in windows.get("actual", []) if row.get("week") is not None}
+        projection_rows = {int(row["week"]): row for row in windows.get("projection", []) if row.get("week") is not None}
+        common_weeks = sorted(set(actual_rows) & set(projection_rows))
+        actual = _average_usage_points([actual_rows[week] for week in common_weeks])
+        projected = _average_usage_points([projection_rows[week] for week in common_weeks])
+        unmatched_weeks[label] = sorted((set(actual_rows) ^ set(projection_rows)))
         values[label] = {
             "recent_actual_points": actual,
             "recent_projected_points": projected,
@@ -2098,6 +2103,7 @@ def _usage_context_disagreement(left: dict[str, Any], right: dict[str, Any]) -> 
             if actual is not None and projected is not None
             else None,
             "context_score": _usage_decision_score(profile),
+            "comparison_weeks": common_weeks,
         }
 
     def winner(key: str) -> str | None:
@@ -2122,6 +2128,12 @@ def _usage_context_disagreement(left: dict[str, Any], right: dict[str, Any]) -> 
             and projection_winner is not None
             and actual_winner != projection_winner
         ),
+        "missing_inputs": [
+            f"unmatched_{label}_actual_projection_weeks"
+            for label, weeks in unmatched_weeks.items()
+            if weeks
+        ],
+        "unmatched_weeks": unmatched_weeks,
     }
 
 

@@ -209,6 +209,27 @@ def test_compare_player_usage_context_aligns_profiles_and_returns_deltas() -> No
     assert "not_evaluable_missing_nfl_schedule" in result["reason_codes"]
 
 
+def test_usage_context_disagreement_aligns_actual_and_projection_weeks() -> None:
+    profile = {
+        "scores": {"opportunity_score": 50},
+        "windows": {
+            "last_2_weeks": {
+                "actual": [{"week": 1, "points": 20}, {"week": 2, "points": 10}],
+                "projection": [{"week": 2, "points": 12}, {"week": 3, "points": 30}],
+            }
+        },
+    }
+
+    result = mcp_tools._usage_context_disagreement(profile, profile)
+
+    assert result["by_player"]["a"]["comparison_weeks"] == [2]
+    assert result["actual_vs_projection_conflict"] is False
+    assert result["missing_inputs"] == [
+        "unmatched_a_actual_projection_weeks",
+        "unmatched_b_actual_projection_weeks",
+    ]
+
+
 def test_compare_player_usage_context_downgrades_projection_only_start_sit_claim() -> None:
     class CompareRepository:
         players = {
