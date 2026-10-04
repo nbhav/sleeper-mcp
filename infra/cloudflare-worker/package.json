@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "deploy": "wrangler deploy",
+    "test": "node --test --experimental-strip-types test/index.test.ts",
     "dev": "wrangler dev",
     "typecheck": "tsc --noEmit"
   },
