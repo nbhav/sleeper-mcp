@@ -41,6 +41,20 @@ const tools = [
     }
   },
   {
+    name: "player_matchup_context",
+    description: "Return bounded NFL opponent matchup context, or explicit normalized-source availability reasons.",
+    inputSchema: {
+      type: "object",
+      required: ["player_id", "season", "week"],
+      properties: {
+        player_id: { type: "string" },
+        season: { type: "integer" },
+        week: { type: "integer" },
+        source: { type: "string", enum: ["stats", "projections"], default: "stats" }
+      }
+    }
+  },
+  {
     name: "weekly_briefing",
     description: "League-aware weekly leaders plus waiver signal for the current or requested week.",
     inputSchema: {
@@ -334,6 +348,8 @@ async function callTool(name: string, args: JsonMap, env: Env): Promise<unknown>
   switch (name) {
     case "resolve_league_context":
       return resolveLeagueContext(args, env);
+    case "player_matchup_context":
+      return playerMatchupContext(args, env);
     case "weekly_briefing":
       return weeklyBriefing(args, env);
     case "weekly_performance_backtest":
@@ -367,6 +383,128 @@ async function callTool(name: string, args: JsonMap, env: Env): Promise<unknown>
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
+}
+
+async function playerMatchupContext(args: JsonMap, env: Env): Promise<JsonMap> {
+  const playerId = String(args.player_id || "").trim();
+  const season = numberValue(args.season);
+  const week = numberValue(args.week);
+  const source = stringArg(args, "source", "stats");
+  if (!playerId) throw new Error("player_id is required");
+  if (season === undefined || week === undefined) throw new Error("season and week are required");
+  if (source !== "stats" && source !== "projections") throw new Error("source must be stats or projections");
+
+  const rawSchedule = await rawPlayerSchedule({ playerId, season, week, source }, env);
+  const missingSource = `not_evaluable_missing_normalized_${source}_row`;
+  const sourceAvailability = {
+    normalized_player_stats: false,
+    nfl_schedule: Boolean(rawSchedule.opponent),
+    historical_opponent_stats: false,
+    enriched_provider: false,
+    weekly_availability: false
+  };
+  const evidence: JsonMap = {
+    source,
+    raw_schedule_context: rawSchedule.evidence,
+    note: "Worker D1 currently caches raw API responses; normalized matchup rows and weekly availability are not yet materialized."
+  };
+  if (rawSchedule.fetch_error) {
+    evidence.raw_schedule_error = rawSchedule.fetch_error;
+  }
+  return {
+    model_version: "matchup.v1",
+    status: "unavailable",
+    season,
+    week,
+    player_id: playerId,
+    position: rawSchedule.position,
+    team: rawSchedule.team,
+    opponent: rawSchedule.opponent,
+    home_away: rawSchedule.home_away,
+    availability: null,
+    matchup_adjustment: 0,
+    matchup_cap: null,
+    source_availability: sourceAvailability,
+    missing_inputs: [missingSource],
+    reason_codes: ["normalized_player_source_unavailable"],
+    evidence
+  };
+}
+
+type RawPlayerSchedule = {
+  position: string | null;
+  team: string | null;
+  opponent: string | null;
+  home_away: string | null;
+  evidence: JsonMap;
+  fetch_error?: string;
+};
+
+async function rawPlayerSchedule(
+  input: { playerId: string; season: number; week: number; source: string },
+  env: Env
+): Promise<RawPlayerSchedule> {
+  try {
+    const rows = arrayValue(await getData(`/${input.source}/nfl/${input.season}/${input.week}`, env, {
+      season_type: "regular"
+    }));
+    const row = rows.find((candidate) => String(candidate.player_id || "") === input.playerId);
+    if (!row) {
+      return {
+        position: null,
+        team: null,
+        opponent: null,
+        home_away: null,
+        evidence: { raw_row_found: false, raw_source: input.source }
+      };
+    }
+    const stats = objectValue(row.stats);
+    const player = objectValue(row.player);
+    const opponent = scheduleText(row.opponent || row.opp || stats.opponent || stats.opp);
+    const team = scheduleText(row.team || row.team_abbr || player.team || stats.team);
+    const homeAway = scheduleHomeAway(row, stats);
+    return {
+      position: scheduleText(row.position || player.position || stats.position),
+      team,
+      opponent,
+      home_away: homeAway,
+      evidence: {
+        raw_row_found: true,
+        raw_source: input.source,
+        raw_schedule_fields: {
+          team,
+          opponent,
+          home_away: homeAway,
+          game_id: row.game_id || stats.game_id || null,
+          game_timestamp: row.game_timestamp || row.start_time || stats.game_timestamp || stats.start_time || null
+        }
+      }
+    };
+  } catch (error) {
+    return {
+      position: null,
+      team: null,
+      opponent: null,
+      home_away: null,
+      evidence: { raw_row_found: false, raw_source: input.source },
+      fetch_error: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
+function scheduleText(value: unknown): string | null {
+  const text = String(value || "").trim();
+  return text ? text.toUpperCase() : null;
+}
+
+function scheduleHomeAway(row: JsonMap, stats: JsonMap): string | null {
+  const value = row.home_away || row.homeAway || stats.home_away || stats.homeAway;
+  if (value !== undefined && value !== null) {
+    const normalized = String(value).trim().toLowerCase();
+    return ({ h: "home", a: "away" } as Record<string, string>)[normalized] || normalized || null;
+  }
+  const home = row.home ?? stats.home;
+  return typeof home === "boolean" ? (home ? "home" : "away") : null;
 }
 
 async function resolveLeagueContext(args: JsonMap, env: Env): Promise<JsonMap> {

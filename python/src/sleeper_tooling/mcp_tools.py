@@ -25,6 +25,7 @@ from sleeper_tooling.league_context import (
     render_context_env,
     resolve_league_context as build_league_context,
 )
+from sleeper_tooling.matchup_model import build_repository_matchup_profile
 from sleeper_tooling.player_values import build_player_values
 from sleeper_tooling.player_usage_context import PlayerUsageContextService
 from sleeper_tooling.roster_analysis import (
@@ -122,6 +123,25 @@ class FantasyToolRunner:
             self._require_trend_repository(),
             season=season,
             max_age_seconds=int(max_age_hours * 3600),
+        )
+
+    def player_matchup_context(
+        self,
+        *,
+        player_id: str,
+        season: int,
+        week: int,
+        source: StatSource = "stats",
+    ) -> dict[str, Any]:
+        """Return bounded NFL opponent context from normalized data only."""
+        if source not in {"stats", "projections"}:
+            raise ValueError("source must be stats or projections")
+        return build_repository_matchup_profile(
+            self._require_decision_repository(),
+            player_id=player_id,
+            season=season,
+            week=week,
+            source=source,
         )
 
     def sync_decision_data(

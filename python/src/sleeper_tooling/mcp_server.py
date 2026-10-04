@@ -95,6 +95,20 @@ TOOLS = [
         },
     },
     {
+        "name": "player_matchup_context",
+        "description": "Return bounded NFL opponent matchup context with schedule availability and explicit missing-input reasons.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["player_id", "season", "week"],
+            "properties": {
+                "player_id": {"type": "string"},
+                "season": {"type": "integer"},
+                "week": {"type": "integer"},
+                "source": {"type": "string", "enum": ["stats", "projections"], "default": "stats"},
+            },
+        },
+    },
+    {
         "name": "weekly_briefing",
         "description": "League-aware weekly leaders plus waiver signal for the current or requested week.",
         "inputSchema": {
