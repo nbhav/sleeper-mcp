@@ -298,3 +298,44 @@ def test_mcp_unknown_tool_returns_protocol_error() -> None:
 
     assert response["error"]["code"] == -32000
     assert "Unknown tool" in response["error"]["message"]
+
+
+def test_mcp_initialized_notification_has_no_response() -> None:
+    assert McpServer().handle(
+        {"jsonrpc": "2.0", "method": "notifications/initialized"}
+    ) is None
+
+
+def test_mcp_unknown_method_uses_json_rpc_method_not_found_error() -> None:
+    response = McpServer().handle(
+        {"jsonrpc": "2.0", "id": 9, "method": "resources/list"}
+    )
+
+    assert response == {
+        "jsonrpc": "2.0",
+        "id": 9,
+        "error": {"code": -32601, "message": "Unknown method: resources/list"},
+    }
+
+
+def test_mcp_tool_exception_is_returned_as_protocol_error() -> None:
+    class Runner:
+        def injury_watch(self, *, league_id: str):
+            raise RuntimeError(f"backend unavailable for {league_id}")
+
+    response = McpServer(Runner()).handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 10,
+            "method": "tools/call",
+            "params": {
+                "name": "injury_watch",
+                "arguments": {"league_id": "league-1"},
+            },
+        }
+    )
+
+    assert response["error"] == {
+        "code": -32000,
+        "message": "backend unavailable for league-1",
+    }

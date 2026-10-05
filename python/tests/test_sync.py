@@ -87,6 +87,19 @@ def test_resolve_sync_target_defaults_to_current_and_previous_seasons(monkeypatc
     }
 
 
+@pytest.mark.parametrize(
+    ("state", "message"),
+    [
+        ({"season": "2026", "week": 0}, "week must be at least 1"),
+        ({"season": "not-a-season", "week": 3}, "valid season"),
+    ],
+)
+def test_resolve_sync_target_rejects_invalid_state_values(monkeypatch, state, message) -> None:
+    monkeypatch.setenv("SLEEPER_DEFAULT_LEAGUE_ID", "league-2026")
+    with pytest.raises(ValueError, match=message):
+        resolve_sync_target(state=state)
+
+
 def test_sync_is_idempotent_against_repository_upsert_keys() -> None:
     client = FakeSyncSleeperClient()
     repository = FakeNormalizedRepository()
