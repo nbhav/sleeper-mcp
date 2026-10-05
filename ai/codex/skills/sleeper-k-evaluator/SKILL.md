@@ -13,9 +13,10 @@ Use this skill with the Sleeper decision tools, especially `player_values`,
 
 1. Check league scoring first. Distance bonuses, missed-kick penalties, and PAT scoring can change kicker rankings.
 2. Treat most kickers as streamable. Only protect kickers classified as elite holds or strong weekly plays by the deterministic model.
-3. Compare `week_value`, `three_week_value`, `decision_value`, and `value_above_replacement`; small one-week gaps rarely justify dropping long-term RB, WR, or TE depth.
-4. Check bye week, game lock, injury status, weather or game environment only if present in the data.
-5. For waivers, prefer low-cost add/drop moves with a clearly replacement-level drop.
+3. Compare recent actual points, `week_value`, `three_week_value`, `decision_value`, and `value_above_replacement`; small one-week gaps rarely justify dropping long-term RB, WR, or TE depth.
+4. For a named waiver claim or add/drop question, check `player_card` actuals for both the add and drop before making the recommendation.
+5. Check bye week, game lock, injury status, weather or game environment only if present in the data.
+6. For waivers, prefer low-cost add/drop moves with a clearly replacement-level drop.
 
 ## Stat Signals
 
@@ -34,6 +35,7 @@ tool output explicitly provides it.
 ## Decision Rules
 
 - Keep an elite kicker only when the model shows a meaningful multi-week edge over replacement.
+- Do not reject a kicker solely because his projection is low when recent actuals show a clear multi-week scoring edge. Call out the projection/actuals disagreement and decide whether it is sustainable scoring-rule fit, short-term variance, or avoid.
 - Stream replacement-level kickers for the current week without sacrificing long-term skill-position depth.
 - Avoid carrying a second kicker except in rare cases where game lock or bye logistics force it.
 - Prefer kicker changes with positive `week_value_delta` and no meaningful `three_week_value_delta` or `season_value_delta` damage.
@@ -43,6 +45,7 @@ tool output explicitly provides it.
 
 When explaining a kicker decision, include:
 
+- recent actual points for the add and drop when evaluating a claim
 - scoring-rule sensitivity
 - current week edge over replacement
 - streamable versus elite-hold classification

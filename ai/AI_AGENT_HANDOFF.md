@@ -223,6 +223,13 @@ data is missing or stale, call `sync_decision_data`, then prefer
 
 Use `weekly_performance_backtest` for historical leaders and week-over-week movement. Use `my_lineup` for the user's current starters, bench, status, actual points, projected totals, and lineup table. Use `lineup_recommendations` for deterministic start/sit and add/drop comparisons with market-aware waiver hints. Use `waiver_wire_watch` when recommendations must be limited to unrostered waiver targets and backed by projections, trends, status, and recent actuals. Use `waiver_wire_by_position` when the user wants top waiver options per position with protected drop and acquisition reasoning. Use `trade_opportunities` when the user wants every opposing team evaluated with needs, surplus, targets, and mutual-fit offer angles. Use `decision_smoke_report` when a reviewer wants display-ready Markdown tables for the live lineup, waiver, and trade smoke workflow. Keep this tool list curated to avoid token creep.
 
+For any named waiver or free-agent add/drop claim, treat projection-based move
+matrix tools as the first screen, not the full answer. Cross-check both the add
+and drop with `player_card` recent actuals, or use
+`weekly_performance_backtest` with `source: "stats"` for production context.
+When projections and actuals disagree, say so directly and explain which signal
+drives the recommendation.
+
 ## Remote MCP On Cloudflare
 
 The `infra/cloudflare-worker/` package exposes the same curated MCP tool names over HTTP at:
@@ -577,6 +584,7 @@ trending --enrich
 When modifying this tooling:
 
 - Keep the Docker-only workflow intact.
+- Put subagent worktrees under the repository's `.worktrees/<task-name>/` directory. Do not use `/private/tmp`, `/tmp`, or another external path unless explicitly requested, since external worktrees cause avoidable filesystem approval prompts. Remove repo-local worktrees after merge and verification, and preserve unrelated changes in the main worktree.
 - Keep SQLite response caching on by default for CLI commands.
 - Keep Worker caching on D1; do not try to use the local SQLite cache inside Cloudflare Workers.
 - Do not add instructions that require local `pip install`, local `uv sync`, or a host virtualenv.

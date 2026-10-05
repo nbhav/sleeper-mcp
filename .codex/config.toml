@@ -1,0 +1,39 @@
+[mcp_servers.sleeper_fantasy]
+command = "docker"
+args = [
+  "compose",
+  "-f",
+  "/Users/neilbhavsar/repositories/tooling/sleeper-mcp/infra/docker/docker-compose.yml",
+  "run",
+  "--rm",
+  "-i",
+  "sleeper-mcp",
+]
+cwd = "/Users/neilbhavsar/repositories/tooling/sleeper-mcp"
+
+[mcp_servers.sleeper_fantasy.tools.decision_data_status]
+approval_mode = "approve"
+
+[mcp_servers.sleeper_fantasy.tools.my_lineup]
+approval_mode = "approve"
+
+[mcp_servers.sleeper_fantasy.tools.lineup_recommendations]
+approval_mode = "approve"
+
+[mcp_servers.sleeper_fantasy.tools.roster_analysis]
+approval_mode = "approve"
+
+[mcp_servers.sleeper_fantasy.tools.opponent_watch]
+approval_mode = "approve"
+
+[mcp_servers.sleeper_fantasy.tools.waiver_wire_by_position]
+approval_mode = "approve"
+
+[mcp_servers.sleeper_fantasy.tools.free_agent_watch]
+approval_mode = "approve"
+
+[mcp_servers.sleeper_fantasy.tools.player_card]
+approval_mode = "approve"
+
+[mcp_servers.sleeper_fantasy.tools.weekly_performance_backtest]
+approval_mode = "approve"
