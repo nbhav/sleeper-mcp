@@ -92,6 +92,7 @@ def build_my_lineup(
     matchups: list[dict[str, Any]],
     players: dict[str, dict[str, Any]],
     projection_rows: list[dict[str, Any]],
+    recent_actuals: dict[str, list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     users_by_id = {str(user.get("user_id")): user for user in users}
     roster = next(
@@ -127,6 +128,7 @@ def build_my_lineup(
             player_points=player_points,
             slot=slots[index] if index < len(slots) else f"STARTER_{index + 1}",
             lineup_status="starter",
+            recent_actuals=recent_actuals or {},
         )
         for index, player_id in enumerate(starter_ids)
     ]
@@ -138,6 +140,7 @@ def build_my_lineup(
             player_points=player_points,
             slot="BN",
             lineup_status="bench",
+            recent_actuals=recent_actuals or {},
         )
         for player_id in bench_ids
     ]
@@ -149,6 +152,7 @@ def build_my_lineup(
             player_points=player_points,
             slot="IR",
             lineup_status="reserve",
+            recent_actuals=recent_actuals or {},
         )
         for player_id in reserve_ids
         if player_id not in starter_id_set
@@ -548,7 +552,8 @@ def player_context(
         "source_metadata": {
             "player_context": context_sources,
             "market": "sleeper_explicit" if market_hint in KNOWN_MARKET_TYPES - {"unknown"} else "unknown",
-            "bye_week": "sleeper_players" if bye_week not in (None, "") else "missing",
+            "bye_week": (player.get("source_metadata") or {}).get("bye_week")
+            or ("sleeper_players" if bye_week not in (None, "") else "missing"),
         },
     }
 
@@ -603,10 +608,13 @@ def player_lineup_summary(
     player_points: dict[str, Any],
     slot: str,
     lineup_status: str,
+    recent_actuals: dict[str, list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     player = players.get(str(player_id), {})
     projection = projections_by_player.get(str(player_id), {})
     actual_points = (player_points or {}).get(str(player_id), 0)
+    actual_rows = (recent_actuals or {}).get(str(player_id), [])
+    actual_values = [float(row.get("points") or 0) for row in actual_rows]
     active_roster_spot = lineup_status in {"starter", "bench"}
     stash_value = lineup_status == "reserve"
     return {
@@ -621,6 +629,9 @@ def player_lineup_summary(
             market_hint=infer_market_type(player, row=projection, default="unknown"),
         ),
         "actual_points": actual_points,
+        "recent_actual_points": actual_rows,
+        "recent_average_points": round(sum(actual_values) / len(actual_values), 2) if actual_values else 0.0,
+        "actual_context_status": "available" if actual_values else "missing",
         "points_so_far": actual_points,
         "projected_points": projection.get("points", 0),
         "sleeper_projected_points": projection.get("sleeper_points", ""),
@@ -677,6 +688,7 @@ def merge_available_candidates(
     players: dict[str, dict[str, Any]],
     add_trends: list[dict[str, Any]],
     drop_trends: list[dict[str, Any]],
+    recent_rows: dict[str, list[dict[str, Any]]] | None = None,
 ) -> list[dict[str, Any]]:
     add_counts = trend_counts(add_trends)
     drop_counts = trend_counts(drop_trends)
@@ -703,6 +715,11 @@ def merge_available_candidates(
         merged.append(
             {
                 **row,
+                **(
+                    actual_context_fields(row, recent_rows.get(player_id, []))
+                    if recent_rows is not None
+                    else {}
+                ),
                 "add_trend_count": add_count,
                 "drop_trend_count": drop_count,
                 "net_trend_count": add_count - drop_count,
@@ -713,6 +730,20 @@ def merge_available_candidates(
             }
         )
     return merged
+
+
+def actual_context_fields(
+    row: dict[str, Any],
+    recent_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    points = [float(item.get("points") or 0) for item in recent_rows]
+    average = round(sum(points) / len(points), 2) if points else 0.0
+    return {
+        "recent_actual_points": recent_rows,
+        "recent_average_points": average,
+        "actual_context_status": "available" if points else "missing",
+        "actual_context_source": "normalized_player_week_rows" if points else "missing",
+    }
 
 
 def compare_available_player(
@@ -782,6 +813,8 @@ def compare_available_player(
         "add_reasoning": add_reasoning(candidate, projected_gain),
         "bye_week_warnings": bye_warnings,
         "priority_score": priority_score,
+        "actual_context_status": candidate.get("actual_context_status", "missing"),
+        "recent_average_points": candidate.get("recent_average_points", 0),
         "source_metadata": {
             **candidate.get("source_metadata", {}),
             "waiver_matrix": selected.get("source_metadata", {}),
@@ -952,27 +985,28 @@ def score_waiver_move(
 def waiver_player_value(row: dict[str, Any]) -> dict[str, Any]:
     if not row:
         return empty_player_value()
+    actual_average = number_or(row.get("recent_average_points"), 0.0)
+    projected = number_or(row.get("projected_points"), 0.0)
+    context_value = actual_average if row.get("actual_context_status") == "available" and actual_average > 0 else projected
     existing = {
         "player_id": row.get("player_id", ""),
         "name": row.get("name", ""),
         "team": row.get("team", ""),
         "position": str(row.get("position") or "").upper(),
         "fantasy_positions": row.get("fantasy_positions") or [],
-        "week_value": number_or(row.get("week_value"), row.get("projected_points"), 0.0),
-        "three_week_value": number_or(row.get("three_week_value"), row.get("projected_points"), 0.0),
-        "season_value": number_or(row.get("season_value"), row.get("decision_value"), row.get("projected_points"), 0.0),
-        "decision_value": number_or(row.get("decision_value"), row.get("projected_points"), 0.0),
+        "week_value": number_or(row.get("week_value"), projected, 0.0),
+        "three_week_value": number_or(row.get("three_week_value"), context_value, projected, 0.0),
+        "season_value": number_or(row.get("season_value"), row.get("decision_value"), context_value, projected, 0.0),
+        "decision_value": number_or(row.get("decision_value"), context_value, projected, 0.0),
         "value_tier": row.get("value_tier", ""),
         "role_tag": row.get("role_tag", ""),
     }
     if any(key in row for key in ("week_value", "three_week_value", "season_value", "decision_value")):
         return existing
 
-    return {
-        **existing,
-        **{
-            key: value
-            for key, value in build_player_value(
+    built = {
+        key: value
+        for key, value in build_player_value(
                 player_id=str(row.get("player_id") or ""),
                 player={
                     "full_name": row.get("name", ""),
@@ -993,8 +1027,16 @@ def waiver_player_value(row: dict[str, Any]) -> dict[str, Any]:
                 },
             ).items()
             if key in {"week_value", "three_week_value", "season_value", "decision_value", "value_tier", "role_tag"}
-        },
     }
+    if row.get("actual_context_status") == "available" and actual_average > 0:
+        built.update(
+            {
+                "three_week_value": actual_average,
+                "season_value": actual_average,
+                "decision_value": actual_average,
+            }
+        )
+    return {**existing, **built}
 
 
 def empty_player_value() -> dict[str, Any]:
@@ -1224,6 +1266,8 @@ def waiver_recommendation(
         return "watch" if move_score > 0 else "reject"
     if normalize_market_type(candidate.get("market_type")) == "unknown":
         return "watch" if move_score >= 6 else "reject"
+    if candidate.get("actual_context_status") is not None and candidate.get("actual_context_status") == "missing":
+        return "watch"
     if move_score >= 6:
         return "recommend"
     if move_score > 0:
@@ -1313,7 +1357,7 @@ def roster_position_summary(roster_players: list[dict[str, Any]]) -> dict[str, d
         if not row.get("active_roster_spot", True):
             continue
         group["active_count"] += 1
-        projected_points = float(row.get("projected_points") or 0)
+        projected_points = effective_player_points(row)
         if is_playable_for_waivers(row, position):
             group["playable_count"] += 1
             if str(row.get("lineup_status") or "").lower() == "bench":
@@ -1334,7 +1378,16 @@ def is_playable_for_waivers(row: dict[str, Any], position: str) -> bool:
         return False
     if is_availability_risk(row):
         return False
-    return float(row.get("projected_points") or 0) >= playable_threshold(position)
+    return effective_player_points(row) >= playable_threshold(position)
+
+
+def effective_player_points(row: dict[str, Any]) -> float:
+    projected = number_or(row.get("projected_points"), 0.0)
+    if projected > 0:
+        return projected
+    if row.get("actual_context_status") == "available":
+        return number_or(row.get("recent_average_points"), 0.0)
+    return projected
 
 
 def market_confidence(candidate: dict[str, Any]) -> str:
@@ -1478,11 +1531,11 @@ def drop_protection_reason(
     playable_count = sum(
         1
         for player in active_position_rows
-        if float(player.get("projected_points") or 0) >= playable_threshold(position)
+        if effective_player_points(player) >= playable_threshold(position)
     )
     if (
         playable_count <= desired_depth(position)
-        and float(row.get("projected_points") or 0) >= playable_threshold(position)
+        and effective_player_points(row) >= playable_threshold(position)
     ):
         return "last playable backup at position"
     risky_starters = [
@@ -1526,7 +1579,7 @@ def drop_ease_score(
     row: dict[str, Any],
     roster_players: list[dict[str, Any]],
 ) -> float:
-    score = float(row.get("projected_points") or 0)
+    score = effective_player_points(row)
     if not same_position_family(candidate, row):
         score += 1.5
     position = str(row.get("position") or "").upper()

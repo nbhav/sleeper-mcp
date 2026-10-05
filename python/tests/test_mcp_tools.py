@@ -746,7 +746,8 @@ def test_waiver_wire_by_position_groups_options_with_gain_and_faab(tmp_path) -> 
     assert rb_pick["drop_name"] == "Drop RB"
     assert rb_pick["drop_lineup_status"] == "bench"
     assert rb_pick["projected_gain_over_drop"] == 25
-    assert rb_pick["recommendation"] == "recommend"
+    assert rb_pick["recommendation"] == "watch"
+    assert rb_pick["actual_context_status"] == "missing"
     assert rb_pick["move_score"] > 0
     assert rb_pick["reasoning_summary"]
     assert rb_pick["week_value_delta"] == 25
@@ -754,8 +755,8 @@ def test_waiver_wire_by_position_groups_options_with_gain_and_faab(tmp_path) -> 
     assert "season_value_delta" in rb_pick
     assert "selected_drop_reasoning" in rb_pick
     assert "rejected_drop_reasoning" in rb_pick
-    assert rb_pick["faab_tier"] == "aggressive"
-    assert rb_pick["faab_bid_pct"] == 14
+    assert "faab_tier" not in rb_pick
+    assert "faab_bid_pct" not in rb_pick
     assert rb_pick["add_trend_count"] == 2500
     wr_pick = report["by_position"]["WR"][0]
     assert wr_pick["add_name"] == "Watch WR"
@@ -790,14 +791,42 @@ def test_waiver_wire_by_position_uses_normalized_db(tmp_path) -> None:
     assert rb_pick["drop_name"] == "Drop RB"
     assert rb_pick["projected_gain_over_drop"] == 25
     assert rb_pick["market_type"] == "waiver"
-    assert rb_pick["recommendation"] == "recommend"
+    assert rb_pick["recommendation"] == "watch"
     assert rb_pick["move_score"] > 0
     assert rb_pick["reasoning_summary"]
     assert rb_pick["week_value_delta"] == 25
-    assert rb_pick["faab_tier"] == "aggressive"
+    assert "faab_tier" not in rb_pick
     wr_pick = report["by_position"]["WR"][0]
     assert wr_pick["add_name"] == "Free WR"
     assert wr_pick["projected_gain_over_drop"] == 10
+    repo.close()
+
+
+def test_normalized_schedule_bye_enriches_player_context(tmp_path) -> None:
+    repo = build_normalized_decision_fixture(tmp_path)
+    repo.upsert_team_week_schedule(
+        season=2026,
+        week=1,
+        source="sleeper_nfl_schedule",
+        rows=[{"team": "DEN", "is_bye": True, "bye_week": 1}],
+    )
+    runner = FantasyToolRunner(
+        client_factory=lambda: FailingMcpClient(),
+        decision_repository=repo,
+    )
+
+    report = runner.waiver_wire_by_position(
+        league_id="league-1",
+        roster_id=1,
+        season=2026,
+        week=1,
+        positions="RB",
+        per_position_limit=1,
+    )
+
+    row = report["by_position"]["RB"][0]
+    assert row["bye_week"] == 1
+    assert row["source_metadata"]["bye_week"] == "team_week_schedule"
     repo.close()
 
 

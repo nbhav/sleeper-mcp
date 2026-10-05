@@ -21,6 +21,7 @@ class NormalizedDecisionInputs:
     add_trends: list[dict[str, Any]]
     drop_trends: list[dict[str, Any]]
     recent_actuals: dict[str, list[dict[str, Any]]]
+    schedule_by_team: dict[str, dict[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -185,6 +186,13 @@ class NormalizedDecisionReader:
             matchups=matchups,
             projection_rows=projection_rows,
         )
+        schedule_by_team = self._schedule_by_team(
+            season=season,
+            week=week,
+            players=players,
+            projection_rows=projection_rows,
+        )
+        self._apply_schedule_context(players, schedule_by_team, week)
         add_trends, drop_trends = self._transaction_trends(transactions)
         return NormalizedDecisionRead(
             NormalizedDecisionInputs(
@@ -197,6 +205,7 @@ class NormalizedDecisionReader:
                 add_trends=add_trends,
                 drop_trends=drop_trends,
                 recent_actuals=recent_actuals,
+                schedule_by_team=schedule_by_team,
             ),
             self._freshness(
                 status="fresh",
@@ -264,6 +273,45 @@ class NormalizedDecisionReader:
             self._transaction_payload(row)
             for row in self.repository.list_transactions(league_id, week=week)
         ]
+
+    def _schedule_by_team(
+        self,
+        *,
+        season: int,
+        week: int,
+        players: dict[str, dict[str, Any]],
+        projection_rows: list[dict[str, Any]],
+    ) -> dict[str, dict[str, Any]]:
+        getter = getattr(self.repository, "get_team_week_schedule", None)
+        if getter is None:
+            return {}
+        teams = {
+            str(row.get("team") or "").upper()
+            for row in list(players.values()) + projection_rows
+            if row.get("team")
+        }
+        schedules = {}
+        for team in sorted(teams):
+            schedule = getter(season=season, week=week, team=team)
+            if schedule:
+                schedules[team] = dict(schedule)
+        return schedules
+
+    @staticmethod
+    def _apply_schedule_context(
+        players: dict[str, dict[str, Any]],
+        schedule_by_team: dict[str, dict[str, Any]],
+        week: int,
+    ) -> None:
+        for player in players.values():
+            team = str(player.get("team") or "").upper()
+            schedule = schedule_by_team.get(team) or {}
+            is_bye = bool(schedule.get("is_bye")) or (
+                str(schedule.get("bye_week") or "") == str(week)
+            )
+            if is_bye and not player.get("bye_week"):
+                player["bye_week"] = week
+                player.setdefault("source_metadata", {})["bye_week"] = "team_week_schedule"
 
     def _player_map(
         self,

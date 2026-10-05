@@ -10,6 +10,7 @@ from sleeper_tooling.decision_reports import (
     group_waiver_options_by_position,
     is_injury_relevant,
     rostered_player_ids,
+    waiver_player_value,
 )
 from sleeper_tooling.player_usage_context_rules import (
     COMPUTABILITY_TIERS,
@@ -44,6 +45,99 @@ def test_rostered_player_ids_collects_all_roster_players() -> None:
             {"players": ["3", None]},
         ]
     ) == {"1", "2", "3"}
+
+
+def test_projection_only_candidate_cannot_receive_full_recommendation() -> None:
+    from sleeper_tooling.decision_reports import compare_available_player
+
+    row = compare_available_player(
+        {
+            "player_id": "free-rb",
+            "name": "Projection RB",
+            "position": "RB",
+            "projected_points": 20,
+            "market_type": "free_agent",
+            "actual_context_status": "missing",
+        },
+        [
+            {
+                "player_id": "starter-rb",
+                "name": "Starter RB",
+                "position": "RB",
+                "projected_points": 5,
+                "lineup_status": "starter",
+                "active_roster_spot": True,
+            },
+            {
+                "player_id": "drop-rb",
+                "name": "Drop RB",
+                "position": "RB",
+                "projected_points": 1,
+                "lineup_status": "bench",
+                "active_roster_spot": True,
+            },
+        ],
+    )
+
+    assert row["recommendation"] == "watch"
+    assert row["actual_context_status"] == "missing"
+
+
+def test_actual_context_influences_multi_week_value_and_protects_valuable_te() -> None:
+    assert waiver_player_value(
+        {
+            "player_id": "te",
+            "position": "TE",
+            "projected_points": 0,
+            "recent_average_points": 9,
+            "actual_context_status": "available",
+        }
+    )["season_value"] == 9
+
+    from sleeper_tooling.decision_reports import compare_available_player
+
+    row = compare_available_player(
+        {
+            "player_id": "free-wr",
+            "name": "Free WR",
+            "position": "WR",
+            "projected_points": 8,
+            "market_type": "free_agent",
+            "actual_context_status": "available",
+            "recent_average_points": 8,
+        },
+        [
+            {
+                "player_id": "starter-wr",
+                "name": "Starter WR",
+                "position": "WR",
+                "projected_points": 10,
+                "lineup_status": "starter",
+                "active_roster_spot": True,
+            },
+            {
+                "player_id": "valuable-te",
+                "name": "Valuable TE",
+                "position": "TE",
+                "projected_points": 0,
+                "recent_average_points": 9,
+                "actual_context_status": "available",
+                "lineup_status": "bench",
+                "active_roster_spot": True,
+                "status": "Active",
+            },
+            {
+                "player_id": "weak-rb",
+                "name": "Weak RB",
+                "position": "RB",
+                "projected_points": 1,
+                "lineup_status": "bench",
+                "active_roster_spot": True,
+            },
+        ],
+    )
+
+    assert row["drop_player_id"] == "weak-rb"
 
 
 def test_build_waiver_watch_filters_rostered_players_and_sorts_by_projection() -> None:

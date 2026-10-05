@@ -16,6 +16,7 @@ from sleeper_tooling.decision_reports import (
     build_opponent_watch,
     build_trade_opportunities,
     build_waiver_watch,
+    actual_context_fields,
     evaluate_waiver_options_by_position,
     group_waiver_options_by_position,
     merge_available_candidates,
@@ -538,6 +539,7 @@ class FantasyToolRunner:
                         matchups=normalized.inputs.matchups,
                         players=normalized.inputs.players,
                         projection_rows=normalized.inputs.projection_rows,
+                        recent_actuals=normalized.inputs.recent_actuals,
                     ),
                     normalized,
                     fallback_used=False,
@@ -567,6 +569,7 @@ class FantasyToolRunner:
                             matchups=normalized.inputs.matchups,
                             players=normalized.inputs.players,
                             projection_rows=normalized.inputs.projection_rows,
+                            recent_actuals=normalized.inputs.recent_actuals,
                         ),
                         normalized,
                         fallback_used=False,
@@ -922,6 +925,7 @@ class FantasyToolRunner:
                 season=season,
                 week=week,
                 positions=position_list,
+                recent_weeks=3,
             )
             if normalized.fresh and normalized.inputs is not None:
                 return self._waiver_by_position_from_inputs(
@@ -946,6 +950,7 @@ class FantasyToolRunner:
                     season=resolved_season,
                     week=resolved_week,
                     positions=position_list,
+                    recent_weeks=3,
                 )
                 if normalized.fresh and normalized.inputs is not None:
                     return self._waiver_by_position_from_inputs(
@@ -1003,6 +1008,7 @@ class FantasyToolRunner:
                 players=players,
                 add_trends=add_trends,
                 drop_trends=drop_trends,
+                recent_rows={},
             )
             lineup = build_my_lineup(
                 league_id=resolved_league_id,
@@ -1175,6 +1181,7 @@ class FantasyToolRunner:
                         matchups=normalized.inputs.matchups,
                         players=normalized.inputs.players,
                         projection_rows=normalized.inputs.projection_rows,
+                        recent_actuals=normalized.inputs.recent_actuals,
                     ),
                     normalized,
                     fallback_used=False,
@@ -1204,6 +1211,7 @@ class FantasyToolRunner:
                             matchups=normalized.inputs.matchups,
                             players=normalized.inputs.players,
                             projection_rows=normalized.inputs.projection_rows,
+                            recent_actuals=normalized.inputs.recent_actuals,
                         ),
                         normalized,
                         fallback_used=False,
@@ -1578,8 +1586,9 @@ class FantasyToolRunner:
             users=inputs.users,
             rosters=inputs.rosters,
             matchups=inputs.matchups,
-            players=inputs.players,
-            projection_rows=inputs.projection_rows,
+                    players=inputs.players,
+                    projection_rows=inputs.projection_rows,
+                    recent_actuals=inputs.recent_actuals,
         )
         return self._with_decision_metadata(
             build_lineup_recommendations(
@@ -1587,6 +1596,7 @@ class FantasyToolRunner:
                 rosters=inputs.rosters,
                 players=inputs.players,
                 projection_rows=inputs.projection_rows,
+                recent_actuals=inputs.recent_actuals,
                 add_trends=inputs.add_trends,
                 drop_trends=inputs.drop_trends,
                 positions=positions,
@@ -1630,6 +1640,7 @@ class FantasyToolRunner:
             players=inputs.players,
             add_trends=inputs.add_trends,
             drop_trends=inputs.drop_trends,
+            recent_rows=inputs.recent_actuals,
         )
         lineup = build_my_lineup(
             league_id=league_id,
@@ -1648,6 +1659,8 @@ class FantasyToolRunner:
             for row in lineup["lineup_table"]
             if row.get("player_id") != "0"
         ]
+        for row in roster_players:
+            row.update(actual_context_fields(row, inputs.recent_actuals.get(str(row.get("player_id")), [])))
         evaluated_by_position = evaluate_waiver_options_by_position(
             candidates=available_candidates,
             roster_players=roster_players,
