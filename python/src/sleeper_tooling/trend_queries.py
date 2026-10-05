@@ -5,7 +5,8 @@ from collections.abc import Iterable, Sequence
 from datetime import datetime, timezone
 from typing import Any, Literal, Protocol
 
-StatSource = Literal["stats", "projections"]
+StatSource = Literal["stats", "projections", "canonical_stats"]
+CANONICAL_PROVIDER_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 
 GRAPH_ROW_FIELDS = (
     "season",
@@ -329,8 +330,8 @@ def decision_data_status(
 
 
 def validate_stat_source(source: str) -> None:
-    if source not in {"stats", "projections"}:
-        raise ValueError("source must be 'stats' or 'projections'")
+    if source not in {"stats", "projections", "canonical_stats"}:
+        raise ValueError("source must be stats, projections, or canonical_stats")
 
 
 def validate_week_window(start_week: int, end_week: int) -> None:
@@ -352,11 +353,21 @@ def _query_numeric_rows(
     positions: Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
     validate_stat_source(source)
+    resolved_source = source
+    if source == "canonical_stats":
+        resolved_source = _resolve_canonical_source(
+            repository,
+            season=season,
+            start_week=start_week,
+            end_week=end_week,
+            player_ids=player_ids,
+            positions=positions,
+        )
     stat_key_set = {str(key) for key in stat_keys or []}
     player_id_set = {str(player_id) for player_id in player_ids or []}
     position_set = {str(position).upper() for position in positions or []}
     raw_rows = repository.query_numeric_stat_rows(
-        source=source,
+        source=resolved_source,
         season=season,
         start_week=start_week,
         end_week=end_week,
@@ -381,6 +392,46 @@ def _query_numeric_rows(
             continue
         rows.append(row)
     return rows
+
+
+def _resolve_canonical_source(
+    repository: TrendQueryRepository,
+    *,
+    season: int,
+    start_week: int,
+    end_week: int,
+    player_ids: Sequence[str] | None,
+    positions: Sequence[str] | None,
+) -> StatSource:
+    """Select one provider for a query; never merge provider values silently."""
+    if positions and all(str(position).upper() in {"K", "DEF"} for position in positions):
+        return "stats"
+    metadata_getter = getattr(repository, "list_provider_sync_metadata", None)
+    if callable(metadata_getter):
+        metadata = metadata_getter(
+            provider="nflverse",
+            dataset="player_stats",
+            season=season,
+        )
+        if not metadata or max(
+            float(row.get("fetched_at") or 0) for row in metadata
+        ) < time.time() - CANONICAL_PROVIDER_MAX_AGE_SECONDS:
+            return "stats"
+    nflverse_rows = list(
+        repository.query_numeric_stat_rows(
+            source="nflverse_stats",  # type: ignore[arg-type]
+            season=season,
+            start_week=start_week,
+            end_week=end_week,
+            player_ids=player_ids,
+            positions=[
+                position
+                for position in positions or []
+                if str(position).upper() not in {"K", "DEF"}
+            ],
+        )
+    )
+    return "nflverse_stats" if nflverse_rows else "stats"
 
 
 def _normalize_graph_row(row: dict[str, Any]) -> dict[str, Any] | None:

@@ -199,6 +199,38 @@ def test_decision_data_status_classifies_fresh_stale_and_missing() -> None:
     }
 
 
+def test_canonical_stats_prefers_nflverse_as_one_provider() -> None:
+    repository = CanonicalTrendRepository()
+    rows = player_stat_trends(
+        repository,
+        season=2026,
+        player_id="wr-1",
+        stat_key="targets",
+        start_week=1,
+        end_week=1,
+        source="canonical_stats",
+    )
+
+    assert rows[0]["stat_value"] == 7
+    assert repository.queried_sources == ["nflverse_stats", "nflverse_stats"]
+
+
+class CanonicalTrendRepository:
+    def __init__(self):
+        self.queried_sources = []
+
+    def query_numeric_stat_rows(self, *, source, season, start_week, end_week,
+                                stat_keys=None, player_ids=None, positions=None):
+        self.queried_sources.append(source)
+        if source == "nflverse_stats":
+            return [{
+                "season": season, "week": 1, "player_id": "wr-1",
+                "name": "Wide One", "team": "DEN", "position": "WR",
+                "stat_key": "targets", "stat_value": 7,
+            }]
+        return []
+
+
 class FakeTrendRepository:
     def query_numeric_stat_rows(
         self,

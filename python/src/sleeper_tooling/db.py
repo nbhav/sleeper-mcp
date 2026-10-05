@@ -1524,6 +1524,60 @@ class SleeperNormalizedRepository:
         ).fetchone()
         return _decode_row(row)
 
+    def upsert_provider_sync_metadata(
+        self,
+        *,
+        provider: str,
+        dataset: str,
+        season: int,
+        week: int | None,
+        fetched_at: float,
+        metadata: Mapping[str, Any],
+    ) -> None:
+        self._connection.execute(
+            """
+            INSERT INTO provider_sync_metadata (
+                provider, dataset, season, week, fetched_at, metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(provider, dataset, season, week) DO UPDATE SET
+                fetched_at = excluded.fetched_at,
+                metadata_json = excluded.metadata_json
+            """,
+            (
+                str(provider),
+                str(dataset),
+                int(season),
+                week,
+                float(fetched_at),
+                _json_dumps(metadata),
+            ),
+        )
+        self._connection.commit()
+
+    def list_provider_sync_metadata(
+        self,
+        *,
+        provider: str | None = None,
+        dataset: str | None = None,
+        season: int | None = None,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        for column, value in (("provider", provider), ("dataset", dataset), ("season", season)):
+            if value is not None:
+                clauses.append(f"{column} = ?")
+                params.append(value)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self._connection.execute(
+            f"""
+            SELECT * FROM provider_sync_metadata
+            {where}
+            ORDER BY season, week, fetched_at
+            """,
+            params,
+        ).fetchall()
+        return [_decode_row(row) for row in rows if row is not None]
+
 
 def configure_sqlite_connection(connection: sqlite3.Connection) -> None:
     connection.execute("PRAGMA busy_timeout = 30000")
@@ -1867,6 +1921,19 @@ def _migrate_normalized_schema(connection: sqlite3.Connection) -> None:
             row_counts_json TEXT NOT NULL DEFAULT '{}',
             error_text TEXT,
             metadata_json TEXT NOT NULL DEFAULT '{}'
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS provider_sync_metadata (
+            provider TEXT NOT NULL,
+            dataset TEXT NOT NULL,
+            season INTEGER NOT NULL,
+            week INTEGER,
+            fetched_at REAL NOT NULL,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            PRIMARY KEY (provider, dataset, season, week)
         )
         """
     )

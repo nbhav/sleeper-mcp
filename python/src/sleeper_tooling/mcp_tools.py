@@ -50,7 +50,7 @@ from sleeper_tooling.trend_queries import (
     position_stat_leaders as build_position_stat_leaders,
 )
 
-StatSource = Literal["stats", "projections"]
+StatSource = Literal["stats", "projections", "canonical_stats"]
 DEFAULT_POSITIONS = "QB,RB,WR,TE,K,DEF"
 
 

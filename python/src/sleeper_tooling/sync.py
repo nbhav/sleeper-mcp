@@ -809,7 +809,17 @@ class SQLiteNormalizedRepositoryAdapter:
             "last_synced_at": (latest_sync or {}).get("finished_at")
             or (latest_sync or {}).get("started_at"),
             "sources": self._sources(season=season),
-            "metadata": {"latest_sync": latest_sync},
+            "metadata": {
+                "latest_sync": latest_sync,
+                "provider_sync": (
+                    self.repository.list_provider_sync_metadata(
+                        provider="nflverse",
+                        season=season,
+                    )
+                    if hasattr(self.repository, "list_provider_sync_metadata")
+                    else []
+                ),
+            },
         }
 
     def query_numeric_stat_rows(
@@ -934,6 +944,7 @@ NORMALIZED_TABLES = [
     "team_week_schedule",
     "player_role_snapshots",
     "player_week_availability",
+    "provider_sync_metadata",
     "sync_runs",
 ]
 
@@ -953,6 +964,7 @@ NORMALIZED_TABLE_DELETE_ORDER = [
     "league_settings",
     "player_external_ids",
     "players",
+    "provider_sync_metadata",
     "sync_runs",
 ]
 
