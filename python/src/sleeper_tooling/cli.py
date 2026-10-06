@@ -307,6 +307,13 @@ def sync_data(
             help="Comma-separated weeks. Defaults to completed weeks plus the current Sleeper week.",
         ),
     ] = None,
+    include_nflverse_stats: Annotated[
+        bool,
+        typer.Option(
+            "--include-nflverse-stats",
+            help="Also persist nflverse weekly stats as source=nflverse_stats.",
+        ),
+    ] = False,
     output: Annotated[OutputFormat, typer.Option("--output", "-o")] = "json",
 ) -> None:
     """Sync cached Sleeper data into normalized tables."""
@@ -317,6 +324,7 @@ def sync_data(
                 league_id=league_id,
                 seasons=parse_int_csv(seasons),
                 weeks=parse_int_csv(weeks),
+                include_nflverse_stats=include_nflverse_stats,
             )
         except SyncError as exc:
             emit(exc.result.to_dict(), output_format=output)

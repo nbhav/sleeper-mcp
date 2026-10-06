@@ -293,6 +293,7 @@ def test_sync_decision_data_delegates_to_configured_sync_service() -> None:
         "season": 2026,
         "week": 1,
         "force": True,
+        "include_nflverse_stats": False,
     }
     assert service.calls == [
         {
@@ -300,6 +301,30 @@ def test_sync_decision_data_delegates_to_configured_sync_service() -> None:
             "season": 2026,
             "week": 1,
             "force": True,
+            "include_nflverse_stats": False,
+        }
+    ]
+
+
+def test_sync_decision_data_can_include_nflverse_stats() -> None:
+    service = FakeSyncService()
+    runner = FantasyToolRunner(sync_service=service)
+
+    report = runner.sync_decision_data(
+        league_id="league-1",
+        season=2026,
+        week=1,
+        include_nflverse_stats=True,
+    )
+
+    assert report["include_nflverse_stats"] is True
+    assert service.calls == [
+        {
+            "league_id": "league-1",
+            "season": 2026,
+            "week": 1,
+            "force": False,
+            "include_nflverse_stats": True,
         }
     ]
 
@@ -1134,12 +1159,21 @@ class FakeSyncService:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
 
-    def sync_decision_data(self, *, league_id=None, season=None, week=None, force=False):
+    def sync_decision_data(
+        self,
+        *,
+        league_id=None,
+        season=None,
+        week=None,
+        force=False,
+        include_nflverse_stats=False,
+    ):
         call = {
             "league_id": league_id,
             "season": season,
             "week": week,
             "force": force,
+            "include_nflverse_stats": include_nflverse_stats,
         }
         self.calls.append(call)
         return {"synced": True, **call}

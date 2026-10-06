@@ -190,13 +190,25 @@ def sync_nflverse_stats(
         )
     package_version = _package_version("nflreadpy")
     counts: dict[str, int] = {}
-    for (season, week), rows in sorted(rows_by_week.items()):
-        result = repository.upsert_player_week_rows(
-            season=season,
-            week=week,
-            source=NFLVERSE_SOURCE,
-            rows=rows,
-            scoring_settings=None,
+    metadata_keys = set(rows_by_week)
+    if allowed_weeks is not None:
+        metadata_keys.update(
+            (int(season), int(week))
+            for season in seasons
+            for week in allowed_weeks
+        )
+    for season, week in sorted(metadata_keys):
+        rows = rows_by_week.get((season, week), [])
+        result = (
+            repository.upsert_player_week_rows(
+                season=season,
+                week=week,
+                source=NFLVERSE_SOURCE,
+                rows=rows,
+                scoring_settings=None,
+            )
+            if rows
+            else 0
         )
         counts[f"{season}:{week}"] = sum(int(value) for value in result.values()) if isinstance(result, Mapping) else int(result or 0)
         metadata = {

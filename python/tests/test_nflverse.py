@@ -199,3 +199,33 @@ def test_sync_nflverse_resync_replaces_only_nflverse_source_rows(tmp_path) -> No
     assert len(metadata) == 1
     assert metadata[0]["fetched_at"] == 2000
     repository.close()
+
+
+def test_sync_nflverse_records_zero_row_requested_week_metadata(tmp_path) -> None:
+    class FakeLoader:
+        def load_ff_playerids(self):
+            return [{"gsis_id": "g-1", "sleeper_id": "s-1"}]
+
+        def load_player_stats(self, seasons):
+            return []
+
+    repository = SleeperNormalizedRepository(tmp_path / "sleeper.db")
+
+    result = sync_nflverse_stats(
+        repository,
+        [2026],
+        weeks=[5],
+        loader=FakeLoader(),
+        fetched_at=3000,
+    )
+
+    assert result["mapped_rows"] == 0
+    assert result["row_counts"] == {"2026:5": 0}
+    metadata = repository.list_provider_sync_metadata(
+        provider="nflverse", dataset="player_stats", season=2026
+    )
+    assert metadata[0]["week"] == 5
+    assert metadata[0]["fetched_at"] == 3000
+    assert metadata[0]["metadata"]["row_count"] == 0
+    assert metadata[0]["metadata"]["coverage"] == {"season": 2026, "weeks": [5]}
+    repository.close()

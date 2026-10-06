@@ -353,21 +353,44 @@ def _query_numeric_rows(
     positions: Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
     validate_stat_source(source)
-    resolved_source = source
     if source == "canonical_stats":
-        resolved_source = _resolve_canonical_source(
+        return _query_canonical_numeric_rows(
             repository,
             season=season,
             start_week=start_week,
             end_week=end_week,
+            stat_keys=stat_keys,
             player_ids=player_ids,
             positions=positions,
         )
+    return _query_source_numeric_rows(
+        repository,
+        source=source,
+        season=season,
+        start_week=start_week,
+        end_week=end_week,
+        stat_keys=stat_keys,
+        player_ids=player_ids,
+        positions=positions,
+    )
+
+
+def _query_source_numeric_rows(
+    repository: TrendQueryRepository,
+    *,
+    source: str,
+    season: int,
+    start_week: int,
+    end_week: int,
+    stat_keys: Sequence[str] | None = None,
+    player_ids: Sequence[str] | None = None,
+    positions: Sequence[str] | None = None,
+) -> list[dict[str, Any]]:
     stat_key_set = {str(key) for key in stat_keys or []}
     player_id_set = {str(player_id) for player_id in player_ids or []}
     position_set = {str(position).upper() for position in positions or []}
     raw_rows = repository.query_numeric_stat_rows(
-        source=resolved_source,
+        source=source,  # type: ignore[arg-type]
         season=season,
         start_week=start_week,
         end_week=end_week,
@@ -394,18 +417,33 @@ def _query_numeric_rows(
     return rows
 
 
-def _resolve_canonical_source(
+def _query_canonical_numeric_rows(
     repository: TrendQueryRepository,
     *,
     season: int,
     start_week: int,
     end_week: int,
+    stat_keys: Sequence[str] | None,
     player_ids: Sequence[str] | None,
     positions: Sequence[str] | None,
-) -> StatSource:
+) -> list[dict[str, Any]]:
     """Select one provider for a query; never merge provider values silently."""
+    sleeper_rows = lambda: _with_canonical_provenance(
+        _query_source_numeric_rows(
+            repository,
+            source="stats",
+            season=season,
+            start_week=start_week,
+            end_week=end_week,
+            stat_keys=stat_keys,
+            player_ids=player_ids,
+            positions=positions,
+        ),
+        selected_source="stats",
+        fallback_reason="nflverse_unavailable",
+    )
     if positions and all(str(position).upper() in {"K", "DEF"} for position in positions):
-        return "stats"
+        return sleeper_rows()
     metadata_getter = getattr(repository, "list_provider_sync_metadata", None)
     if callable(metadata_getter):
         metadata = metadata_getter(
@@ -416,22 +454,54 @@ def _resolve_canonical_source(
         if not metadata or max(
             float(row.get("fetched_at") or 0) for row in metadata
         ) < time.time() - CANONICAL_PROVIDER_MAX_AGE_SECONDS:
-            return "stats"
-    nflverse_rows = list(
-        repository.query_numeric_stat_rows(
-            source="nflverse_stats",  # type: ignore[arg-type]
-            season=season,
-            start_week=start_week,
-            end_week=end_week,
-            player_ids=player_ids,
-            positions=[
-                position
-                for position in positions or []
-                if str(position).upper() not in {"K", "DEF"}
-            ],
-        )
+            return sleeper_rows()
+    nflverse_rows = _query_source_numeric_rows(
+        repository,
+        source="nflverse_stats",
+        season=season,
+        start_week=start_week,
+        end_week=end_week,
+        stat_keys=stat_keys,
+        player_ids=player_ids,
+        positions=[
+            position
+            for position in positions or []
+            if str(position).upper() not in {"K", "DEF"}
+        ] or None,
     )
-    return "nflverse_stats" if nflverse_rows else "stats"
+    nflverse_rows = [
+        row
+        for row in nflverse_rows
+        if str(row.get("position") or "").upper() not in {"K", "DEF"}
+    ]
+    if nflverse_rows:
+        return _with_canonical_provenance(
+            nflverse_rows,
+            selected_source="nflverse_stats",
+            fallback_reason=None,
+        )
+    return sleeper_rows()
+
+
+def _with_canonical_provenance(
+    rows: list[dict[str, Any]],
+    *,
+    selected_source: str,
+    fallback_reason: str | None,
+) -> list[dict[str, Any]]:
+    metadata = {
+        "requested_source": "canonical_stats",
+        "selected_source": selected_source,
+        "fallback_reason": fallback_reason,
+    }
+    return [
+        {
+            **row,
+            "source": selected_source,
+            "source_metadata": metadata,
+        }
+        for row in rows
+    ]
 
 
 def _normalize_graph_row(row: dict[str, Any]) -> dict[str, Any] | None:

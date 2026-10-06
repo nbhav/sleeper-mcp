@@ -45,6 +45,7 @@ TOOLS = [
                 "season": {"type": "integer"},
                 "week": {"type": "integer"},
                 "force": {"type": "boolean", "default": False},
+                "include_nflverse_stats": {"type": "boolean", "default": False},
             },
         },
     },

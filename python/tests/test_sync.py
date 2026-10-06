@@ -147,6 +147,50 @@ def test_sync_is_idempotent_against_repository_upsert_keys() -> None:
     assert [run["status"] for run in repository.sync_runs] == ["success", "success"]
 
 
+def test_sync_can_persist_nflverse_stats_as_separate_source(tmp_path) -> None:
+    client = FakeSyncSleeperClient()
+    repository = SQLiteNormalizedRepositoryAdapter(
+        SleeperNormalizedRepository(tmp_path / "sleeper.db")
+    )
+    service = SleeperSyncService(
+        client=client,
+        repository=repository,
+        clock=FakeClock(),
+        nflverse_loader=FakeNflverseLoader(),
+    )
+
+    result = service.sync(
+        league_id="league-2026",
+        seasons=[2026],
+        weeks=[1],
+        include_nflverse_stats=True,
+    )
+
+    assert result.status == "success"
+    assert result.row_counts["nflverse_stats"] == 1
+    assert result.row_counts["provider_sync_metadata"] == 1
+    assert repository.repository.list_player_week_stat_values(
+        season=2026, week=1, source="stats", player_id="player-1"
+    )
+    nflverse_values = repository.repository.list_player_week_stat_values(
+        season=2026, week=1, source="nflverse_stats", player_id="player-1"
+    )
+    assert {row["stat_key"]: row["stat_value"] for row in nflverse_values} == {
+        "rec": 4,
+        "rec_tgt": 6,
+    }
+    metadata = repository.list_provider_sync_metadata(
+        provider="nflverse",
+        dataset="player_stats",
+        season=2026,
+    )
+    assert metadata[0]["metadata"]["source"] == "nflverse_stats"
+    assert metadata[0]["metadata"]["identity_mapping"] == "gsis_to_sleeper"
+    status = repository.sync_status()
+    assert status["metadata"]["provider_sync"][0]["metadata"]["source"] == "nflverse_stats"
+    service.close()
+
+
 def test_sync_records_partial_failure_without_clearing_previous_rows() -> None:
     client = FakeSyncSleeperClient(fail_transactions_week=2)
     repository = FakeNormalizedRepository()
@@ -286,6 +330,24 @@ class FakeContextSyncSleeperClient(FakeSyncSleeperClient):
                 "stats": {"pts_ppr": 10},
             }
         ]
+
+
+class FakeNflverseLoader:
+    def load_ff_playerids(self):
+        return [{"gsis_id": "gsis-1", "sleeper_id": "player-1"}]
+
+    def load_player_stats(self, seasons):
+        assert seasons == [2026]
+        return [{
+            "player_id": "gsis-1",
+            "season": 2026,
+            "week": 1,
+            "season_type": "REG",
+            "recent_team": "DEN",
+            "position": "RB",
+            "targets": 6,
+            "receptions": 4,
+        }]
 
 
 class FakeNormalizedRepository:

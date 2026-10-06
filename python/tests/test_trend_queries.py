@@ -215,7 +215,12 @@ def test_canonical_stats_prefers_nflverse_as_one_provider() -> None:
     )
 
     assert rows[0]["stat_value"] == 7
-    assert repository.queried_sources == ["nflverse_stats", "nflverse_stats"]
+    assert rows[0]["source_metadata"] == {
+        "requested_source": "canonical_stats",
+        "selected_source": "nflverse_stats",
+        "fallback_reason": None,
+    }
+    assert repository.queried_sources == ["nflverse_stats"]
 
 
 def test_canonical_stats_falls_back_to_sleeper_when_nflverse_is_missing() -> None:
@@ -232,16 +237,20 @@ def test_canonical_stats_falls_back_to_sleeper_when_nflverse_is_missing() -> Non
     )
 
     assert rows[0]["stat_value"] == 4
+    assert rows[0]["source_metadata"]["selected_source"] == "stats"
     assert repository.queried_sources == ["nflverse_stats", "stats"]
 
 
 def test_canonical_stats_falls_back_to_sleeper_when_nflverse_is_stale(monkeypatch) -> None:
-    repository = CanonicalFallbackRepository(rows=[{
-        "season": 2026, "week": 1, "player_id": "wr-1",
-        "name": "Wide One", "team": "DEN", "position": "WR",
-        "stat_key": "rec_tgt", "stat_value": 9,
-    }])
-    monkeypatch.setattr(trend_queries.time, "time", lambda: 10_000)
+    repository = CanonicalFallbackRepository(
+        rows=[{
+            "season": 2026, "week": 1, "player_id": "wr-1",
+            "name": "Wide One", "team": "DEN", "position": "WR",
+            "stat_key": "rec_tgt", "stat_value": 9,
+        }],
+        fetched_at=1,
+    )
+    monkeypatch.setattr(trend_queries.time, "time", lambda: 1_000_000)
 
     rows = player_stat_trends(
         repository,
@@ -257,12 +266,41 @@ def test_canonical_stats_falls_back_to_sleeper_when_nflverse_is_stale(monkeypatc
     assert repository.queried_sources == ["stats"]
 
 
-def test_canonical_stats_uses_sleeper_for_kicker_and_defense() -> None:
+def test_canonical_stats_falls_back_when_requested_stat_key_is_missing() -> None:
     repository = CanonicalFallbackRepository(rows=[{
-        "season": 2026, "week": 1, "player_id": "k-1",
-        "name": "Kicker One", "team": "DEN", "position": "K",
-        "stat_key": "fgm", "stat_value": 3,
+        "season": 2026, "week": 1, "player_id": "wr-1",
+        "name": "Wide One", "team": "DEN", "position": "WR",
+        "stat_key": "rush_att", "stat_value": 1,
     }])
+
+    rows = player_stat_trends(
+        repository,
+        season=2026,
+        player_id="wr-1",
+        stat_key="rec_tgt",
+        start_week=1,
+        end_week=1,
+        source="canonical_stats",
+    )
+
+    assert rows[0]["stat_value"] == 4
+    assert rows[0]["source_metadata"]["selected_source"] == "stats"
+    assert repository.queried_sources == ["nflverse_stats", "stats"]
+
+
+def test_canonical_stats_uses_sleeper_for_kicker_and_defense() -> None:
+    repository = CanonicalFallbackRepository(
+        rows=[{
+            "season": 2026, "week": 1, "player_id": "k-1",
+            "name": "Kicker One", "team": "DEN", "position": "K",
+            "stat_key": "fgm", "stat_value": 99,
+        }],
+        sleeper_rows=[{
+            "season": 2026, "week": 1, "player_id": "k-1",
+            "name": "Kicker One", "team": "DEN", "position": "K",
+            "stat_key": "fgm", "stat_value": 3,
+        }],
+    )
 
     rows = player_stat_trends(
         repository,
@@ -275,7 +313,8 @@ def test_canonical_stats_uses_sleeper_for_kicker_and_defense() -> None:
     )
 
     assert rows[0]["stat_value"] == 3
-    assert repository.queried_sources == ["stats"]
+    assert rows[0]["source_metadata"]["selected_source"] == "stats"
+    assert repository.queried_sources == ["nflverse_stats", "stats"]
 
 
 def test_validate_stat_source_rejects_provider_internal_source() -> None:
@@ -302,19 +341,21 @@ class CanonicalTrendRepository:
 
 
 class CanonicalFallbackRepository:
-    def __init__(self, rows):
+    def __init__(self, rows, *, sleeper_rows=None, fetched_at=None):
         self.rows = rows
+        self.sleeper_rows = sleeper_rows
+        self.fetched_at = trend_queries.time.time() if fetched_at is None else fetched_at
         self.queried_sources = []
 
     def list_provider_sync_metadata(self, *, provider, dataset, season):
-        return [{"fetched_at": 1}]
+        return [{"fetched_at": self.fetched_at}]
 
     def query_numeric_stat_rows(self, *, source, season, start_week, end_week,
                                 stat_keys=None, player_ids=None, positions=None):
         self.queried_sources.append(source)
         if source == "nflverse_stats":
             return self.rows
-        return [{
+        return self.sleeper_rows or [{
             "season": season, "week": 1, "player_id": "wr-1",
             "name": "Wide One", "team": "DEN", "position": "WR",
             "stat_key": "rec_tgt", "stat_value": 4,

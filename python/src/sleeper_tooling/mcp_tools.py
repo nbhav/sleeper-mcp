@@ -152,6 +152,7 @@ class FantasyToolRunner:
         season: int | None = None,
         week: int | None = None,
         force: bool = False,
+        include_nflverse_stats: bool = False,
     ) -> dict[str, Any]:
         resolved_league_id = self._resolve_optional_league_id(league_id)
         if self._sync_service is not None:
@@ -162,6 +163,7 @@ class FantasyToolRunner:
                     season=season,
                     week=week,
                     force=force,
+                    include_nflverse_stats=include_nflverse_stats,
                 )
             if callable(service):
                 return service(
@@ -169,12 +171,14 @@ class FantasyToolRunner:
                     season=season,
                     week=week,
                     force=force,
+                    include_nflverse_stats=include_nflverse_stats,
                 )
             if hasattr(service, "sync"):
                 return service.sync(
                     league_id=resolved_league_id,
                     seasons=[season] if season is not None else None,
                     weeks=[week] if week is not None else None,
+                    include_nflverse_stats=include_nflverse_stats,
                 ).to_dict()
             raise ValueError("configured sync service is not callable")
 
@@ -188,6 +192,7 @@ class FantasyToolRunner:
                     league_id=resolved_league_id,
                     seasons=[season] if season is not None else None,
                     weeks=[week] if week is not None else None,
+                    include_nflverse_stats=include_nflverse_stats,
                 )
                 return result.to_dict()
         finally:
