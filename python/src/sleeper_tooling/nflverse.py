@@ -199,16 +199,19 @@ def sync_nflverse_stats(
         )
     for season, week in sorted(metadata_keys):
         rows = rows_by_week.get((season, week), [])
-        result = (
-            repository.upsert_player_week_rows(
+        delete_source = getattr(repository, "delete_player_week_source", None)
+        if callable(delete_source):
+            delete_source(
                 season=season,
                 week=week,
                 source=NFLVERSE_SOURCE,
-                rows=rows,
-                scoring_settings=None,
             )
-            if rows
-            else 0
+        result = repository.upsert_player_week_rows(
+            season=season,
+            week=week,
+            source=NFLVERSE_SOURCE,
+            rows=rows,
+            scoring_settings=None,
         )
         counts[f"{season}:{week}"] = sum(int(value) for value in result.values()) if isinstance(result, Mapping) else int(result or 0)
         metadata = {

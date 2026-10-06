@@ -115,6 +115,15 @@ class NormalizedSleeperRepository(Protocol):
     ) -> None:
         ...
 
+    def delete_player_week_source(
+        self,
+        *,
+        season: int,
+        week: int,
+        source: str,
+    ) -> Mapping[str, int]:
+        ...
+
     def import_legacy_team_schedule_context(self) -> int | None:
         ...
 
@@ -800,6 +809,19 @@ class SQLiteNormalizedRepositoryAdapter:
             week=week,
             fetched_at=fetched_at,
             metadata=metadata,
+        )
+
+    def delete_player_week_source(
+        self,
+        *,
+        season: int,
+        week: int,
+        source: str,
+    ) -> Mapping[str, int]:
+        return self.repository.delete_player_week_source(
+            season=season,
+            week=week,
+            source=source,
         )
 
     def list_provider_sync_metadata(
