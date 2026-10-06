@@ -115,12 +115,14 @@ class NormalizedSleeperRepository(Protocol):
     ) -> None:
         ...
 
-    def delete_player_week_source(
+    def replace_player_week_source(
         self,
         *,
         season: int,
         week: int,
         source: str,
+        rows: list[dict[str, Any]],
+        scoring_settings: dict[str, Any] | None = None,
     ) -> Mapping[str, int]:
         ...
 
@@ -811,17 +813,21 @@ class SQLiteNormalizedRepositoryAdapter:
             metadata=metadata,
         )
 
-    def delete_player_week_source(
+    def replace_player_week_source(
         self,
         *,
         season: int,
         week: int,
         source: str,
+        rows: list[dict[str, Any]],
+        scoring_settings: dict[str, Any] | None = None,
     ) -> Mapping[str, int]:
-        return self.repository.delete_player_week_source(
+        return self.repository.replace_player_week_source(
             season=season,
             week=week,
             source=source,
+            rows=rows,
+            scoring_settings=scoring_settings,
         )
 
     def list_provider_sync_metadata(

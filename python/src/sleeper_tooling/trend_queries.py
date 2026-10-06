@@ -427,8 +427,15 @@ def _query_canonical_numeric_rows(
     player_ids: Sequence[str] | None,
     positions: Sequence[str] | None,
 ) -> list[dict[str, Any]]:
-    """Select one provider for a query; never merge provider values silently."""
-    sleeper_rows = lambda: _with_canonical_provenance(
+    """Select provider rows explicitly and attach per-row provenance."""
+    requested_positions = [str(position).upper() for position in positions or []]
+    special_positions = [
+        position for position in requested_positions if position in {"K", "DEF"}
+    ]
+    nflverse_positions = [
+        position for position in requested_positions if position not in {"K", "DEF"}
+    ]
+    sleeper_rows = lambda selected_positions=None: _with_canonical_provenance(
         _query_source_numeric_rows(
             repository,
             source="stats",
@@ -437,12 +444,12 @@ def _query_canonical_numeric_rows(
             end_week=end_week,
             stat_keys=stat_keys,
             player_ids=player_ids,
-            positions=positions,
+            positions=selected_positions if selected_positions is not None else positions,
         ),
         selected_source="stats",
         fallback_reason="nflverse_unavailable",
     )
-    if positions and all(str(position).upper() in {"K", "DEF"} for position in positions):
+    if requested_positions and not nflverse_positions:
         return sleeper_rows()
     metadata_getter = getattr(repository, "list_provider_sync_metadata", None)
     if callable(metadata_getter):
@@ -463,11 +470,7 @@ def _query_canonical_numeric_rows(
         end_week=end_week,
         stat_keys=stat_keys,
         player_ids=player_ids,
-        positions=[
-            position
-            for position in positions or []
-            if str(position).upper() not in {"K", "DEF"}
-        ] or None,
+        positions=nflverse_positions or None,
     )
     nflverse_rows = [
         row
@@ -475,11 +478,14 @@ def _query_canonical_numeric_rows(
         if str(row.get("position") or "").upper() not in {"K", "DEF"}
     ]
     if nflverse_rows:
-        return _with_canonical_provenance(
+        rows = _with_canonical_provenance(
             nflverse_rows,
             selected_source="nflverse_stats",
             fallback_reason=None,
         )
+        if special_positions:
+            rows.extend(sleeper_rows(special_positions))
+        return rows
     return sleeper_rows()
 
 

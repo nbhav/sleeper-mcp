@@ -317,6 +317,28 @@ def test_canonical_stats_uses_sleeper_for_kicker_and_defense() -> None:
     assert repository.queried_sources == ["nflverse_stats", "stats"]
 
 
+def test_canonical_stats_keeps_special_teams_on_sleeper_for_mixed_positions() -> None:
+    repository = CanonicalMixedPositionRepository()
+
+    rows = multi_stat_usage_trends(
+        repository,
+        season=2026,
+        start_week=1,
+        end_week=2,
+        stat_keys=["pts_ppr"],
+        positions=["WR", "K"],
+        source="canonical_stats",
+    )
+
+    by_player = {row["player_id"]: row for row in rows}
+    assert by_player["wr-1"]["source_metadata"]["selected_source"] == "nflverse_stats"
+    assert by_player["k-1"]["source_metadata"]["selected_source"] == "stats"
+    assert repository.queries == [
+        ("nflverse_stats", ("WR",)),
+        ("stats", ("K",)),
+    ]
+
+
 def test_validate_stat_source_rejects_provider_internal_source() -> None:
     from sleeper_tooling.trend_queries import validate_stat_source
 
@@ -360,6 +382,46 @@ class CanonicalFallbackRepository:
             "name": "Wide One", "team": "DEN", "position": "WR",
             "stat_key": "rec_tgt", "stat_value": 4,
         }]
+
+
+class CanonicalMixedPositionRepository:
+    def __init__(self):
+        self.queries = []
+
+    def list_provider_sync_metadata(self, *, provider, dataset, season):
+        return [{"fetched_at": trend_queries.time.time()}]
+
+    def query_numeric_stat_rows(self, *, source, season, start_week, end_week,
+                                stat_keys=None, player_ids=None, positions=None):
+        normalized_positions = tuple(positions or ())
+        self.queries.append((source, normalized_positions))
+        rows = [
+            self._row(1, "wr-1", "Wide One", "WR", 4, "nflverse_stats"),
+            self._row(2, "wr-1", "Wide One", "WR", 7, "nflverse_stats"),
+            self._row(1, "k-1", "Kicker One", "K", 8, "stats"),
+            self._row(2, "k-1", "Kicker One", "K", 9, "stats"),
+        ]
+        return [
+            row
+            for row in rows
+            if row["source"] == source
+            and start_week <= row["week"] <= end_week
+            and (not stat_keys or row["stat_key"] in stat_keys)
+            and (not positions or row["position"] in positions)
+        ]
+
+    def _row(self, week, player_id, name, position, value, source):
+        return {
+            "source": source,
+            "season": 2026,
+            "week": week,
+            "player_id": player_id,
+            "name": name,
+            "team": "DEN",
+            "position": position,
+            "stat_key": "pts_ppr",
+            "stat_value": value,
+        }
 
 
 class FakeTrendRepository:
