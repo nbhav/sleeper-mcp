@@ -237,8 +237,22 @@ The cache database contains:
 |---|---|---:|
 | `api_cache` | Cached Sleeper HTTP responses keyed by the full request URL, including query parameters. Stores `cache_key`, `url`, `response_json`, `fetched_at`, and `ttl_seconds`. | Yes |
 | `player_context_overrides` | Local/manual player context overrides for future provider or manual enrichment. Stores `player_id`, `context_json`, `source`, and `updated_at`. | Reserved |
-| `team_schedule_context` | Local/manual team schedule and bye-week context. Stores `season`, `team`, `bye_week`, `schedule_json`, `source`, and `updated_at`. | Reserved |
+| `team_schedule_context` | Retained local/manual compatibility input for team schedule and bye-week context. Stores `season`, `team`, `bye_week`, `schedule_json`, `source`, and `updated_at`; startup migration and sync copy it into `team_week_schedule` without deleting this table. | Compatibility input |
 | `context_source_timestamps` | Source freshness metadata for local context providers. Stores `source`, `fetched_at`, and `metadata_json`. | Reserved |
+
+The normalized schedule and player-context snapshots use source-scoped rows. A
+refresh replaces only the rows for its own source and season/window, so a
+partial or empty provider response cannot remove another provider's data.
+Schedule reads can filter by `source` (or a source list); unfiltered reads use
+this precedence: `sleeper_nfl_schedule`/`nfl_schedule`, then
+`manual_fixture`/`local_db`, then other retained sources. Legacy schedule rows
+are copied with their original source and are never destructively removed.
+
+The normalized sync refreshes the current player's role and availability
+metadata for the current NFL season/week. These rows are marked
+`current_metadata_only` because Sleeper's player map is a current snapshot,
+not historical week-specific evidence. Re-syncing replaces stale players from
+that source while preserving explicit provider snapshots.
 
 On each cached Sleeper request, the Python client builds the request URL, uses it
 as the cache key, and checks `api_cache` unless caching is disabled or

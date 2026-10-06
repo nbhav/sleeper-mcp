@@ -537,7 +537,36 @@ def test_sync_data_outputs_stable_json(monkeypatch) -> None:
         "weeks": [1, 2],
     }
     assert fake_service.calls == [
-        ("sync", "league-1", [2025, 2026], [1, 2]),
+        ("sync", "league-1", [2025, 2026], [1, 2], False),
+    ]
+
+
+def test_sync_data_can_opt_into_nflverse_stats(monkeypatch) -> None:
+    fake_client = FakeSleeperClient()
+    fake_service = FakeSyncService()
+    monkeypatch.setattr(cli, "SleeperClient", lambda **_: fake_client)
+    monkeypatch.setattr(cli, "build_sync_service", lambda client: fake_service)
+
+    result = runner.invoke(
+        app,
+        [
+            "--no-cache",
+            "sync-data",
+            "--league-id",
+            "league-1",
+            "--seasons",
+            "2026",
+            "--weeks",
+            "1",
+            "--include-nflverse-stats",
+            "--output",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert fake_service.calls == [
+        ("sync", "league-1", [2026], [1], True),
     ]
 
 
@@ -757,8 +786,9 @@ class FakeSyncService:
         league_id: str | None,
         seasons: list[int] | None,
         weeks: list[int] | None,
+        include_nflverse_stats: bool = False,
     ) -> FakeSyncResult:
-        self.calls.append(("sync", league_id, seasons, weeks))
+        self.calls.append(("sync", league_id, seasons, weeks, include_nflverse_stats))
         return FakeSyncResult()
 
 

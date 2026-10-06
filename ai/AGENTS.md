@@ -29,6 +29,8 @@ Keep the MCP tool surface curated and decision-focused. Prefer deterministic too
 - Check `git status --short --branch` before making edits.
 - If the user asks for a fresh branch, start from up-to-date `main` and create a purpose-named feature branch.
 - Keep work on a feature branch unless the user explicitly asks to work on `main`.
+- When delegating repository work to subagents, create each worktree under the repository's `.worktrees/` directory (for example, `.worktrees/context-rules`). Do not use `/private/tmp`, `/tmp`, or another external worktree path unless the user explicitly requests it, because external paths trigger avoidable filesystem approval prompts.
+- Remove repo-local task worktrees after their branches are merged and verified, while preserving unrelated user changes in the main worktree.
 - Use existing default Sleeper context from `data/sleeper-mcp.env` through Docker Compose when available; do not print secrets or env files unnecessarily.
 
 ## Commands

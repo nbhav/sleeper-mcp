@@ -1,7 +1,7 @@
 COMPOSE := docker compose -f infra/docker/docker-compose.yml
 WORKER_DEPLOY_ARGS ?=
 
-.PHONY: build test integration-test decision-smoke shell sleeper sync-data sync-status mcp worker-build worker-install worker-typecheck worker-dev worker-deploy local-up local-down docker-prune teardown ci-teardown clean
+.PHONY: build test integration-test decision-smoke context-backtest shell sleeper sync-data sync-status mcp worker-build worker-install worker-typecheck worker-dev worker-deploy local-up local-down docker-prune teardown ci-teardown clean
 
 build:
 	$(COMPOSE) build sleeper sleeper-mcp
@@ -14,6 +14,9 @@ integration-test:
 
 decision-smoke:
 	$(COMPOSE) run --rm --entrypoint /app/.venv/bin/python sleeper -m sleeper_tooling.smoke $(ARGS)
+
+context-backtest:
+	$(COMPOSE) run --rm --entrypoint /app/.venv/bin/python sleeper -m sleeper_tooling.context_backtest
 
 shell:
 	$(COMPOSE) run --rm --entrypoint bash sleeper

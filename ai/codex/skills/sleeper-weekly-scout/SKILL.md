@@ -140,7 +140,9 @@ Rules:
 - Narrow to `RB,WR,TE` when the user explicitly wants skill-position bench churn.
 - Use available-player output, not raw trending lists, when the goal is actionable waiver suggestions.
 - Use `free_agent_watch` when the user wants a cleaner available-player ranking without trend pressure.
-- Keep the result focused on projected value and roster availability.
+- Treat projected value as the first screen, not the whole answer. Before rejecting or endorsing a specific waiver claim, compare the add and drop with `player_card` recent actuals, or use `weekly_performance_backtest` with `source: "stats"` when the question is about production trends.
+- When projections and recent actuals conflict, say so directly and explain which signal you are weighting more. Do not dismiss a player with rising multi-week actual production solely because the current projection is low.
+- Keep broad waiver lists focused on projected value, recent actuals, and roster availability.
 - Explain `acquisition_action`, `urgency`, add/drop reasoning, and FAAB fields only when `market_type` is `waiver`.
 
 ## Lineup Decisions
@@ -177,8 +179,8 @@ Rules:
 
 - Omit `league_id` and `roster_id` only when MCP default context is configured.
 - Treat FAAB output as a deterministic range hint, not a final bid, and do not invent bids for free agents or unknown market state.
-- Explain recommendations from `projected_gain`, add/drop trend counts, rostered percentage when present, injury status, and league scoring.
-- Use `player_card` for chart-ready evidence when a recommendation needs weekly trajectory.
+- Explain recommendations from `projected_gain`, recent actual points, add/drop trend counts, rostered percentage when present, injury status, and league scoring.
+- Use `player_card` for chart-ready evidence when a recommendation needs weekly trajectory. This is required when the user names a specific add/drop claim or challenges a projection-based recommendation.
 
 ## Trade Opportunities
 

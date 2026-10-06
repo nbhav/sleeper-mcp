@@ -102,6 +102,12 @@ Use `waiver_wire_by_position` when the user asks:
 - to compare each option against a realistic drop candidate
 - for recommendation, move score, value deltas, acquisition action, drop reasoning, and FAAB tier only when the player is known to require a waiver claim
 
+For any named add/drop claim, treat projection-based waiver tools as the first
+screen, not the full answer. Cross-check both the add and drop with
+`player_card` recent actuals, or use `weekly_performance_backtest` with
+`source: "stats"` for production context. When projections and actuals disagree,
+say so directly and explain which signal drives the recommendation.
+
 Use `my_lineup` when the user asks:
 
 - who is currently starting this week
@@ -207,6 +213,22 @@ Prefer adding deterministic, decision-shaped tools when:
 - the result should be chart-ready or LLM-ready
 
 Avoid adding tools that only return unshaped raw endpoint payloads.
+
+## Subagent Worktree Policy
+
+Subagents that make repository changes must use worktrees inside the repository:
+
+```text
+<repo>/.worktrees/<task-name>/
+```
+
+Create them with `git worktree add` from the repository root. Do not create or
+modify task worktrees under `/private/tmp`, `/tmp`, or another external path
+unless the user explicitly requests it. External worktrees can trigger
+filesystem approval prompts and make the work harder to resume across agent
+sessions. Keep each task isolated in its own repo-local worktree, and remove
+the worktree after its branch has been merged and verified. The main worktree
+must continue to preserve unrelated user changes.
 
 ## Local Lifecycle
 

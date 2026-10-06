@@ -18,6 +18,9 @@ NORMALIZED_TABLES = {
     "player_week_rows",
     "player_week_stat_values",
     "player_week_scoring_values",
+    "team_week_schedule",
+    "player_role_snapshots",
+    "player_week_availability",
     "sync_runs",
 }
 
@@ -42,6 +45,9 @@ def test_normalized_schema_migrates_idempotently(tmp_path) -> None:
         "idx_player_week_stat_trends",
         "idx_matchups_league_week",
         "idx_roster_players_player",
+        "idx_team_week_schedule_lookup",
+        "idx_player_role_snapshots_lookup",
+        "idx_player_week_availability_lookup",
         "idx_sync_runs_freshness",
     }.issubset({row["name"] for row in indexes})
     second_repo.close()
@@ -304,7 +310,7 @@ def test_player_week_upsert_extracts_numeric_stats_and_scoring_values(tmp_path) 
     repo.close()
 
 
-def test_player_week_raw_json_preserves_nonnumeric_stats(tmp_path) -> None:
+def test_player_week_raw_json_preserves_week_fields_and_numeric_stat_keys(tmp_path) -> None:
     repo = SleeperNormalizedRepository(tmp_path / "sleeper.db")
 
     repo.upsert_player_week_rows(
@@ -315,8 +321,14 @@ def test_player_week_raw_json_preserves_nonnumeric_stats(tmp_path) -> None:
             {
                 "player_id": "2",
                 "player": {"full_name": "Receiver Two"},
+                "opponent": "KC",
+                "game_id": "2026_02_DEN_KC",
+                "date": "2026-09-17T20:15:00Z",
                 "stats": {
                     "rec": 6,
+                    "off_snp": 42,
+                    "tm_off_snp": 63,
+                    "rec_air_yd": 118,
                     "opponent": "KC",
                     "note": {"source": "manual"},
                 },
@@ -337,9 +349,293 @@ def test_player_week_raw_json_preserves_nonnumeric_stats(tmp_path) -> None:
         player_id="2",
     )[0]
 
-    assert {row["stat_key"] for row in stat_values} == {"rec"}
+    assert {row["stat_key"] for row in stat_values} == {
+        "off_snp",
+        "rec",
+        "rec_air_yd",
+        "tm_off_snp",
+    }
     assert weekly_row["raw"]["stats"]["opponent"] == "KC"
     assert weekly_row["raw"]["stats"]["note"] == {"source": "manual"}
+    assert weekly_row["raw"]["opponent"] == "KC"
+    assert weekly_row["raw"]["game_id"] == "2026_02_DEN_KC"
+    assert weekly_row["raw"]["date"] == "2026-09-17T20:15:00Z"
+    repo.close()
+
+
+def test_team_week_schedule_upsert_and_missing_status_reason(tmp_path) -> None:
+    repo = SleeperNormalizedRepository(tmp_path / "sleeper.db")
+
+    missing = repo.team_week_schedule_status(
+        season=2026,
+        week=1,
+        teams=["DEN"],
+    )
+
+    assert missing == {
+        "season": 2026,
+        "week": 1,
+        "evaluable": False,
+        "available_teams": [],
+        "missing_teams": ["DEN"],
+        "reason": "not_evaluable_missing_nfl_schedule",
+    }
+
+    assert repo.upsert_team_week_schedule(
+        season=2026,
+        week=1,
+        source="manual_fixture",
+        rows=[
+            {
+                "team": "den",
+                "opponent": "kc",
+                "home_away": "H",
+                "game_timestamp": "1780000000",
+            }
+        ],
+    ) == 1
+
+    schedule = repo.get_team_week_schedule(season=2026, week=1, team="DEN")
+    present = repo.team_week_schedule_status(
+        season=2026,
+        week=1,
+        teams=["DEN"],
+    )
+
+    assert schedule["team"] == "DEN"
+    assert schedule["opponent"] == "KC"
+    assert schedule["home_away"] == "home"
+    assert schedule["game_timestamp"] == 1780000000
+    assert present == {
+        "season": 2026,
+        "week": 1,
+        "evaluable": True,
+        "available_teams": ["DEN"],
+        "missing_teams": [],
+    }
+    repo.close()
+
+
+def test_schedule_source_precedence_filtering_and_source_replacement(tmp_path) -> None:
+    repo = SleeperNormalizedRepository(tmp_path / "sleeper.db")
+    repo.upsert_team_week_schedule(
+        season=2026,
+        week=1,
+        source="local_db",
+        rows=[{"team": "DEN", "opponent": "LV"}],
+    )
+    repo.upsert_team_week_schedule(
+        season=2026,
+        week=1,
+        source="manual_fixture",
+        rows=[{"team": "DEN", "opponent": "KC"}],
+    )
+    repo.upsert_team_week_schedule(
+        season=2026,
+        week=1,
+        source="sleeper_nfl_schedule",
+        rows=[{"team": "DEN", "opponent": "LAC"}],
+    )
+
+    assert repo.get_team_week_schedule(season=2026, week=1, team="DEN")["opponent"] == "LAC"
+    assert repo.get_team_week_schedule(
+        season=2026, week=1, team="DEN", source="manual_fixture"
+    )["opponent"] == "KC"
+
+    repo.replace_team_week_schedule_source(
+        season=2026,
+        source="manual_fixture",
+        rows=[{"week": 2, "team": "DEN", "opponent": "BUF"}],
+    )
+    assert repo.get_team_week_schedule(
+        season=2026, week=1, team="DEN", source="manual_fixture"
+    ) is None
+    assert repo.get_team_week_schedule(
+        season=2026, week=2, team="DEN", source="manual_fixture"
+    )["opponent"] == "BUF"
+    assert repo.get_team_week_schedule(season=2026, week=1, team="DEN")["opponent"] == "LAC"
+    repo.close()
+
+
+def test_legacy_team_schedule_context_migrates_without_overwriting_normalized_rows(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "legacy.db"
+    connection = sqlite3.connect(db_path)
+    connection.execute(
+        """
+        CREATE TABLE team_schedule_context (
+            season INTEGER NOT NULL,
+            team TEXT NOT NULL,
+            bye_week INTEGER,
+            schedule_json TEXT NOT NULL DEFAULT '{}',
+            source TEXT NOT NULL DEFAULT 'local_db',
+            updated_at REAL NOT NULL,
+            PRIMARY KEY (season, team)
+        )
+        """
+    )
+    connection.execute(
+        "INSERT INTO team_schedule_context VALUES (?, ?, ?, ?, ?, ?)",
+        (2026, "den", 8, '{"1": {"opponent": "KC", "home_away": "H"}}', "local_db", 12),
+    )
+    connection.commit()
+    connection.close()
+
+    repo = SleeperNormalizedRepository(db_path)
+    migrated = repo.get_team_week_schedule(season=2026, week=1, team="DEN")
+    bye = repo.get_team_week_schedule(season=2026, week=8, team="DEN")
+    assert migrated["opponent"] == "KC"
+    assert migrated["home_away"] == "home"
+    assert bye["is_bye"] == 1
+    assert repo._connection.execute(
+        "SELECT COUNT(*) FROM team_schedule_context"
+    ).fetchone()[0] == 1
+
+    repo.upsert_team_week_schedule(
+        season=2026,
+        week=1,
+        source="sleeper_nfl_schedule",
+        rows=[{"team": "DEN", "opponent": "LAC"}],
+    )
+    repo._connection.execute("DELETE FROM team_schedule_context")
+    repo._connection.commit()
+    assert repo.import_legacy_team_schedule_context() == 0
+    assert repo.get_team_week_schedule(
+        season=2026, week=1, team="DEN", source="local_db"
+    ) is None
+    assert repo.get_team_week_schedule(
+        season=2026, week=1, team="DEN", source="sleeper_nfl_schedule"
+    )["opponent"] == "LAC"
+
+    repo.upsert_team_week_schedule(
+        season=2026,
+        week=1,
+        source="local_db",
+        rows=[{"team": "DEN", "opponent": "LAC"}],
+    )
+    repo.close()
+    reopened = SleeperNormalizedRepository(db_path)
+    assert reopened.get_team_week_schedule(season=2026, week=1, team="DEN")["opponent"] == "LAC"
+    reopened.close()
+
+
+def test_role_and_availability_snapshots_preserve_current_metadata_flag(tmp_path) -> None:
+    repo = SleeperNormalizedRepository(tmp_path / "sleeper.db")
+
+    counts = repo.upsert_current_player_metadata_snapshots(
+        season=2026,
+        week=3,
+        snapshot_at=1234,
+        players={
+            "1": {
+                "full_name": "Current Back",
+                "team": "den",
+                "status": "Active",
+                "injury_status": "Questionable",
+                "depth_chart_order": "2",
+                "depth_chart_position": "RB",
+            },
+            "2": {
+                "full_name": "Missing Team",
+                "position": "WR",
+            },
+        },
+    )
+
+    role_rows = repo.list_player_role_snapshots(
+        season=2026,
+        week=3,
+        team="DEN",
+    )
+    availability_rows = repo.list_player_week_availability(
+        season=2026,
+        week=3,
+        player_id="1",
+    )
+
+    assert counts == {
+        "player_role_snapshots": 1,
+        "player_week_availability": 1,
+    }
+    assert role_rows[0]["player_id"] == "1"
+    assert role_rows[0]["depth_chart_order"] == 2
+    assert role_rows[0]["projected_role_label"] == "RB"
+    assert role_rows[0]["current_metadata_only"] == 1
+    assert role_rows[0]["source"] == "sleeper_players_current_metadata"
+    assert role_rows[0]["snapshot_at"] == 1234
+    assert availability_rows[0]["status"] == "Active"
+    assert availability_rows[0]["injury_status"] == "Questionable"
+    assert availability_rows[0]["reserve_tags"] == []
+    repo.close()
+
+
+def test_role_and_availability_snapshot_upserts_are_keyed_by_week_team_player_source(
+    tmp_path,
+) -> None:
+    repo = SleeperNormalizedRepository(tmp_path / "sleeper.db")
+
+    role_rows = [
+        {
+            "team": "KC",
+            "player_id": "10",
+            "depth_chart_order": 1,
+            "projected_role_label": "lead_back",
+            "status": "Active",
+            "injury_status": None,
+        }
+    ]
+    availability_rows = [
+        {
+            "team": "KC",
+            "player_id": "10",
+            "status": "Active",
+            "injury_status": None,
+            "reserve_tags": ["IR"],
+        }
+    ]
+
+    assert repo.upsert_player_role_snapshots(
+        season=2026,
+        week=4,
+        source="manual_depth_chart",
+        snapshot_at=2000,
+        rows=role_rows,
+    ) == 1
+    role_rows[0]["projected_role_label"] = "committee_back"
+    assert repo.upsert_player_role_snapshots(
+        season=2026,
+        week=4,
+        source="manual_depth_chart",
+        snapshot_at=2001,
+        rows=role_rows,
+    ) == 1
+    assert repo.upsert_player_week_availability(
+        season=2026,
+        week=4,
+        source="manual_injury_report",
+        snapshot_at=2000,
+        rows=availability_rows,
+    ) == 1
+
+    roles = repo.list_player_role_snapshots(season=2026, week=4, player_id="10")
+    availability = repo.list_player_week_availability(
+        season=2026,
+        week=4,
+        team="KC",
+    )
+
+    assert len(roles) == 1
+    assert roles[0]["projected_role_label"] == "committee_back"
+    assert roles[0]["current_metadata_only"] == 0
+    assert len(availability) == 1
+    assert availability[0]["reserve_tags"] == ["IR"]
+    assert (
+        repo._connection.execute("SELECT COUNT(*) FROM player_role_snapshots").fetchone()[
+            0
+        ]
+        == 1
+    )
     repo.close()
 
 

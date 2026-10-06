@@ -13,11 +13,12 @@ Use this skill with the Sleeper decision tools, especially `player_values`,
 ## Evaluation Order
 
 1. Confirm league format from roster slots and scoring settings before valuing a backup QB. In one-QB leagues, non-elite backups are usually movable unless they cover a bye, injury, or bad matchup.
-2. Compare `decision_value`, `week_value`, `three_week_value`, and `value_above_replacement` before using raw projected points.
-3. Separate floor from ceiling. Rushing attempts, rushing yards, and rushing TDs create a stronger weekly floor than passing TD dependency.
-4. Check availability: `status`, `injury_status`, current game lock, `bye_week`, and whether the roster has a playable replacement.
-5. Use opponent and matchup fields only when they are present in the returned data. Do not invent pressure, pace, or defensive weakness context.
-6. For trade and waiver decisions, evaluate the move against the whole roster, not only against another QB.
+2. Compare recent actual points, `decision_value`, `week_value`, `three_week_value`, and `value_above_replacement` before using raw projected points.
+3. For a named waiver claim or add/drop question, check `player_card` actuals for both the add and drop before making the recommendation.
+4. Separate floor from ceiling. Rushing attempts, rushing yards, and rushing TDs create a stronger weekly floor than passing TD dependency.
+5. Check availability: `status`, `injury_status`, current game lock, `bye_week`, and whether the roster has a playable replacement.
+6. Use opponent and matchup fields only when they are present in the returned data. Do not invent pressure, pace, or defensive weakness context.
+7. For trade and waiver decisions, evaluate the move against the whole roster, not only against another QB.
 
 ## Stat Signals
 
@@ -36,6 +37,7 @@ unless recent rows consistently support that.
 ## Decision Rules
 
 - Prefer stable QB starters with rushing contribution over one-week passing-only spike projections when the value gap is small.
+- Do not reject a QB solely because his projection is low when recent actuals show a clear multi-week rise. Call out the projection/actuals disagreement and decide whether it is a streamer, backup cover, upside stash, or avoid.
 - Protect elite or strong weekly QBs, but avoid overvaluing a second QB in one-QB roster formats.
 - Downgrade questionable, doubtful, out, benched, backup, or uncertain-depth-chart QBs unless the output shows a clear multi-week stash reason.
 - Avoid dropping playable RB, WR, or TE depth for a marginal backup QB gain.
@@ -46,6 +48,7 @@ unless recent rows consistently support that.
 
 When explaining a QB decision, include:
 
+- recent actual points for the add and drop when evaluating a claim
 - one-week value and three-week value
 - rushing floor or lack of rushing signal
 - availability and bye coverage

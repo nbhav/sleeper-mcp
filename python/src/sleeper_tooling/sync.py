@@ -5,10 +5,12 @@ import os
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
 from sleeper_tooling.client import SleeperClient
+from sleeper_tooling.nflverse import NFLVERSE_SOURCE, sync_nflverse_stats
 
 
 class SyncError(RuntimeError):
@@ -92,13 +94,48 @@ class NormalizedSleeperRepository(Protocol):
     def upsert_player_week_rows(
         self,
         *,
-        league_id: str,
+        league_id: str | None = None,
         season: int,
         week: int,
         source: str,
         rows: list[dict[str, Any]],
-        scoring_settings: dict[str, Any],
+        scoring_settings: dict[str, Any] | None = None,
     ) -> int | Mapping[str, int] | None:
+        ...
+
+    def upsert_provider_sync_metadata(
+        self,
+        *,
+        provider: str,
+        dataset: str,
+        season: int,
+        week: int | None,
+        fetched_at: float,
+        metadata: Mapping[str, Any],
+    ) -> None:
+        ...
+
+    def import_legacy_team_schedule_context(self) -> int | None:
+        ...
+
+    def replace_team_week_schedule_source(
+        self,
+        *,
+        season: int,
+        rows: list[dict[str, Any]],
+        source: str,
+        weeks: Sequence[int] | None = None,
+    ) -> int | None:
+        ...
+
+    def upsert_current_player_metadata_snapshots(
+        self,
+        *,
+        season: int,
+        week: int,
+        players: dict[str, dict[str, Any]],
+        snapshot_at: float,
+    ) -> Mapping[str, int] | None:
         ...
 
 
@@ -157,6 +194,8 @@ EXPECTED_REPOSITORY_METHODS = [
     "upsert_matchups",
     "upsert_transactions",
     "upsert_player_week_rows",
+    "import_legacy_team_schedule_context",
+    "upsert_current_player_metadata_snapshots",
     "sync_status",
     "clear_normalized",
 ]
@@ -202,10 +241,14 @@ class SleeperSyncService:
         client: SleeperClient,
         repository: NormalizedSleeperRepository,
         clock: Any = time.time,
+        include_nflverse_stats: bool = False,
+        nflverse_loader: Any | None = None,
     ) -> None:
         self.client = client
         self.repository = repository
         self.clock = clock
+        self.include_nflverse_stats = include_nflverse_stats
+        self.nflverse_loader = nflverse_loader
 
     def close(self) -> None:
         close = getattr(self.repository, "close", None)
@@ -218,6 +261,7 @@ class SleeperSyncService:
         league_id: str | None = None,
         seasons: list[int] | None = None,
         weeks: list[int] | None = None,
+        include_nflverse_stats: bool | None = None,
     ) -> SyncResult:
         state = self.client.get_nfl_state()
         target = resolve_sync_target(
@@ -249,6 +293,12 @@ class SleeperSyncService:
                 self.repository.upsert_players(players),
                 fallback=len(players),
             )
+            _add_count(
+                row_counts,
+                "team_week_schedule",
+                self.repository.import_legacy_team_schedule_context(),
+                fallback=0,
+            )
             leagues_by_season = self._sync_leagues(target=target, row_counts=row_counts)
 
             for season in target.seasons:
@@ -257,18 +307,63 @@ class SleeperSyncService:
                 ]
                 season_league_id = str(league.get("league_id") or target.league_id)
                 scoring_settings = league.get("scoring_settings") or {}
+                if season == _int_or_default(state.get("season"), max(target.seasons)):
+                    metadata_counts = self.repository.upsert_current_player_metadata_snapshots(
+                        season=season,
+                        week=_int_or_default(state.get("week"), max(target.weeks)),
+                        players=players,
+                        snapshot_at=started_at,
+                    )
+                    _add_count(row_counts, "player_role_snapshots", metadata_counts, fallback=0)
                 self._sync_league_members(
                     league_id=season_league_id,
                     row_counts=row_counts,
                 )
+                schedule_rows: list[dict[str, Any]] = []
                 for week in target.weeks:
-                    self._sync_league_week(
+                    schedule_rows.extend(self._sync_league_week(
                         league_id=season_league_id,
                         season=season,
                         week=week,
                         scoring_settings=scoring_settings,
                         row_counts=row_counts,
-                    )
+                    ))
+                _add_count(
+                    row_counts,
+                    "team_week_schedule",
+                    self.repository.replace_team_week_schedule_source(
+                        season=season,
+                        rows=schedule_rows,
+                        source="sleeper_weekly_data",
+                        weeks=weeks,
+                    ),
+                    fallback=len(schedule_rows),
+                )
+            sync_nflverse = (
+                self.include_nflverse_stats
+                if include_nflverse_stats is None
+                else include_nflverse_stats
+            )
+            if sync_nflverse:
+                nflverse_result = sync_nflverse_stats(
+                    self.repository,
+                    target.seasons,
+                    weeks=target.weeks,
+                    loader=self.nflverse_loader,
+                    fetched_at=started_at,
+                )
+                _add_count(
+                    row_counts,
+                    NFLVERSE_SOURCE,
+                    nflverse_result.get("mapped_rows"),
+                    fallback=0,
+                )
+                _add_count(
+                    row_counts,
+                    "provider_sync_metadata",
+                    len(nflverse_result.get("row_counts", {})),
+                    fallback=0,
+                )
         except Exception as exc:
             finished_at = float(self.clock())
             error_text = str(exc)
@@ -442,6 +537,96 @@ class SleeperSyncService:
             ),
             fallback=len(projections),
         )
+        return _weekly_schedule_rows(
+            season=season,
+            week=week,
+            rows=[*stats, *projections],
+        )
+
+
+def _weekly_schedule_rows(
+    *,
+    season: int,
+    week: int,
+    rows: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    schedule: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for raw_row in rows:
+        row = dict(raw_row)
+        nested = row.get("stats") if isinstance(row.get("stats"), Mapping) else {}
+        team = _schedule_text(row.get("team") or row.get("team_abbr") or nested.get("team"))
+        opponent = _schedule_text(
+            row.get("opponent") or row.get("opp") or nested.get("opponent") or nested.get("opp")
+        )
+        if not team or not opponent:
+            continue
+        game_id = _schedule_text(row.get("game_id") or nested.get("game_id"))
+        game_timestamp = _schedule_timestamp(
+            row.get("game_timestamp")
+            or row.get("start_time")
+            or row.get("game_date")
+            or row.get("date")
+            or row.get("timestamp")
+            or nested.get("game_timestamp")
+            or nested.get("start_time")
+            or nested.get("game_date")
+            or nested.get("date")
+            or nested.get("timestamp")
+        )
+        if game_id is None and game_timestamp is None:
+            continue
+        key = (team, game_id or opponent, str(game_timestamp or ""))
+        schedule[key] = {
+            "week": int(week),
+            "team": team,
+            "opponent": opponent,
+            "home_away": _schedule_home_away(row, nested),
+            "game_timestamp": game_timestamp,
+            "game_id": game_id,
+            "season": int(season),
+        }
+    return list(schedule.values())
+
+
+def _schedule_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text.upper() if text else None
+
+
+def _schedule_timestamp(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        number = float(value)
+        return number / 1000 if number > 10_000_000_000 else number
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        number = float(text)
+        return number / 1000 if number > 10_000_000_000 else number
+    except ValueError:
+        pass
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
+
+
+def _schedule_home_away(row: Mapping[str, Any], nested: Mapping[str, Any]) -> str | None:
+    value = row.get("home_away") or row.get("homeAway") or nested.get("home_away") or nested.get("homeAway")
+    if value is None:
+        home = row.get("home", nested.get("home"))
+        if isinstance(home, bool):
+            return "home" if home else "away"
+        return None
+    normalized = str(value).strip().lower()
+    return {"h": "home", "a": "away"}.get(normalized, normalized or None)
 
 
 def resolve_sync_target(
@@ -583,12 +768,12 @@ class SQLiteNormalizedRepositoryAdapter:
     def upsert_player_week_rows(
         self,
         *,
-        league_id: str,
+        league_id: str | None = None,
         season: int,
         week: int,
         source: str,
         rows: list[dict[str, Any]],
-        scoring_settings: dict[str, Any],
+        scoring_settings: dict[str, Any] | None = None,
     ) -> int | Mapping[str, int] | None:
         return self.repository.upsert_player_week_rows(
             season=season,
@@ -598,12 +783,82 @@ class SQLiteNormalizedRepositoryAdapter:
             scoring_settings=scoring_settings,
         )
 
+    def upsert_provider_sync_metadata(
+        self,
+        *,
+        provider: str,
+        dataset: str,
+        season: int,
+        week: int | None,
+        fetched_at: float,
+        metadata: Mapping[str, Any],
+    ) -> None:
+        self.repository.upsert_provider_sync_metadata(
+            provider=provider,
+            dataset=dataset,
+            season=season,
+            week=week,
+            fetched_at=fetched_at,
+            metadata=metadata,
+        )
+
+    def list_provider_sync_metadata(
+        self,
+        *,
+        provider: str | None = None,
+        dataset: str | None = None,
+        season: int | None = None,
+    ) -> list[dict[str, Any]]:
+        return self.repository.list_provider_sync_metadata(
+            provider=provider,
+            dataset=dataset,
+            season=season,
+        )
+
+    def import_legacy_team_schedule_context(self) -> int | None:
+        return self.repository.import_legacy_team_schedule_context()
+
+    def replace_team_week_schedule_source(
+        self,
+        *,
+        season: int,
+        rows: list[dict[str, Any]],
+        source: str,
+        weeks: Sequence[int] | None = None,
+    ) -> int:
+        return self.repository.replace_team_week_schedule_source(
+            season=season,
+            rows=rows,
+            source=source,
+            weeks=weeks,
+        )
+
+    def upsert_current_player_metadata_snapshots(
+        self,
+        *,
+        season: int,
+        week: int,
+        players: dict[str, dict[str, Any]],
+        snapshot_at: float,
+    ) -> Mapping[str, int] | None:
+        return self.repository.upsert_current_player_metadata_snapshots(
+            season=season,
+            week=week,
+            players=players,
+            snapshot_at=snapshot_at,
+        )
+
     def sync_status(self) -> dict[str, Any]:
         return {
             "repository_available": True,
             "db_path": str(self.db_path),
             "latest_sync": self.repository.latest_sync_run(target=self.target_name),
             "row_counts": self._row_counts(),
+            "metadata": {
+                "provider_sync": self.repository.list_provider_sync_metadata(
+                    provider="nflverse",
+                ),
+            },
         }
 
     def decision_data_status(self, *, season: int | None = None) -> dict[str, Any]:
@@ -634,7 +889,17 @@ class SQLiteNormalizedRepositoryAdapter:
             "last_synced_at": (latest_sync or {}).get("finished_at")
             or (latest_sync or {}).get("started_at"),
             "sources": self._sources(season=season),
-            "metadata": {"latest_sync": latest_sync},
+            "metadata": {
+                "latest_sync": latest_sync,
+                "provider_sync": (
+                    self.repository.list_provider_sync_metadata(
+                        provider="nflverse",
+                        season=season,
+                    )
+                    if hasattr(self.repository, "list_provider_sync_metadata")
+                    else []
+                ),
+            },
         }
 
     def query_numeric_stat_rows(
@@ -756,10 +1021,17 @@ NORMALIZED_TABLES = [
     "player_week_rows",
     "player_week_stat_values",
     "player_week_scoring_values",
+    "team_week_schedule",
+    "player_role_snapshots",
+    "player_week_availability",
+    "provider_sync_metadata",
     "sync_runs",
 ]
 
 NORMALIZED_TABLE_DELETE_ORDER = [
+    "player_week_availability",
+    "player_role_snapshots",
+    "team_week_schedule",
     "player_week_scoring_values",
     "player_week_stat_values",
     "player_week_rows",
@@ -772,6 +1044,7 @@ NORMALIZED_TABLE_DELETE_ORDER = [
     "league_settings",
     "player_external_ids",
     "players",
+    "provider_sync_metadata",
     "sync_runs",
 ]
 

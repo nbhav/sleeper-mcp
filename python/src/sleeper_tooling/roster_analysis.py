@@ -75,6 +75,7 @@ def build_roster_analysis(
     matchups: list[dict[str, Any]],
     players: dict[str, dict[str, Any]],
     projection_rows: list[dict[str, Any]],
+    recent_actuals: dict[str, list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     users_by_id = {str(user.get("user_id")): user for user in users}
     roster = next(
@@ -94,6 +95,8 @@ def build_roster_analysis(
         slots=slots,
         players=players,
         projections_by_player=projections_by_player,
+        recent_actuals=recent_actuals or {},
+        week=week,
     )
     position_groups = build_position_groups(rows=rows, slots=slots, week=week)
     risk_context = {
@@ -172,6 +175,8 @@ def roster_player_rows(
     slots: list[str],
     players: dict[str, dict[str, Any]],
     projections_by_player: dict[str, dict[str, Any]],
+    recent_actuals: dict[str, list[dict[str, Any]]],
+    week: int,
 ) -> list[dict[str, Any]]:
     starter_ids = ordered_ids(matchup.get("starters") or [])
     reserve_order = ordered_ids(roster.get("reserve") or [])
@@ -197,6 +202,8 @@ def roster_player_rows(
                 slot=slots[index] if index < len(slots) else f"STARTER_{index + 1}",
                 reserve_ids=reserve_ids,
                 player_points=player_points,
+                recent_actuals=recent_actuals,
+                week=week,
             )
         )
     for player_id in all_ids:
@@ -211,6 +218,8 @@ def roster_player_rows(
                 slot="IR" if player_id in reserve_ids else "BN",
                 reserve_ids=reserve_ids,
                 player_points=player_points,
+                recent_actuals=recent_actuals,
+                week=week,
             )
         )
     return rows
@@ -225,6 +234,8 @@ def player_context_row(
     slot: str,
     reserve_ids: set[str],
     player_points: dict[str, Any],
+    recent_actuals: dict[str, list[dict[str, Any]]],
+    week: int,
 ) -> dict[str, Any]:
     player = players.get(str(player_id), {})
     position = str(player.get("position") or projection.get("position") or "").upper()
@@ -235,6 +246,9 @@ def player_context_row(
     ]
     projected_points = projection_points(projection)
     has_played = str(player_id) in player_points
+    actual_rows = recent_actuals.get(str(player_id), [])
+    actual_points = [float(row.get("points") or 0) for row in actual_rows]
+    actual_average = round(sum(actual_points) / len(actual_points), 2) if actual_points else 0.0
     return {
         "player_id": str(player_id),
         "name": player_name(player, str(player_id)),
@@ -249,16 +263,24 @@ def player_context_row(
         "active_roster_spot": lineup_status in ACTIVE_LINEUP_STATUSES,
         "has_played_this_week": has_played,
         "actual_points": player_points.get(str(player_id), 0),
+        "recent_actual_points": actual_rows,
+        "recent_average_points": actual_average,
+        "actual_context_status": "available" if actual_points else "missing",
         "projected_points": projected_points,
         "value_tier": value_tier(position, projected_points),
         "status": player.get("status") or "",
         "injury_status": player.get("injury_status") or "",
         "bye_week": first_present(player, "bye_week", "bye"),
+        "current_bye": is_current_bye({"bye_week": first_present(player, "bye_week", "bye")}, week),
         "k_def_classification": k_def_classification(position, projected_points),
         "source_metadata": {
             "context_scope": "league_week",
             "projection_source": "projection_rows" if projection else "missing_projection",
             "player_source": "sleeper_players" if player else "missing_player",
+            "bye_week": (
+                (player.get("source_metadata") or {}).get("bye_week")
+                or ("sleeper_players" if first_present(player, "bye_week", "bye") else "missing")
+            ),
         },
     }
 
@@ -535,6 +557,7 @@ def need_reasons(
     risky_starter = any(
         row.get("lineup_status") == "starter"
         and (is_availability_risk(row) or is_current_bye(row, week))
+        and not recent_production_covers_risk(row, family)
         for row in family_rows
     )
     if family == "QB" and required <= 1:
@@ -547,7 +570,11 @@ def need_reasons(
     reasons = []
     if playable_count < max(1, required):
         reasons.append("playable count below starter requirement")
-    if not bench_cover and required > 0:
+    if (
+        not bench_cover
+        and required > 0
+        and not any(is_current_bye(row, week) for row in family_rows)
+    ):
         reasons.append("no playable bench cover")
     if risky_starter and not bench_cover:
         reasons.append("starter risk lacks coverage")
@@ -809,7 +836,27 @@ def is_playable(row: dict[str, Any], family: str) -> bool:
         return False
     if is_unavailable(row):
         return False
-    return float(row.get("projected_points") or 0) >= playable_threshold(family)
+    if row.get("current_bye"):
+        return False
+    return effective_points(row) >= playable_threshold(family)
+
+
+def effective_points(row: dict[str, Any]) -> float:
+    projected = float(row.get("projected_points") or 0)
+    if projected > 0:
+        return projected
+    if row.get("actual_context_status") == "available":
+        return float(row.get("recent_average_points") or 0)
+    return projected
+
+
+def recent_production_covers_risk(row: dict[str, Any], family: str) -> bool:
+    return (
+        not row.get("current_bye")
+        and
+        row.get("actual_context_status") == "available"
+        and float(row.get("recent_average_points") or 0) >= playable_threshold(family)
+    )
 
 
 def is_unavailable(row: dict[str, Any]) -> bool:

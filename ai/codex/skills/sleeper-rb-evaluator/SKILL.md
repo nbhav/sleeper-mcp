@@ -13,11 +13,12 @@ Use this skill with the Sleeper decision tools, especially `player_values`,
 ## Evaluation Order
 
 1. Start with roster construction. RB depth is fragile, so protect playable RBs unless the move clearly improves multi-week value or fixes a stronger need.
-2. Compare `decision_value`, `three_week_value`, `season_value`, and `value_above_replacement` before chasing a one-week projection.
-3. Separate workload from touchdown luck. Carries plus targets are more stable than TD-only production.
-4. Check depth chart, injury status, reserve/IR status, bye week, and whether the player is a starter, depth piece, handcuff, or stash.
-5. Account for scoring. Receptions and targets matter more in PPR; rushing volume and goal-line usage matter more in standard formats.
-6. For trades and waivers, score the move against all roster positions and future coverage, not only RB versus RB.
+2. Compare recent actual points, `decision_value`, `three_week_value`, `season_value`, and `value_above_replacement` before chasing a one-week projection.
+3. For a named waiver claim or add/drop question, check `player_card` actuals for both the add and drop before making the recommendation.
+4. Separate workload from touchdown luck. Carries plus targets are more stable than TD-only production.
+5. Check depth chart, injury status, reserve/IR status, bye week, and whether the player is a starter, depth piece, handcuff, or stash.
+6. Account for scoring. Receptions and targets matter more in PPR; rushing volume and goal-line usage matter more in standard formats.
+7. For trades and waivers, score the move against all roster positions and future coverage, not only RB versus RB.
 
 ## Stat Signals
 
@@ -36,6 +37,7 @@ carries, projections, and depth chart context as proxies.
 ## Decision Rules
 
 - Protect RB starters, high-volume committee backs, valuable handcuffs, and IR stashes by default.
+- Do not reject an RB solely because his projection is low when recent actuals show a clear multi-week rise. Call out the projection/actuals disagreement and decide whether it is a workload signal, touchdown chase, handcuff stash, or avoid.
 - Downgrade backs with poor workload signals, uncertain depth chart role, injury risk, or TD-only production.
 - Prefer RB adds that improve three-week or season value, not only a small one-week `week_value_delta`.
 - Avoid dropping the last playable RB backup unless the roster has clear RB surplus or the add fixes a bigger weakness.
@@ -46,6 +48,7 @@ carries, projections, and depth chart context as proxies.
 
 When explaining an RB decision, include:
 
+- recent actual points for the add and drop when evaluating a claim
 - workload signal: carries plus receiving role
 - one-week, three-week, and season value deltas
 - injury, depth chart, and stash context

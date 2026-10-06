@@ -16,6 +16,7 @@ from sleeper_tooling.decision_reports import (
     build_opponent_watch,
     build_trade_opportunities,
     build_waiver_watch,
+    actual_context_fields,
     evaluate_waiver_options_by_position,
     group_waiver_options_by_position,
     merge_available_candidates,
@@ -25,7 +26,9 @@ from sleeper_tooling.league_context import (
     render_context_env,
     resolve_league_context as build_league_context,
 )
+from sleeper_tooling.matchup_model import build_repository_matchup_profile
 from sleeper_tooling.player_values import build_player_values
+from sleeper_tooling.player_usage_context import PlayerUsageContextService
 from sleeper_tooling.roster_analysis import (
     build_league_roster_analysis,
     build_roster_analysis,
@@ -47,7 +50,7 @@ from sleeper_tooling.trend_queries import (
     position_stat_leaders as build_position_stat_leaders,
 )
 
-StatSource = Literal["stats", "projections"]
+StatSource = Literal["stats", "projections", "canonical_stats"]
 DEFAULT_POSITIONS = "QB,RB,WR,TE,K,DEF"
 
 
@@ -123,6 +126,25 @@ class FantasyToolRunner:
             max_age_seconds=int(max_age_hours * 3600),
         )
 
+    def player_matchup_context(
+        self,
+        *,
+        player_id: str,
+        season: int,
+        week: int,
+        source: StatSource = "stats",
+    ) -> dict[str, Any]:
+        """Return bounded NFL opponent context from normalized data only."""
+        if source not in {"stats", "projections"}:
+            raise ValueError("source must be stats or projections")
+        return build_repository_matchup_profile(
+            self._require_decision_repository(),
+            player_id=player_id,
+            season=season,
+            week=week,
+            source=source,
+        )
+
     def sync_decision_data(
         self,
         *,
@@ -130,6 +152,7 @@ class FantasyToolRunner:
         season: int | None = None,
         week: int | None = None,
         force: bool = False,
+        include_nflverse_stats: bool = False,
     ) -> dict[str, Any]:
         resolved_league_id = self._resolve_optional_league_id(league_id)
         if self._sync_service is not None:
@@ -140,6 +163,7 @@ class FantasyToolRunner:
                     season=season,
                     week=week,
                     force=force,
+                    include_nflverse_stats=include_nflverse_stats,
                 )
             if callable(service):
                 return service(
@@ -147,12 +171,14 @@ class FantasyToolRunner:
                     season=season,
                     week=week,
                     force=force,
+                    include_nflverse_stats=include_nflverse_stats,
                 )
             if hasattr(service, "sync"):
                 return service.sync(
                     league_id=resolved_league_id,
                     seasons=[season] if season is not None else None,
                     weeks=[week] if week is not None else None,
+                    include_nflverse_stats=include_nflverse_stats,
                 ).to_dict()
             raise ValueError("configured sync service is not callable")
 
@@ -166,6 +192,7 @@ class FantasyToolRunner:
                     league_id=resolved_league_id,
                     seasons=[season] if season is not None else None,
                     weeks=[week] if week is not None else None,
+                    include_nflverse_stats=include_nflverse_stats,
                 )
                 return result.to_dict()
         finally:
@@ -202,6 +229,89 @@ class FantasyToolRunner:
             "source": source,
             "shape": list(GRAPH_ROW_FIELDS),
             "rows": rows,
+        }
+
+    def player_usage_context(
+        self,
+        *,
+        player_id: str,
+        season: int,
+        week: int,
+        position: str | None = None,
+    ) -> dict[str, Any]:
+        """Return an actual-first usage and role profile for one player."""
+        return PlayerUsageContextService(self._require_decision_repository()).build(
+            player_id=player_id,
+            season=season,
+            week=week,
+            position=position,
+        )
+
+    def compare_player_usage_context(
+        self,
+        *,
+        player_a_id: str,
+        player_b_id: str,
+        season: int,
+        week: int,
+    ) -> dict[str, Any]:
+        """Compare two actual-first usage profiles using the same decision inputs."""
+        service = PlayerUsageContextService(self._require_decision_repository())
+        left = service.build(player_id=player_a_id, season=season, week=week)
+        right = service.build(player_id=player_b_id, season=season, week=week)
+        score_keys = (
+            "opportunity_score",
+            "role_stability_score",
+            "production_quality_score",
+            "td_dependency_score",
+            "context_confidence",
+        )
+        deltas = {
+            key: round(float(left["scores"].get(key, 0)) - float(right["scores"].get(key, 0)), 2)
+            for key in score_keys
+        }
+        decision_scores = {
+            label: _usage_decision_score(profile)
+            for label, profile in (("a", left), ("b", right))
+        }
+        decision_delta = round(decision_scores["a"] - decision_scores["b"], 2)
+        preferred = "a" if decision_delta > 0 else "b" if decision_delta < 0 else None
+        severe_one_off = {
+            label
+            for label, profile in (("a", left), ("b", right))
+            if float(profile["scores"].get("one_off_risk", 0)) >= 50
+            or any(
+                code in profile["reason_codes"]
+                for code in ("low_touch_big_points", "low_target_big_points", "td_only_low_usage")
+            )
+        }
+        if not left["actual_first"] and not right["actual_first"]:
+            status = "insufficient_context"
+        elif abs(decision_delta) < 10:
+            status = "watch"
+        elif preferred in severe_one_off:
+            status = "watch"
+        elif decision_delta > 0:
+            status = "recommend"
+        else:
+            status = "avoid"
+        return {
+            "schema_version": "compare_player_usage_context.v1",
+            "season": season,
+            "week": week,
+            "players": {"a": left, "b": right},
+            "score_deltas_a_minus_b": deltas,
+            "decision_scores": decision_scores,
+            "decision_score_delta_a_minus_b": decision_delta,
+            "recommendation": {
+                "status": status,
+                "preferred_player": preferred,
+                "severe_one_off_players": sorted(severe_one_off),
+            },
+            "disagreement": _usage_context_disagreement(left, right),
+            "reason_codes": sorted(set(left["reason_codes"]) | set(right["reason_codes"])),
+            "missing_inputs": sorted(set(left["missing_inputs"]) | set(right["missing_inputs"])),
+            "evidence": {"a": left["evidence"], "b": right["evidence"]},
         }
 
     def position_stat_leaders(
@@ -434,6 +544,7 @@ class FantasyToolRunner:
                         matchups=normalized.inputs.matchups,
                         players=normalized.inputs.players,
                         projection_rows=normalized.inputs.projection_rows,
+                        recent_actuals=normalized.inputs.recent_actuals,
                     ),
                     normalized,
                     fallback_used=False,
@@ -463,6 +574,7 @@ class FantasyToolRunner:
                             matchups=normalized.inputs.matchups,
                             players=normalized.inputs.players,
                             projection_rows=normalized.inputs.projection_rows,
+                            recent_actuals=normalized.inputs.recent_actuals,
                         ),
                         normalized,
                         fallback_used=False,
@@ -818,6 +930,7 @@ class FantasyToolRunner:
                 season=season,
                 week=week,
                 positions=position_list,
+                recent_weeks=3,
             )
             if normalized.fresh and normalized.inputs is not None:
                 return self._waiver_by_position_from_inputs(
@@ -842,6 +955,7 @@ class FantasyToolRunner:
                     season=resolved_season,
                     week=resolved_week,
                     positions=position_list,
+                    recent_weeks=3,
                 )
                 if normalized.fresh and normalized.inputs is not None:
                     return self._waiver_by_position_from_inputs(
@@ -899,6 +1013,7 @@ class FantasyToolRunner:
                 players=players,
                 add_trends=add_trends,
                 drop_trends=drop_trends,
+                recent_rows={},
             )
             lineup = build_my_lineup(
                 league_id=resolved_league_id,
@@ -1071,6 +1186,7 @@ class FantasyToolRunner:
                         matchups=normalized.inputs.matchups,
                         players=normalized.inputs.players,
                         projection_rows=normalized.inputs.projection_rows,
+                        recent_actuals=normalized.inputs.recent_actuals,
                     ),
                     normalized,
                     fallback_used=False,
@@ -1100,6 +1216,7 @@ class FantasyToolRunner:
                             matchups=normalized.inputs.matchups,
                             players=normalized.inputs.players,
                             projection_rows=normalized.inputs.projection_rows,
+                            recent_actuals=normalized.inputs.recent_actuals,
                         ),
                         normalized,
                         fallback_used=False,
@@ -1474,8 +1591,9 @@ class FantasyToolRunner:
             users=inputs.users,
             rosters=inputs.rosters,
             matchups=inputs.matchups,
-            players=inputs.players,
-            projection_rows=inputs.projection_rows,
+                    players=inputs.players,
+                    projection_rows=inputs.projection_rows,
+                    recent_actuals=inputs.recent_actuals,
         )
         return self._with_decision_metadata(
             build_lineup_recommendations(
@@ -1483,6 +1601,7 @@ class FantasyToolRunner:
                 rosters=inputs.rosters,
                 players=inputs.players,
                 projection_rows=inputs.projection_rows,
+                recent_actuals=inputs.recent_actuals,
                 add_trends=inputs.add_trends,
                 drop_trends=inputs.drop_trends,
                 positions=positions,
@@ -1526,6 +1645,7 @@ class FantasyToolRunner:
             players=inputs.players,
             add_trends=inputs.add_trends,
             drop_trends=inputs.drop_trends,
+            recent_rows=inputs.recent_actuals,
         )
         lineup = build_my_lineup(
             league_id=league_id,
@@ -1544,6 +1664,8 @@ class FantasyToolRunner:
             for row in lineup["lineup_table"]
             if row.get("player_id") != "0"
         ]
+        for row in roster_players:
+            row.update(actual_context_fields(row, inputs.recent_actuals.get(str(row.get("player_id")), [])))
         evaluated_by_position = evaluate_waiver_options_by_position(
             candidates=available_candidates,
             roster_players=roster_players,
@@ -1966,6 +2088,76 @@ def enrich_waiver_candidates(
 
 def parse_positions(positions: str) -> list[str]:
     return [position.strip().upper() for position in positions.split(",") if position.strip()]
+
+
+def _usage_decision_score(profile: dict[str, Any]) -> float:
+    scores = profile.get("scores", {})
+    positive = sum(
+        float(scores.get(key, 0))
+        for key in ("opportunity_score", "role_stability_score", "production_quality_score", "context_confidence")
+    )
+    risk = sum(
+        float(scores.get(key, 0))
+        for key in ("td_dependency_score", "small_sample_risk", "one_off_risk")
+    )
+    return round(positive - risk, 2)
+
+
+def _usage_context_disagreement(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+    values: dict[str, dict[str, float | None]] = {}
+    unmatched_weeks: dict[str, list[int]] = {}
+    for label, profile in (("a", left), ("b", right)):
+        windows = profile.get("windows", {}).get("last_2_weeks", {})
+        actual_rows = {int(row["week"]): row for row in windows.get("actual", []) if row.get("week") is not None}
+        projection_rows = {int(row["week"]): row for row in windows.get("projection", []) if row.get("week") is not None}
+        common_weeks = sorted(set(actual_rows) & set(projection_rows))
+        actual = _average_usage_points([actual_rows[week] for week in common_weeks])
+        projected = _average_usage_points([projection_rows[week] for week in common_weeks])
+        unmatched_weeks[label] = sorted((set(actual_rows) ^ set(projection_rows)))
+        values[label] = {
+            "recent_actual_points": actual,
+            "recent_projected_points": projected,
+            "actual_minus_projection": round(actual - projected, 2)
+            if actual is not None and projected is not None
+            else None,
+            "context_score": _usage_decision_score(profile),
+            "comparison_weeks": common_weeks,
+        }
+
+    def winner(key: str) -> str | None:
+        left_value = values["a"][key]
+        right_value = values["b"][key]
+        if left_value is None or right_value is None or left_value == right_value:
+            return None
+        return "a" if left_value > right_value else "b"
+
+    actual_winner = winner("recent_actual_points")
+    projection_winner = winner("recent_projected_points")
+    context_winner = winner("context_score")
+    return {
+        "by_player": values,
+        "winner": {
+            "recent_actual_points": actual_winner,
+            "recent_projected_points": projection_winner,
+            "context_score": context_winner,
+        },
+        "actual_vs_projection_conflict": (
+            actual_winner is not None
+            and projection_winner is not None
+            and actual_winner != projection_winner
+        ),
+        "missing_inputs": [
+            f"unmatched_{label}_actual_projection_weeks"
+            for label, weeks in unmatched_weeks.items()
+            if weeks
+        ],
+        "unmatched_weeks": unmatched_weeks,
+    }
+
+
+def _average_usage_points(rows: list[dict[str, Any]]) -> float | None:
+    points = [float(row["points"]) for row in rows if row.get("points") is not None]
+    return round(sum(points) / len(points), 2) if points else None
 
 
 def validate_stat_source(source: str) -> None:

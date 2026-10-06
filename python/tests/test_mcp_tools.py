@@ -127,6 +127,157 @@ def test_decision_data_status_reports_stale_and_missing() -> None:
     assert missing_runner.decision_data_status(max_age_hours=1)["status"] == "missing"
 
 
+def test_player_usage_context_is_actual_first_and_explicit_about_missing_sources() -> None:
+    class UsageRepository:
+        def get_player(self, player_id):
+            return {"player_id": player_id, "full_name": "Context Back", "team": "DEN", "position": "RB", "depth_chart_order": 2}
+
+        def query_numeric_stat_rows(self, *, source, season, start_week, end_week, player_ids):
+            rows = []
+            for current_week, carries, targets in ((1, 10, 2), (2, 10, 2), (4, 16, 3), (5, 17, 3)):
+                if source == "projections" and current_week < 4:
+                    continue
+                rows.extend([
+                    {"week": current_week, "player_id": "rb-1", "team": "DEN", "position": "RB", "stat_key": "rush_att", "stat_value": carries if source == "stats" else 12},
+                    {"week": current_week, "player_id": "rb-1", "team": "DEN", "position": "RB", "stat_key": "rec_tgt", "stat_value": targets if source == "stats" else 3},
+                ])
+            return rows
+
+        def list_player_week_availability(self, **kwargs):
+            return []
+
+        def get_team_week_schedule(self, **kwargs):
+            return None
+
+        def list_player_role_snapshots(self, **kwargs):
+            return []
+
+    result = FantasyToolRunner(decision_repository=UsageRepository()).player_usage_context(
+        player_id="rb-1", season=2026, week=5
+    )
+
+    assert result["actual_first"] is True
+    assert result["role_label"] == "emerging_rotation"
+    assert result["windows"]["season_to_date"]["actual"][-1]["week"] == 5
+    assert result["scores"]["context_confidence"] < 100
+    assert result["primary_source"] == "stats"
+    assert "touch_share" in result["missing_inputs"]
+    assert "routes" not in result["missing_inputs"]
+    assert "not_evaluable_missing_nfl_schedule" in result["reason_codes"]
+
+
+def test_compare_player_usage_context_aligns_profiles_and_returns_deltas() -> None:
+    class CompareRepository:
+        players = {
+            "a": {"player_id": "a", "full_name": "Player A", "team": "DEN", "position": "RB"},
+            "b": {"player_id": "b", "full_name": "Player B", "team": "KC", "position": "RB"},
+        }
+
+        def get_player(self, player_id):
+            return self.players[player_id]
+
+        def query_numeric_stat_rows(self, *, source, season, start_week, end_week, player_ids):
+            values = {"a": (18, 20), "b": (8, 10)}
+            rows = []
+            for player_id in player_ids:
+                for week, touches in enumerate(values[player_id], start=1):
+                    rows.extend([
+                        {"week": week, "player_id": player_id, "team": "DEN", "position": "RB", "stat_key": "rush_att", "stat_value": touches},
+                        {"week": week, "player_id": player_id, "team": "DEN", "position": "RB", "stat_key": "rec_tgt", "stat_value": 2},
+                    ])
+            return rows
+
+        def list_player_week_availability(self, **kwargs):
+            return []
+
+        def get_team_week_schedule(self, **kwargs):
+            return None
+
+        def list_player_role_snapshots(self, **kwargs):
+            return []
+
+    result = FantasyToolRunner(decision_repository=CompareRepository()).compare_player_usage_context(
+        player_a_id="a", player_b_id="b", season=2026, week=2
+    )
+
+    assert result["schema_version"] == "compare_player_usage_context.v1"
+    assert result["players"]["a"]["name"] == "Player A"
+    assert result["players"]["b"]["name"] == "Player B"
+    assert result["score_deltas_a_minus_b"]["opportunity_score"] > 0
+    assert result["recommendation"]["status"] == "recommend"
+    assert result["recommendation"]["preferred_player"] == "a"
+    assert "not_evaluable_missing_nfl_schedule" in result["reason_codes"]
+
+
+def test_usage_context_disagreement_aligns_actual_and_projection_weeks() -> None:
+    profile = {
+        "scores": {"opportunity_score": 50},
+        "windows": {
+            "last_2_weeks": {
+                "actual": [{"week": 1, "points": 20}, {"week": 2, "points": 10}],
+                "projection": [{"week": 2, "points": 12}, {"week": 3, "points": 30}],
+            }
+        },
+    }
+
+    result = mcp_tools._usage_context_disagreement(profile, profile)
+
+    assert result["by_player"]["a"]["comparison_weeks"] == [2]
+    assert result["actual_vs_projection_conflict"] is False
+    assert result["missing_inputs"] == [
+        "unmatched_a_actual_projection_weeks",
+        "unmatched_b_actual_projection_weeks",
+    ]
+
+
+def test_compare_player_usage_context_downgrades_projection_only_start_sit_claim() -> None:
+    class CompareRepository:
+        players = {
+            "a": {"player_id": "a", "full_name": "Projection QB", "team": "DEN", "position": "RB"},
+            "b": {"player_id": "b", "full_name": "Stable RB", "team": "KC", "position": "RB"},
+        }
+
+        def get_player(self, player_id):
+            return self.players[player_id]
+
+        def query_numeric_stat_rows(self, *, source, season, start_week, end_week, player_ids):
+            values = {
+                "stats": {"a": (8, 8), "b": (16, 16)},
+                "projections": {"a": (25, 25), "b": (15, 15)},
+            }
+            rows = []
+            for player_id in player_ids:
+                for week, touches in enumerate(values[source][player_id], start=1):
+                    rows.extend([
+                        {"week": week, "player_id": player_id, "team": "DEN", "position": "RB", "stat_key": "rush_att", "stat_value": touches},
+                        {"week": week, "player_id": player_id, "team": "DEN", "position": "RB", "stat_key": "rec_tgt", "stat_value": 2},
+                        {"week": week, "player_id": player_id, "team": "DEN", "position": "RB", "stat_key": "points", "stat_value": touches},
+                    ])
+            return rows
+
+        def list_player_week_availability(self, **kwargs):
+            return []
+
+        def get_team_week_schedule(self, **kwargs):
+            return None
+
+        def list_player_role_snapshots(self, **kwargs):
+            return []
+
+    result = FantasyToolRunner(decision_repository=CompareRepository()).compare_player_usage_context(
+        player_a_id="a", player_b_id="b", season=2026, week=2
+    )
+
+    assert result["recommendation"]["status"] == "avoid"
+    assert result["recommendation"]["preferred_player"] == "b"
+    assert result["disagreement"]["winner"] == {
+        "recent_actual_points": "b",
+        "recent_projected_points": "a",
+        "context_score": "b",
+    }
+    assert result["disagreement"]["actual_vs_projection_conflict"] is True
+
+
 def test_sync_decision_data_delegates_to_configured_sync_service() -> None:
     service = FakeSyncService()
     runner = FantasyToolRunner(
@@ -142,6 +293,7 @@ def test_sync_decision_data_delegates_to_configured_sync_service() -> None:
         "season": 2026,
         "week": 1,
         "force": True,
+        "include_nflverse_stats": False,
     }
     assert service.calls == [
         {
@@ -149,6 +301,30 @@ def test_sync_decision_data_delegates_to_configured_sync_service() -> None:
             "season": 2026,
             "week": 1,
             "force": True,
+            "include_nflverse_stats": False,
+        }
+    ]
+
+
+def test_sync_decision_data_can_include_nflverse_stats() -> None:
+    service = FakeSyncService()
+    runner = FantasyToolRunner(sync_service=service)
+
+    report = runner.sync_decision_data(
+        league_id="league-1",
+        season=2026,
+        week=1,
+        include_nflverse_stats=True,
+    )
+
+    assert report["include_nflverse_stats"] is True
+    assert service.calls == [
+        {
+            "league_id": "league-1",
+            "season": 2026,
+            "week": 1,
+            "force": False,
+            "include_nflverse_stats": True,
         }
     ]
 
@@ -595,7 +771,8 @@ def test_waiver_wire_by_position_groups_options_with_gain_and_faab(tmp_path) -> 
     assert rb_pick["drop_name"] == "Drop RB"
     assert rb_pick["drop_lineup_status"] == "bench"
     assert rb_pick["projected_gain_over_drop"] == 25
-    assert rb_pick["recommendation"] == "recommend"
+    assert rb_pick["recommendation"] == "watch"
+    assert rb_pick["actual_context_status"] == "missing"
     assert rb_pick["move_score"] > 0
     assert rb_pick["reasoning_summary"]
     assert rb_pick["week_value_delta"] == 25
@@ -603,8 +780,8 @@ def test_waiver_wire_by_position_groups_options_with_gain_and_faab(tmp_path) -> 
     assert "season_value_delta" in rb_pick
     assert "selected_drop_reasoning" in rb_pick
     assert "rejected_drop_reasoning" in rb_pick
-    assert rb_pick["faab_tier"] == "aggressive"
-    assert rb_pick["faab_bid_pct"] == 14
+    assert "faab_tier" not in rb_pick
+    assert "faab_bid_pct" not in rb_pick
     assert rb_pick["add_trend_count"] == 2500
     wr_pick = report["by_position"]["WR"][0]
     assert wr_pick["add_name"] == "Watch WR"
@@ -639,14 +816,42 @@ def test_waiver_wire_by_position_uses_normalized_db(tmp_path) -> None:
     assert rb_pick["drop_name"] == "Drop RB"
     assert rb_pick["projected_gain_over_drop"] == 25
     assert rb_pick["market_type"] == "waiver"
-    assert rb_pick["recommendation"] == "recommend"
+    assert rb_pick["recommendation"] == "watch"
     assert rb_pick["move_score"] > 0
     assert rb_pick["reasoning_summary"]
     assert rb_pick["week_value_delta"] == 25
-    assert rb_pick["faab_tier"] == "aggressive"
+    assert "faab_tier" not in rb_pick
     wr_pick = report["by_position"]["WR"][0]
     assert wr_pick["add_name"] == "Free WR"
     assert wr_pick["projected_gain_over_drop"] == 10
+    repo.close()
+
+
+def test_normalized_schedule_bye_enriches_player_context(tmp_path) -> None:
+    repo = build_normalized_decision_fixture(tmp_path)
+    repo.upsert_team_week_schedule(
+        season=2026,
+        week=1,
+        source="sleeper_nfl_schedule",
+        rows=[{"team": "DEN", "is_bye": True, "bye_week": 1}],
+    )
+    runner = FantasyToolRunner(
+        client_factory=lambda: FailingMcpClient(),
+        decision_repository=repo,
+    )
+
+    report = runner.waiver_wire_by_position(
+        league_id="league-1",
+        roster_id=1,
+        season=2026,
+        week=1,
+        positions="RB",
+        per_position_limit=1,
+    )
+
+    row = report["by_position"]["RB"][0]
+    assert row["bye_week"] == 1
+    assert row["source_metadata"]["bye_week"] == "team_week_schedule"
     repo.close()
 
 
@@ -833,6 +1038,30 @@ def test_opponent_watch_returns_matchup_context(tmp_path) -> None:
     assert report["opponent_injuries"][0]["player_id"] == "hurt-wr"
 
 
+def test_player_matchup_context_uses_repository_call_path(tmp_path) -> None:
+    repository = SleeperNormalizedRepository(tmp_path / "normalized.sqlite")
+    repository.upsert_player_week_rows(
+        season=2026,
+        week=1,
+        source="stats",
+        rows=[
+            {"player_id": "qb-1", "team": "DEN", "position": "QB", "opponent": "KC", "fantasy_points": 20},
+            {"player_id": "oak-qb", "team": "OAK", "position": "QB", "opponent": "KC", "fantasy_points": 10},
+        ],
+    )
+    repository.upsert_team_week_schedule(
+        season=2026,
+        week=1,
+        rows=[{"team": "DEN", "opponent": "KC"}],
+        source="test",
+    )
+    runner = FantasyToolRunner(decision_repository=repository)
+    result = runner.player_matchup_context(player_id="qb-1", season=2026, week=1)
+    assert result["opponent"] == "KC"
+    assert result["evidence"]["historical_games"] == 1
+    repository.close()
+
+
 def test_opponent_watch_uses_default_league_and_roster_ids(tmp_path) -> None:
     fake_client = FakeMcpClient()
     runner = FantasyToolRunner(
@@ -930,12 +1159,21 @@ class FakeSyncService:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
 
-    def sync_decision_data(self, *, league_id=None, season=None, week=None, force=False):
+    def sync_decision_data(
+        self,
+        *,
+        league_id=None,
+        season=None,
+        week=None,
+        force=False,
+        include_nflverse_stats=False,
+    ):
         call = {
             "league_id": league_id,
             "season": season,
             "week": week,
             "force": force,
+            "include_nflverse_stats": include_nflverse_stats,
         }
         self.calls.append(call)
         return {"synced": True, **call}

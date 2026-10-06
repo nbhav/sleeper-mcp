@@ -13,10 +13,11 @@ Use this skill with the Sleeper decision tools, especially `player_values`,
 ## Evaluation Order
 
 1. Treat TE as a thin position. Replacement baselines are lower, so a true weekly starter can be materially more valuable than a similar raw point gap at WR.
-2. Compare `decision_value`, `three_week_value`, `season_value`, and `value_above_replacement` before choosing a streamer.
-3. Separate target stability from TD dependency. Targets and receptions are stickier than one-week TD production.
-4. Check league scoring, TE premium rules if present, lineup slots, injury status, depth chart, bye week, and whether the roster has playable TE coverage.
-5. For trades, value elite TE holds differently from replacement streamers; do not offer an elite TE unless the return fixes a major roster weakness.
+2. Compare recent actual points, `decision_value`, `three_week_value`, `season_value`, and `value_above_replacement` before choosing a streamer.
+3. For a named waiver claim or add/drop question, check `player_card` actuals for both the add and drop before making the recommendation.
+4. Separate target stability from TD dependency. Targets and receptions are stickier than one-week TD production.
+5. Check league scoring, TE premium rules if present, lineup slots, injury status, depth chart, bye week, and whether the roster has playable TE coverage.
+6. For trades, value elite TE holds differently from replacement streamers; do not offer an elite TE unless the return fixes a major roster weakness.
 
 ## Stat Signals
 
@@ -35,6 +36,7 @@ proxy.
 ## Decision Rules
 
 - Protect elite or strong weekly TEs unless the trade return solves a larger roster problem.
+- Do not reject a TE solely because his projection is low when recent actuals show a clear multi-week rise. Call out the projection/actuals disagreement and decide whether it is target stability, TD chase, streamer value, stash value, or avoid.
 - Prefer TEs with repeatable targets over TD-only streamers when the projection gap is small.
 - Downgrade injured or questionable TEs if the roster lacks a playable backup.
 - Do not carry multiple replacement-level TEs unless a bye, injury, or matchup need justifies it.
@@ -45,6 +47,7 @@ proxy.
 
 When explaining a TE decision, include:
 
+- recent actual points for the add and drop when evaluating a claim
 - target/reception stability
 - one-week, three-week, and season value deltas
 - scarcity and replacement gap

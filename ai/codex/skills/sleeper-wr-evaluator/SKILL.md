@@ -13,10 +13,11 @@ Use this skill with the Sleeper decision tools, especially `player_values`,
 ## Evaluation Order
 
 1. Start with league scoring and lineup slots. WR value rises in PPR, three-WR, and flex-heavy formats.
-2. Compare `decision_value`, `three_week_value`, `season_value`, and `value_above_replacement` before relying on a one-week projection.
-3. Prioritize target-earning ability and role stability over single-game TD spikes.
-4. Check injury status, depth chart position, team context, opponent, bye week, and whether the player creates or solves WR depth pressure.
-5. Evaluate WR moves against RB/TE/flex depth too; a WR add can be correct even when the drop is from another position, but only if roster balance survives.
+2. Compare recent actual points, `decision_value`, `three_week_value`, `season_value`, and `value_above_replacement` before relying on a one-week projection.
+3. For a named waiver claim or add/drop question, check `player_card` actuals for both the add and drop before making the recommendation.
+4. Prioritize target-earning ability and role stability over single-game TD spikes.
+5. Check injury status, depth chart position, team context, opponent, bye week, and whether the player creates or solves WR depth pressure.
+6. Evaluate WR moves against RB/TE/flex depth too; a WR add can be correct even when the drop is from another position, but only if roster balance survives.
 
 ## Stat Signals
 
@@ -34,6 +35,7 @@ targets, receptions, projections, and depth chart context as the stable proxy.
 ## Decision Rules
 
 - Prefer WRs with target volume and multi-week value over TD-dependent one-week streamers.
+- Do not reject a WR solely because his projection is low when recent actuals show a clear multi-week rise. Call out the projection/actuals disagreement and decide whether it is an upside claim, production chase, or avoid.
 - Protect startable WRs and usable flex depth when the roster has three-WR or flex pressure.
 - Downgrade questionable WRs without clear replacement coverage, especially when bye clustering exists.
 - Avoid dropping RB scarcity or TE coverage for a marginal WR unless WR is a clear roster weakness.
@@ -44,6 +46,7 @@ targets, receptions, projections, and depth chart context as the stable proxy.
 
 When explaining a WR decision, include:
 
+- recent actual points for the add and drop when evaluating a claim
 - target/reception signal
 - one-week, three-week, and season value deltas
 - flex and roster-balance impact

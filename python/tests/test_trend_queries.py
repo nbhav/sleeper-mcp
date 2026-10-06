@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from sleeper_tooling.trend_queries import (
     GRAPH_ROW_FIELDS,
     decision_data_status,
@@ -9,6 +11,7 @@ from sleeper_tooling.trend_queries import (
     projection_actual_deltas,
     week_over_week_movers,
 )
+import sleeper_tooling.trend_queries as trend_queries
 
 
 def test_player_stat_trends_returns_graph_friendly_weekly_rows() -> None:
@@ -87,6 +90,68 @@ def test_projection_actual_deltas_use_stat_value_for_delta() -> None:
     assert rows[0]["actual_value"] == 6
     assert rows[0]["projected_value"] == 3
     assert rows[0]["delta_value"] == 3
+    assert rows[0]["projection_row_present"] is True
+    assert rows[0]["projection_key_present"] is True
+
+
+def test_projection_actual_deltas_marks_missing_projection_key_within_row() -> None:
+    rows = projection_actual_deltas(
+        FakeTrendRepository(),
+        season=2026,
+        week=1,
+        stat_keys=["rush_att"],
+        positions=["RB"],
+    )
+
+    assert rows[0]["player_id"] == "rb-1"
+    assert rows[0]["actual_value"] == 10
+    assert rows[0]["projected_value"] == 0
+    assert rows[0]["delta_value"] == 10
+    assert rows[0]["projection_row_present"] is True
+    assert rows[0]["projection_key_present"] is False
+
+
+def test_projection_actual_deltas_marks_missing_projection_row() -> None:
+    rows = projection_actual_deltas(
+        FakeTrendRepository(),
+        season=2026,
+        week=1,
+        stat_keys=["rush_att"],
+        player_ids=["rb-2"],
+    )
+
+    assert rows[0]["player_id"] == "rb-2"
+    assert rows[0]["projected_value"] == 0
+    assert rows[0]["projection_row_present"] is False
+    assert rows[0]["projection_key_present"] is False
+
+
+def test_projection_actual_deltas_omits_projection_only_row() -> None:
+    rows = projection_actual_deltas(
+        FakeTrendRepository(),
+        season=2026,
+        week=1,
+        stat_keys=["targets"],
+        positions=["WR"],
+    )
+
+    assert rows == []
+
+
+def test_projection_actual_deltas_distinguishes_genuine_projected_zero() -> None:
+    rows = projection_actual_deltas(
+        FakeTrendRepository(),
+        season=2026,
+        week=3,
+        stat_keys=["targets"],
+        player_ids=["rb-1"],
+    )
+
+    assert rows[0]["actual_value"] == 0
+    assert rows[0]["projected_value"] == 0
+    assert rows[0]["delta_value"] == 0
+    assert rows[0]["projection_row_present"] is True
+    assert rows[0]["projection_key_present"] is True
 
 
 def test_week_over_week_movers_returns_risers_and_fallers() -> None:
@@ -137,6 +202,166 @@ def test_decision_data_status_classifies_fresh_stale_and_missing() -> None:
     }
 
 
+def test_canonical_stats_prefers_nflverse_as_one_provider() -> None:
+    repository = CanonicalTrendRepository()
+    rows = player_stat_trends(
+        repository,
+        season=2026,
+        player_id="wr-1",
+        stat_key="targets",
+        start_week=1,
+        end_week=1,
+        source="canonical_stats",
+    )
+
+    assert rows[0]["stat_value"] == 7
+    assert rows[0]["source_metadata"] == {
+        "requested_source": "canonical_stats",
+        "selected_source": "nflverse_stats",
+        "fallback_reason": None,
+    }
+    assert repository.queried_sources == ["nflverse_stats"]
+
+
+def test_canonical_stats_falls_back_to_sleeper_when_nflverse_is_missing() -> None:
+    repository = CanonicalFallbackRepository(rows=[])
+
+    rows = player_stat_trends(
+        repository,
+        season=2026,
+        player_id="wr-1",
+        stat_key="rec_tgt",
+        start_week=1,
+        end_week=1,
+        source="canonical_stats",
+    )
+
+    assert rows[0]["stat_value"] == 4
+    assert rows[0]["source_metadata"]["selected_source"] == "stats"
+    assert repository.queried_sources == ["nflverse_stats", "stats"]
+
+
+def test_canonical_stats_falls_back_to_sleeper_when_nflverse_is_stale(monkeypatch) -> None:
+    repository = CanonicalFallbackRepository(
+        rows=[{
+            "season": 2026, "week": 1, "player_id": "wr-1",
+            "name": "Wide One", "team": "DEN", "position": "WR",
+            "stat_key": "rec_tgt", "stat_value": 9,
+        }],
+        fetched_at=1,
+    )
+    monkeypatch.setattr(trend_queries.time, "time", lambda: 1_000_000)
+
+    rows = player_stat_trends(
+        repository,
+        season=2026,
+        player_id="wr-1",
+        stat_key="rec_tgt",
+        start_week=1,
+        end_week=1,
+        source="canonical_stats",
+    )
+
+    assert rows[0]["stat_value"] == 4
+    assert repository.queried_sources == ["stats"]
+
+
+def test_canonical_stats_falls_back_when_requested_stat_key_is_missing() -> None:
+    repository = CanonicalFallbackRepository(rows=[{
+        "season": 2026, "week": 1, "player_id": "wr-1",
+        "name": "Wide One", "team": "DEN", "position": "WR",
+        "stat_key": "rush_att", "stat_value": 1,
+    }])
+
+    rows = player_stat_trends(
+        repository,
+        season=2026,
+        player_id="wr-1",
+        stat_key="rec_tgt",
+        start_week=1,
+        end_week=1,
+        source="canonical_stats",
+    )
+
+    assert rows[0]["stat_value"] == 4
+    assert rows[0]["source_metadata"]["selected_source"] == "stats"
+    assert repository.queried_sources == ["nflverse_stats", "stats"]
+
+
+def test_canonical_stats_uses_sleeper_for_kicker_and_defense() -> None:
+    repository = CanonicalFallbackRepository(
+        rows=[{
+            "season": 2026, "week": 1, "player_id": "k-1",
+            "name": "Kicker One", "team": "DEN", "position": "K",
+            "stat_key": "fgm", "stat_value": 99,
+        }],
+        sleeper_rows=[{
+            "season": 2026, "week": 1, "player_id": "k-1",
+            "name": "Kicker One", "team": "DEN", "position": "K",
+            "stat_key": "fgm", "stat_value": 3,
+        }],
+    )
+
+    rows = player_stat_trends(
+        repository,
+        season=2026,
+        player_id="k-1",
+        stat_key="fgm",
+        start_week=1,
+        end_week=1,
+        source="canonical_stats",
+    )
+
+    assert rows[0]["stat_value"] == 3
+    assert rows[0]["source_metadata"]["selected_source"] == "stats"
+    assert repository.queried_sources == ["nflverse_stats", "stats"]
+
+
+def test_validate_stat_source_rejects_provider_internal_source() -> None:
+    from sleeper_tooling.trend_queries import validate_stat_source
+
+    with pytest.raises(ValueError, match="stats, projections, or canonical_stats"):
+        validate_stat_source("nflverse_stats")
+
+
+class CanonicalTrendRepository:
+    def __init__(self):
+        self.queried_sources = []
+
+    def query_numeric_stat_rows(self, *, source, season, start_week, end_week,
+                                stat_keys=None, player_ids=None, positions=None):
+        self.queried_sources.append(source)
+        if source == "nflverse_stats":
+            return [{
+                "season": season, "week": 1, "player_id": "wr-1",
+                "name": "Wide One", "team": "DEN", "position": "WR",
+                "stat_key": "targets", "stat_value": 7,
+            }]
+        return []
+
+
+class CanonicalFallbackRepository:
+    def __init__(self, rows, *, sleeper_rows=None, fetched_at=None):
+        self.rows = rows
+        self.sleeper_rows = sleeper_rows
+        self.fetched_at = trend_queries.time.time() if fetched_at is None else fetched_at
+        self.queried_sources = []
+
+    def list_provider_sync_metadata(self, *, provider, dataset, season):
+        return [{"fetched_at": self.fetched_at}]
+
+    def query_numeric_stat_rows(self, *, source, season, start_week, end_week,
+                                stat_keys=None, player_ids=None, positions=None):
+        self.queried_sources.append(source)
+        if source == "nflverse_stats":
+            return self.rows
+        return self.sleeper_rows or [{
+            "season": season, "week": 1, "player_id": "wr-1",
+            "name": "Wide One", "team": "DEN", "position": "WR",
+            "stat_key": "rec_tgt", "stat_value": 4,
+        }]
+
+
 class FakeTrendRepository:
     def query_numeric_stat_rows(
         self,
@@ -155,6 +380,8 @@ class FakeTrendRepository:
             for row in rows
             if row["season"] == season
             and start_week <= row["week"] <= end_week
+            and (not player_ids or row["player_id"] in player_ids)
+            and (not positions or row["position"] in positions)
         ]
 
     def _stat_rows(self):
@@ -163,18 +390,21 @@ class FakeTrendRepository:
             self._row(1, "rb-1", "Runner One", "RB", "targets", 4),
             self._row(1, "rb-2", "Runner Two", "RB", "rush_att", 7),
             self._row(1, "rb-2", "Runner Two", "RB", "targets", 2),
-            self._row(1, "wr-1", "Wide One", "WR", "targets", 9),
             self._row(2, "rb-1", "Runner One", "RB", "rush_att", 12),
             self._row(2, "rb-1", "Runner One", "RB", "targets", 6),
             self._row(2, "rb-2", "Runner Two", "RB", "rush_att", 18),
             self._row(2, "rb-2", "Runner Two", "RB", "targets", 1),
             self._row(3, "rb-1", "Runner One", "RB", "rush_att", 14),
+            self._row(3, "rb-1", "Runner One", "RB", "targets", 0),
         ]
 
     def _projection_rows(self):
         return [
+            self._row(1, "rb-1", "Runner One", "RB", "targets", 3),
+            self._row(1, "wr-1", "Wide One", "WR", "targets", 4),
             self._row(2, "rb-1", "Runner One", "RB", "targets", 3),
             self._row(2, "rb-2", "Runner Two", "RB", "targets", 2),
+            self._row(3, "rb-1", "Runner One", "RB", "targets", 0),
         ]
 
     def _row(self, week, player_id, name, position, stat_key, stat_value):

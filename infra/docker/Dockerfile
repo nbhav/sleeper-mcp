@@ -11,6 +11,7 @@ RUN uv sync --no-install-project --extra dev
 
 COPY python/src/ ./src/
 COPY python/tests/ ./tests/
+COPY docs/player-context-source-audit.md ./docs/player-context-source-audit.md
 RUN uv sync --extra dev
 
 ENTRYPOINT ["/app/.venv/bin/sleeper"]

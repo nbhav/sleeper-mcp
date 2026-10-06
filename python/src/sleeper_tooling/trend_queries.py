@@ -5,7 +5,8 @@ from collections.abc import Iterable, Sequence
 from datetime import datetime, timezone
 from typing import Any, Literal, Protocol
 
-StatSource = Literal["stats", "projections"]
+StatSource = Literal["stats", "projections", "canonical_stats"]
+CANONICAL_PROVIDER_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 
 GRAPH_ROW_FIELDS = (
     "season",
@@ -157,17 +158,23 @@ def projection_actual_deltas(
         season=season,
         start_week=week,
         end_week=week,
-        stat_keys=stat_keys,
         player_ids=player_ids,
         positions=positions,
     )
     projected_by_key = {_stat_identity(row): row for row in projection_rows}
+    projected_by_player_week = {
+        _player_week_identity(row)
+        for row in projection_rows
+    }
     rows: list[dict[str, Any]] = []
     for actual in actual_rows:
         projected = projected_by_key.get(_stat_identity(actual))
         projected_value = float(projected["stat_value"]) if projected else 0.0
         actual_value = float(actual["stat_value"])
         delta = round(actual_value - projected_value, 4)
+        projection_row_present = (
+            _player_week_identity(actual) in projected_by_player_week
+        )
         rows.append(
             {
                 **actual,
@@ -175,6 +182,8 @@ def projection_actual_deltas(
                 "actual_value": _compact_number(actual_value),
                 "projected_value": _compact_number(projected_value),
                 "delta_value": _compact_number(delta),
+                "projection_row_present": projection_row_present,
+                "projection_key_present": projected is not None,
             }
         )
     rows = sorted(
@@ -321,8 +330,8 @@ def decision_data_status(
 
 
 def validate_stat_source(source: str) -> None:
-    if source not in {"stats", "projections"}:
-        raise ValueError("source must be 'stats' or 'projections'")
+    if source not in {"stats", "projections", "canonical_stats"}:
+        raise ValueError("source must be stats, projections, or canonical_stats")
 
 
 def validate_week_window(start_week: int, end_week: int) -> None:
@@ -344,11 +353,44 @@ def _query_numeric_rows(
     positions: Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
     validate_stat_source(source)
+    if source == "canonical_stats":
+        return _query_canonical_numeric_rows(
+            repository,
+            season=season,
+            start_week=start_week,
+            end_week=end_week,
+            stat_keys=stat_keys,
+            player_ids=player_ids,
+            positions=positions,
+        )
+    return _query_source_numeric_rows(
+        repository,
+        source=source,
+        season=season,
+        start_week=start_week,
+        end_week=end_week,
+        stat_keys=stat_keys,
+        player_ids=player_ids,
+        positions=positions,
+    )
+
+
+def _query_source_numeric_rows(
+    repository: TrendQueryRepository,
+    *,
+    source: str,
+    season: int,
+    start_week: int,
+    end_week: int,
+    stat_keys: Sequence[str] | None = None,
+    player_ids: Sequence[str] | None = None,
+    positions: Sequence[str] | None = None,
+) -> list[dict[str, Any]]:
     stat_key_set = {str(key) for key in stat_keys or []}
     player_id_set = {str(player_id) for player_id in player_ids or []}
     position_set = {str(position).upper() for position in positions or []}
     raw_rows = repository.query_numeric_stat_rows(
-        source=source,
+        source=source,  # type: ignore[arg-type]
         season=season,
         start_week=start_week,
         end_week=end_week,
@@ -373,6 +415,93 @@ def _query_numeric_rows(
             continue
         rows.append(row)
     return rows
+
+
+def _query_canonical_numeric_rows(
+    repository: TrendQueryRepository,
+    *,
+    season: int,
+    start_week: int,
+    end_week: int,
+    stat_keys: Sequence[str] | None,
+    player_ids: Sequence[str] | None,
+    positions: Sequence[str] | None,
+) -> list[dict[str, Any]]:
+    """Select one provider for a query; never merge provider values silently."""
+    sleeper_rows = lambda: _with_canonical_provenance(
+        _query_source_numeric_rows(
+            repository,
+            source="stats",
+            season=season,
+            start_week=start_week,
+            end_week=end_week,
+            stat_keys=stat_keys,
+            player_ids=player_ids,
+            positions=positions,
+        ),
+        selected_source="stats",
+        fallback_reason="nflverse_unavailable",
+    )
+    if positions and all(str(position).upper() in {"K", "DEF"} for position in positions):
+        return sleeper_rows()
+    metadata_getter = getattr(repository, "list_provider_sync_metadata", None)
+    if callable(metadata_getter):
+        metadata = metadata_getter(
+            provider="nflverse",
+            dataset="player_stats",
+            season=season,
+        )
+        if not metadata or max(
+            float(row.get("fetched_at") or 0) for row in metadata
+        ) < time.time() - CANONICAL_PROVIDER_MAX_AGE_SECONDS:
+            return sleeper_rows()
+    nflverse_rows = _query_source_numeric_rows(
+        repository,
+        source="nflverse_stats",
+        season=season,
+        start_week=start_week,
+        end_week=end_week,
+        stat_keys=stat_keys,
+        player_ids=player_ids,
+        positions=[
+            position
+            for position in positions or []
+            if str(position).upper() not in {"K", "DEF"}
+        ] or None,
+    )
+    nflverse_rows = [
+        row
+        for row in nflverse_rows
+        if str(row.get("position") or "").upper() not in {"K", "DEF"}
+    ]
+    if nflverse_rows:
+        return _with_canonical_provenance(
+            nflverse_rows,
+            selected_source="nflverse_stats",
+            fallback_reason=None,
+        )
+    return sleeper_rows()
+
+
+def _with_canonical_provenance(
+    rows: list[dict[str, Any]],
+    *,
+    selected_source: str,
+    fallback_reason: str | None,
+) -> list[dict[str, Any]]:
+    metadata = {
+        "requested_source": "canonical_stats",
+        "selected_source": selected_source,
+        "fallback_reason": fallback_reason,
+    }
+    return [
+        {
+            **row,
+            "source": selected_source,
+            "source_metadata": metadata,
+        }
+        for row in rows
+    ]
 
 
 def _normalize_graph_row(row: dict[str, Any]) -> dict[str, Any] | None:
@@ -402,6 +531,14 @@ def _stat_identity(row: dict[str, Any]) -> tuple[int, int, str, str]:
         int(row["week"]),
         str(row["player_id"]),
         str(row["stat_key"]),
+    )
+
+
+def _player_week_identity(row: dict[str, Any]) -> tuple[int, int, str]:
+    return (
+        int(row["season"]),
+        int(row["week"]),
+        str(row["player_id"]),
     )
 
 
