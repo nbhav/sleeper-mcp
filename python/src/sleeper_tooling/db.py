@@ -752,6 +752,25 @@ class SleeperNormalizedRepository:
         rows: Mapping[str, JsonObject] | Iterable[JsonObject],
         scoring_settings: Mapping[str, Any] | None = None,
     ) -> dict[str, int]:
+        return self._upsert_player_week_rows(
+            season=season,
+            week=week,
+            source=source,
+            rows=rows,
+            scoring_settings=scoring_settings,
+            commit=True,
+        )
+
+    def _upsert_player_week_rows(
+        self,
+        *,
+        season: int,
+        week: int,
+        source: str,
+        rows: Mapping[str, JsonObject] | Iterable[JsonObject],
+        scoring_settings: Mapping[str, Any] | None = None,
+        commit: bool,
+    ) -> dict[str, int]:
         updated_at = time.time()
         row_count = 0
         stat_value_count = 0
@@ -899,7 +918,8 @@ class SleeperNormalizedRepository:
                 )
                 scoring_value_count += 1
             row_count += 1
-        self._connection.commit()
+        if commit:
+            self._connection.commit()
         return {
             "player_week_rows": row_count,
             "player_week_stat_values": stat_value_count,
@@ -975,28 +995,45 @@ class SleeperNormalizedRepository:
         ).fetchall()
         return [_decode_row(row) for row in rows if row is not None]
 
-    def delete_player_week_source(
+    def replace_player_week_source(
         self,
         *,
         season: int,
         week: int,
         source: str,
+        rows: Mapping[str, JsonObject] | Iterable[JsonObject],
+        scoring_settings: Mapping[str, Any] | None = None,
     ) -> dict[str, int]:
         counts: dict[str, int] = {}
-        for table_name in (
-            "player_week_scoring_values",
-            "player_week_stat_values",
-            "player_week_rows",
-        ):
-            cursor = self._connection.execute(
-                f"""
-                DELETE FROM {table_name}
-                WHERE source = ? AND season = ? AND week = ?
-                """,
-                (str(source), int(season), int(week)),
+        try:
+            self._connection.execute("BEGIN")
+            for table_name in (
+                "player_week_scoring_values",
+                "player_week_stat_values",
+                "player_week_rows",
+            ):
+                cursor = self._connection.execute(
+                    f"""
+                    DELETE FROM {table_name}
+                    WHERE source = ? AND season = ? AND week = ?
+                    """,
+                    (str(source), int(season), int(week)),
+                )
+                counts[f"deleted_{table_name}"] = int(cursor.rowcount)
+            counts.update(
+                self._upsert_player_week_rows(
+                    season=season,
+                    week=week,
+                    source=source,
+                    rows=rows,
+                    scoring_settings=scoring_settings,
+                    commit=False,
+                )
             )
-            counts[table_name] = int(cursor.rowcount)
-        self._connection.commit()
+            self._connection.commit()
+        except Exception:
+            self._connection.rollback()
+            raise
         return counts
 
     def upsert_team_week_schedule(

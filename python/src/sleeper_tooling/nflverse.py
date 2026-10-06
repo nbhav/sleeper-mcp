@@ -199,21 +199,31 @@ def sync_nflverse_stats(
         )
     for season, week in sorted(metadata_keys):
         rows = rows_by_week.get((season, week), [])
-        delete_source = getattr(repository, "delete_player_week_source", None)
-        if callable(delete_source):
-            delete_source(
+        replace_source = getattr(repository, "replace_player_week_source", None)
+        if callable(replace_source):
+            result = replace_source(
                 season=season,
                 week=week,
                 source=NFLVERSE_SOURCE,
+                rows=rows,
+                scoring_settings=None,
             )
-        result = repository.upsert_player_week_rows(
-            season=season,
-            week=week,
-            source=NFLVERSE_SOURCE,
-            rows=rows,
-            scoring_settings=None,
-        )
-        counts[f"{season}:{week}"] = sum(int(value) for value in result.values()) if isinstance(result, Mapping) else int(result or 0)
+        else:
+            delete_source = getattr(repository, "delete_player_week_source", None)
+            if callable(delete_source):
+                delete_source(
+                    season=season,
+                    week=week,
+                    source=NFLVERSE_SOURCE,
+                )
+            result = repository.upsert_player_week_rows(
+                season=season,
+                week=week,
+                source=NFLVERSE_SOURCE,
+                rows=rows,
+                scoring_settings=None,
+            )
+        counts[f"{season}:{week}"] = _synced_row_count(result)
         metadata = {
             "provider": "nflverse",
             "dataset": NFLVERSE_DATASET,
@@ -309,6 +319,16 @@ def _count_by(items: Iterable[Any], key: Any) -> dict[str, int]:
         label = str(key(item))
         counts[label] = counts.get(label, 0) + 1
     return counts
+
+
+def _synced_row_count(result: Any) -> int:
+    if isinstance(result, Mapping):
+        return sum(
+            int(value)
+            for key, value in result.items()
+            if not str(key).startswith("deleted_")
+        )
+    return int(result or 0)
 
 
 def _package_version(package: str) -> str:
