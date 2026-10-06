@@ -975,6 +975,30 @@ class SleeperNormalizedRepository:
         ).fetchall()
         return [_decode_row(row) for row in rows if row is not None]
 
+    def delete_player_week_source(
+        self,
+        *,
+        season: int,
+        week: int,
+        source: str,
+    ) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for table_name in (
+            "player_week_scoring_values",
+            "player_week_stat_values",
+            "player_week_rows",
+        ):
+            cursor = self._connection.execute(
+                f"""
+                DELETE FROM {table_name}
+                WHERE source = ? AND season = ? AND week = ?
+                """,
+                (str(source), int(season), int(week)),
+            )
+            counts[table_name] = int(cursor.rowcount)
+        self._connection.commit()
+        return counts
+
     def upsert_team_week_schedule(
         self,
         *,
