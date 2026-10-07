@@ -90,12 +90,15 @@ Required repository secrets:
 
 Required GitHub `production` environment variables:
 
+- `CLOUDFLARE_D1_DATABASE_ID`
 - `SLEEPER_DEFAULT_LEAGUE_URL`
 - `SLEEPER_DEFAULT_USER_REF`
 
 The deploy workflow resolves those values into `SLEEPER_DEFAULT_LEAGUE_ID`,
 `SLEEPER_DEFAULT_ROSTER_ID`, and `SLEEPER_DEFAULT_OWNER_ID`, then passes them to
-`wrangler deploy --var`.
+`wrangler deploy --var`. It also writes `CLOUDFLARE_D1_DATABASE_ID` into the
+checked-out `wrangler.toml` on the Actions runner before deployment, so the
+repository can keep a placeholder database id.
 
 Deploy locally through Docker:
 
