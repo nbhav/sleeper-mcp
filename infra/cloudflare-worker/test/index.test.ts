@@ -41,6 +41,43 @@ function message(method: string, params?: Record<string, unknown>): Request {
   });
 }
 
+test("worker tools list exposes enhanced decision tool contracts", async () => {
+  const listed = await envelope(message("tools/list"));
+  assert.equal(listed.response.status, 200);
+
+  const tools = ((listed.body.result as Record<string, unknown>).tools as Record<string, unknown>[]);
+  const byName = new Map(tools.map((tool) => [String(tool.name), tool]));
+  assert.deepEqual(
+    [
+      "my_lineup",
+      "lineup_recommendations",
+      "waiver_wire_watch",
+      "waiver_wire_by_position",
+      "trade_opportunities",
+      "decision_smoke_report",
+      "player_usage_context"
+    ].filter((name) => !byName.has(name)),
+    []
+  );
+
+  const waiverSchema = byName.get("waiver_wire_by_position")?.inputSchema as Record<string, unknown>;
+  const waiverProperties = waiverSchema.properties as Record<string, Record<string, unknown>>;
+  assert.equal(waiverProperties.per_position_limit.default, 10);
+  assert.equal(waiverProperties.positions.default, "QB,RB,WR,TE,K,DEF");
+
+  const tradeSchema = byName.get("trade_opportunities")?.inputSchema as Record<string, unknown>;
+  const tradeProperties = tradeSchema.properties as Record<string, Record<string, unknown>>;
+  assert.equal(tradeProperties.offers_per_team.default, 3);
+
+  const smokeSchema = byName.get("decision_smoke_report")?.inputSchema as Record<string, unknown>;
+  const smokeProperties = smokeSchema.properties as Record<string, Record<string, unknown>>;
+  assert.deepEqual(smokeProperties.format.enum, ["markdown", "json"]);
+  assert.equal(smokeProperties.format.default, "markdown");
+
+  const usageSchema = byName.get("player_usage_context")?.inputSchema as Record<string, unknown>;
+  assert.deepEqual(usageSchema.required, ["player_id", "season", "week"]);
+});
+
 test("worker serves root metadata and rejects unsupported HTTP paths", async () => {
   const root = await envelope(new Request("https://worker.test/"));
   assert.equal(root.response.status, 200);
@@ -114,6 +151,93 @@ test("worker caches raw API responses in D1 between identical requests", async (
     assert.equal(fetchCount, 1);
     assert.ok(statements.some((sql) => sql.startsWith("CREATE TABLE IF NOT EXISTS")));
     assert.ok(statements.some((sql) => sql.startsWith("INSERT OR REPLACE")));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("worker treats expired D1 cache rows as misses and replaces them", async () => {
+  const writes: unknown[][] = [];
+  const storedExpiresAt = 1;
+  const db = {
+    prepare(sql: string) {
+      let bound: unknown[] = [];
+      return {
+        bind(...values: unknown[]) {
+          bound = values;
+          return this;
+        },
+        async first() {
+          if (!sql.startsWith("SELECT")) return undefined;
+          const requestedNow = Number(bound[1]);
+          return storedExpiresAt > requestedNow
+            ? { response_json: JSON.stringify([{ stale: true, expires_at: storedExpiresAt }]) }
+            : undefined;
+        },
+        async run() {
+          if (sql.startsWith("INSERT")) writes.push(bound);
+          return { success: true };
+        }
+      };
+    }
+  };
+  const originalFetch = globalThis.fetch;
+  let fetchCount = 0;
+  globalThis.fetch = async () => {
+    fetchCount += 1;
+    return new Response(JSON.stringify([
+      { player_id: "p-1", player: { team: "DEN", position: "QB" }, stats: { opponent: "KC" } }
+    ]), { headers: { "content-type": "application/json" } });
+  };
+  try {
+    const result = await callWithEnv(
+      { player_id: "p-1", season: 2026, week: 4, source: "stats" },
+      { SLEEPER_CACHE_DB: db }
+    );
+    assert.equal(result.opponent, "KC");
+    assert.equal(fetchCount, 1);
+    assert.equal(writes.length, 1);
+    assert.ok(String(writes[0][2]).includes("p-1"));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("worker skips oversized D1 cache writes while returning the live response", async () => {
+  const writes: unknown[][] = [];
+  const db = {
+    prepare(sql: string) {
+      let bound: unknown[] = [];
+      return {
+        bind(...values: unknown[]) {
+          bound = values;
+          return this;
+        },
+        async first() {
+          return undefined;
+        },
+        async run() {
+          if (sql.startsWith("INSERT")) writes.push(bound);
+          return { success: true };
+        }
+      };
+    }
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify([
+    {
+      player_id: "p-1",
+      player: { team: "DEN", position: "QB" },
+      stats: { opponent: "KC", note: "x".repeat(900_001) }
+    }
+  ]), { headers: { "content-type": "application/json" } });
+  try {
+    const result = await callWithEnv(
+      { player_id: "p-1", season: 2026, week: 4, source: "stats" },
+      { SLEEPER_CACHE_DB: db }
+    );
+    assert.equal(result.opponent, "KC");
+    assert.deepEqual(writes, []);
   } finally {
     globalThis.fetch = originalFetch;
   }
