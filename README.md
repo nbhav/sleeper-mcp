@@ -167,9 +167,10 @@ For GitHub Actions deploys, set these repository secrets:
 - `CLOUDFLARE_ACCOUNT_ID`
 - `CLOUDFLARE_API_TOKEN`
 
-Set these GitHub `production` environment variables so deploys can resolve the
-Worker's default league context:
+Set these GitHub `production` environment variables so deploys can configure
+the D1 binding and resolve the Worker's default league context:
 
+- `CLOUDFLARE_D1_DATABASE_ID`
 - `SLEEPER_DEFAULT_LEAGUE_URL`
 - `SLEEPER_DEFAULT_USER_REF`
 

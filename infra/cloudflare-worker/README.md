@@ -46,7 +46,9 @@ Do not run `npm install` on the host.
 ## Deployment Checklist
 
 1. Create a D1 database named `sleeper-mcp-cache`.
-2. Put the D1 `database_id` into `wrangler.toml`.
+2. Put the D1 `database_id` into `wrangler.toml` for local deploys, or set
+   `CLOUDFLARE_D1_DATABASE_ID` in the GitHub `production` environment for
+   Actions deploys.
 3. Set Worker vars for league, roster, and owner defaults.
 4. Protect `sleeper-mcp.neilbhavsar.com` with Cloudflare Access.
 5. Deploy with `make worker-deploy`.
@@ -60,10 +62,12 @@ If you want GitHub to deploy the Worker after CI passes on `main`, add these rep
 
 Add these GitHub `production` environment variables:
 
+- `CLOUDFLARE_D1_DATABASE_ID`
 - `SLEEPER_DEFAULT_LEAGUE_URL`
 - `SLEEPER_DEFAULT_USER_REF`
 
 The deploy workflow resolves the URL/user pair through the Python CLI, exports
-the resulting IDs, and passes them to Wrangler as deploy-time vars.
+the resulting IDs, passes them to Wrangler as deploy-time vars, and patches the
+D1 `database_id` into `wrangler.toml` on the Actions runner.
 
 The deploy workflow runs after the `CI` workflow succeeds on `main`, or manually through `workflow_dispatch`.

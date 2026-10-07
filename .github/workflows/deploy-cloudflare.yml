@@ -52,9 +52,9 @@ jobs:
         id: context
         run: |
           docker compose -f infra/docker/docker-compose.yml run --rm sleeper configure-context "$SLEEPER_DEFAULT_LEAGUE_URL" --user-ref "$SLEEPER_DEFAULT_USER_REF" --output env > /tmp/sleeper-context.env
-          league_id="$(grep '^SLEEPER_DEFAULT_LEAGUE_ID=' data/sleeper-mcp.env | cut -d= -f2-)"
-          roster_id="$(grep '^SLEEPER_DEFAULT_ROSTER_ID=' data/sleeper-mcp.env | cut -d= -f2-)"
-          owner_id="$(grep '^SLEEPER_DEFAULT_OWNER_ID=' data/sleeper-mcp.env | cut -d= -f2-)"
+          league_id="$(grep '^SLEEPER_DEFAULT_LEAGUE_ID=' /tmp/sleeper-context.env | cut -d= -f2-)"
+          roster_id="$(grep '^SLEEPER_DEFAULT_ROSTER_ID=' /tmp/sleeper-context.env | cut -d= -f2-)"
+          owner_id="$(grep '^SLEEPER_DEFAULT_OWNER_ID=' /tmp/sleeper-context.env | cut -d= -f2-)"
           test -n "$league_id" || {
             echo "Failed to resolve SLEEPER_DEFAULT_LEAGUE_ID"
             exit 1
@@ -86,10 +86,34 @@ jobs:
     env:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_D1_DATABASE_ID: ${{ vars.CLOUDFLARE_D1_DATABASE_ID }}
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Validate Cloudflare deploy inputs
+        run: |
+          test -n "$CLOUDFLARE_ACCOUNT_ID" || {
+            echo "CLOUDFLARE_ACCOUNT_ID secret is required"
+            exit 1
+          }
+          test -n "$CLOUDFLARE_API_TOKEN" || {
+            echo "CLOUDFLARE_API_TOKEN secret is required"
+            exit 1
+          }
+          test -n "$CLOUDFLARE_D1_DATABASE_ID" || {
+            echo "CLOUDFLARE_D1_DATABASE_ID production environment variable is required"
+            exit 1
+          }
+
+      - name: Configure D1 database binding
+        run: |
+          sed -i -E "s/database_id = \".*\"/database_id = \"$CLOUDFLARE_D1_DATABASE_ID\"/" infra/cloudflare-worker/wrangler.toml
+          grep -q "database_id = \"$CLOUDFLARE_D1_DATABASE_ID\"" infra/cloudflare-worker/wrangler.toml || {
+            echo "Failed to configure D1 database_id in wrangler.toml"
+            exit 1
+          }
 
       - name: Install Cloudflare Worker dependencies
         run: make worker-install

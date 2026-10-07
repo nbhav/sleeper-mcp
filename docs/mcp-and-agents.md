@@ -319,7 +319,9 @@ https://sleeper-mcp.neilbhavsar.com/mcp
 Deploy requirements:
 
 1. Create a D1 database named `sleeper-mcp-cache`.
-2. Put the D1 `database_id` into `infra/cloudflare-worker/wrangler.toml`.
+2. Put the D1 `database_id` into `infra/cloudflare-worker/wrangler.toml` for
+   local deploys, or set `CLOUDFLARE_D1_DATABASE_ID` in the GitHub
+   `production` environment for Actions deploys.
 3. Set Worker vars for default league and roster context if desired.
 4. Protect the hostname with Cloudflare Access.
 5. Deploy with `make worker-deploy`.
