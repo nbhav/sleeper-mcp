@@ -1,0 +1,229 @@
+{
+  "_comment": "Synthetic provider-contract fixture for issue #42. All ids, values, and URLs are fabricated test data; 'mock-commercial' stands in for a licensed route/pressure provider because nflverse does not publish all-routes data. Validation clock: now=1790600000, max_age_seconds=21600.",
+  "clock": {"now": 1790600000, "max_age_seconds": 21600},
+  "games": {
+    "2026_04_DEN_KC": {
+      "season": 2026, "season_type": "REG", "week": 4, "game_id": "2026_04_DEN_KC",
+      "kickoff_utc": "2026-09-27T20:25:00Z", "home_team": "KC", "away_team": "DEN",
+      "status": "final", "venue_id": "FIXTURE_STADIUM_KC", "roof": "outdoors",
+      "provider_game_ids": {"gsis": "fixture-59004", "mock-commercial": "mc-game-4001"}
+    },
+    "2026_03_LV_DEN": {
+      "season": 2026, "season_type": "REG", "week": 3, "game_id": "2026_03_LV_DEN",
+      "kickoff_utc": "2026-09-20T20:05:00Z", "home_team": "DEN", "away_team": "LV",
+      "status": "final", "venue_id": "FIXTURE_STADIUM_DEN", "roof": "outdoors",
+      "provider_game_ids": {"gsis": "fixture-59003"}
+    },
+    "2026_04_BUF_MIA": {
+      "season": 2026, "season_type": "REG", "week": 4, "game_id": "2026_04_BUF_MIA",
+      "kickoff_utc": "2026-09-29T17:00:00Z", "original_kickoff_utc": "2026-09-27T17:00:00Z",
+      "home_team": "MIA", "away_team": "BUF", "status": "postponed", "roof": "outdoors"
+    }
+  },
+  "licenses": {
+    "mock-commercial": {
+      "name": "fixture-commercial-license",
+      "attribution": "Fixture data; not a real provider",
+      "storage_allowed": null, "redistribution_allowed": false, "mcp_exposure": "derived_only"
+    },
+    "nflverse": {
+      "name": "CC-BY-4.0",
+      "attribution": "Data from nflverse (https://github.com/nflverse/nflverse-data)",
+      "url": "https://github.com/nflverse/nflverse-data/blob/master/LICENSE.md",
+      "storage_allowed": true, "redistribution_allowed": true, "mcp_exposure": "raw"
+    }
+  },
+  "valid": [
+    {
+      "id": "wr1_routes", "provider": "mock-commercial", "dataset": "player_game_routes",
+      "metric_name": "routes_run", "value": 30, "units": "count", "scope": "player_game",
+      "context_input": "routes", "game": "2026_04_DEN_KC", "team": "DEN", "opponent": "KC", "home_away": "away",
+      "player": {"provider": "mock-commercial", "provider_player_id": "mc-1001", "gsis_id": "00-0099001", "sleeper_player_id": "fixture-wr1", "id_path": "provider->gsis->sleeper"},
+      "definition": "Pass plays on which the player ran a route (all routes, not only targeted routes)",
+      "source_record_id": "mc-pgr-1001-4001", "fetched_at": 1790590000, "source_updated_at": 1790580000,
+      "revision_status": "final", "license": "mock-commercial",
+      "raw_payload": {"provider": "mock-commercial", "source": "player_game_routes", "payload": {"PlayerID": "mc-1001", "GameID": "mc-game-4001", "Routes": 30, "TeamDropbacks": 34}, "fetched_at": 1790590000}
+    },
+    {
+      "id": "wr1_route_participation", "provider": "mock-commercial", "dataset": "player_game_routes",
+      "metric_name": "route_participation", "value": 0.882353, "units": "ratio", "scope": "player_game",
+      "context_input": "route_participation", "game": "2026_04_DEN_KC", "team": "DEN", "opponent": "KC", "home_away": "away",
+      "player": {"provider": "mock-commercial", "provider_player_id": "mc-1001", "gsis_id": "00-0099001", "sleeper_player_id": "fixture-wr1"},
+      "numerator": 30, "denominator": 34, "numerator_field": "routes_run", "denominator_field": "team_dropbacks",
+      "definition": "routes_run / team dropbacks (pass attempts + sacks + scrambles)",
+      "source_record_id": "mc-pgr-1001-4001", "fetched_at": 1790590000, "revision_status": "final", "license": "mock-commercial"
+    },
+    {
+      "id": "wr1_tprr", "provider": "mock-commercial", "dataset": "player_game_routes",
+      "metric_name": "targets_per_route_run", "value": 0.266667, "units": "ratio", "scope": "player_game",
+      "game": "2026_04_DEN_KC", "team": "DEN", "opponent": "KC",
+      "player": {"provider": "mock-commercial", "provider_player_id": "mc-1001", "gsis_id": "00-0099001", "sleeper_player_id": "fixture-wr1"},
+      "numerator": 8, "denominator": 30, "numerator_field": "targets", "denominator_field": "routes_run",
+      "definition": "targets / routes_run", "source_record_id": "mc-pgr-1001-4001", "fetched_at": 1790590000,
+      "revision_status": "final", "license": "mock-commercial"
+    },
+    {
+      "id": "wr1_yprr", "provider": "mock-commercial", "dataset": "player_game_routes",
+      "metric_name": "yards_per_route_run", "value": 3.2, "units": "rate", "scope": "player_game",
+      "game": "2026_04_DEN_KC", "team": "DEN", "opponent": "KC",
+      "player": {"provider": "mock-commercial", "provider_player_id": "mc-1001", "gsis_id": "00-0099001", "sleeper_player_id": "fixture-wr1"},
+      "numerator": 96, "denominator": 30, "numerator_field": "receiving_yards", "denominator_field": "routes_run",
+      "definition": "receiving_yards / routes_run", "source_record_id": "mc-pgr-1001-4001", "fetched_at": 1790590000,
+      "revision_status": "final", "license": "mock-commercial"
+    },
+    {
+      "id": "den_pressure", "provider": "mock-commercial", "dataset": "team_game_pass_rush",
+      "metric_name": "pressure_rate_allowed", "value": 0.368421, "units": "ratio", "scope": "team_game",
+      "context_input": "pressure", "game": "2026_04_DEN_KC", "team": "DEN", "opponent": "KC", "home_away": "away",
+      "numerator": 14, "denominator": 38, "numerator_field": "pressures_allowed", "denominator_field": "dropbacks",
+      "definition": "(sacks + hits + hurries, deduplicated per play) / offensive dropbacks",
+      "source_record_id": "mc-tgpr-DEN-4001", "fetched_at": 1790590000, "revision_status": "final", "license": "mock-commercial"
+    },
+    {
+      "id": "den_neutral_pace", "provider": "nflverse", "dataset": "pbp_derived",
+      "metric_name": "neutral_seconds_per_play", "value": 28.4, "units": "seconds_per_play", "scope": "team_game",
+      "context_input": "pace", "game": "2026_04_DEN_KC", "team": "DEN", "opponent": "KC",
+      "numerator": 1136, "denominator": 40, "numerator_field": "neutral_offensive_seconds", "denominator_field": "neutral_offensive_plays",
+      "definition": "Local calculation from load_pbp: offensive plays with 0.20 <= wp <= 0.80, qtr <= 4, half_seconds_remaining > 120",
+      "calculation_version": "local-neutral-pace-v1",
+      "source_url": "https://github.com/nflverse/nflverse-data/releases/tag/pbp", "fetched_at": 1790590000,
+      "revision_status": "preliminary", "license": "nflverse"
+    },
+    {
+      "id": "wr1_target_share", "provider": "nflverse", "dataset": "player_stats",
+      "metric_name": "target_share", "value": 0.25, "units": "ratio", "scope": "player_game",
+      "context_input": "target_share", "game": "2026_04_DEN_KC", "team": "DEN", "opponent": "KC", "home_away": "away",
+      "player": {"provider": "nflverse", "provider_player_id": "00-0099001", "gsis_id": "00-0099001", "sleeper_player_id": "fixture-wr1", "id_path": "gsis->sleeper (load_ff_playerids)"},
+      "numerator": 8, "denominator": 32, "numerator_field": "targets", "denominator_field": "team_targets",
+      "definition": "Player's share of team receiving targets in this game",
+      "source_url": "https://github.com/nflverse/nflverse-data/releases/tag/stats_player", "fetched_at": 1790590000,
+      "revision_status": "preliminary", "license": "nflverse"
+    },
+    {
+      "id": "rb1_carry_share", "provider": "nflverse", "dataset": "player_stats",
+      "metric_name": "carry_share", "value": 0.75, "units": "ratio", "scope": "player_game",
+      "context_input": "carry_share", "game": "2026_04_DEN_KC", "team": "DEN", "opponent": "KC",
+      "player": {"provider": "nflverse", "provider_player_id": "00-0099002", "gsis_id": "00-0099002", "sleeper_player_id": "fixture-rb1"},
+      "numerator": 18, "denominator": 24, "numerator_field": "carries", "denominator_field": "team_carries",
+      "definition": "carries / team carries; carries include scrambles and kneels (designed-rush share requires pbp qb_scramble/qb_kneel exclusion)",
+      "source_url": "https://github.com/nflverse/nflverse-data/releases/tag/stats_player", "fetched_at": 1790590000,
+      "revision_status": "preliminary", "license": "nflverse"
+    },
+    {
+      "id": "wr1_red_zone", "provider": "nflverse", "dataset": "pbp_derived",
+      "metric_name": "red_zone_target_share", "value": 0.222222, "units": "ratio", "scope": "player_game",
+      "context_input": "red_zone_use", "game": "2026_04_DEN_KC", "team": "DEN", "opponent": "KC",
+      "player": {"provider": "nflverse", "provider_player_id": "00-0099001", "gsis_id": "00-0099001", "sleeper_player_id": "fixture-wr1"},
+      "numerator": 2, "denominator": 9, "numerator_field": "red_zone_targets", "denominator_field": "team_red_zone_pass_attempts",
+      "definition": "Local calculation from load_pbp: targets with yardline_100 <= 20 / team pass attempts with yardline_100 <= 20",
+      "calculation_version": "local-red-zone-v1",
+      "source_url": "https://github.com/nflverse/nflverse-data/releases/tag/pbp", "fetched_at": 1790590000,
+      "revision_status": "preliminary", "license": "nflverse"
+    },
+    {
+      "id": "game_wind", "provider": "nflverse", "dataset": "schedules",
+      "metric_name": "wind", "value": 12, "units": "mph", "scope": "game",
+      "context_input": "weather", "game": "2026_04_DEN_KC",
+      "definition": "Wind speed in mph for outdoors/open roofs (schedules.wind; source PFR)",
+      "source_url": "https://github.com/nflverse/nflverse-data/releases/tag/schedules", "fetched_at": 1790590000,
+      "revision_status": "final", "license": "nflverse"
+    },
+    {
+      "id": "den_implied_total", "provider": "nflverse", "dataset": "schedules",
+      "metric_name": "implied_team_total", "value": 21.0, "units": "points", "scope": "team_game",
+      "context_input": "implied_totals", "game": "2026_04_DEN_KC", "team": "DEN", "opponent": "KC", "home_away": "away",
+      "definition": "Derived: away = (total_line - spread_line) / 2 with total_line=45.5, spread_line=3.5 (positive = home favored). Line timestamp and opening/closing status unverified.",
+      "calculation_version": "local-implied-total-v1",
+      "source_url": "https://github.com/nflverse/nflverse-data/releases/tag/schedules", "fetched_at": 1790590000,
+      "revision_status": "unknown", "license": "nflverse",
+      "raw_payload": {"provider": "nflverse", "source": "schedules", "payload": {"game_id": "2026_04_DEN_KC", "total_line": 45.5, "spread_line": 3.5}, "fetched_at": 1790590000}
+    },
+    {
+      "id": "te1_target_share_zero", "provider": "nflverse", "dataset": "player_stats",
+      "metric_name": "target_share", "value": 0.0, "units": "ratio", "scope": "player_game",
+      "context_input": "target_share", "game": "2026_04_DEN_KC", "team": "DEN", "opponent": "KC",
+      "player": {"provider": "nflverse", "provider_player_id": "00-0099003", "gsis_id": "00-0099003", "sleeper_player_id": "fixture-te1"},
+      "numerator": 0, "denominator": 32, "numerator_field": "targets", "denominator_field": "team_targets",
+      "definition": "Player's share of team receiving targets in this game",
+      "source_url": "https://github.com/nflverse/nflverse-data/releases/tag/stats_player", "fetched_at": 1790590000,
+      "revision_status": "preliminary", "license": "nflverse"
+    },
+    {
+      "id": "te1_route_participation_null", "provider": "mock-commercial", "dataset": "player_game_routes",
+      "metric_name": "route_participation", "value": null, "units": "ratio", "scope": "player_game",
+      "context_input": "route_participation", "game": "2026_04_DEN_KC", "team": "DEN", "opponent": "KC",
+      "player": {"provider": "mock-commercial", "provider_player_id": "mc-1003", "gsis_id": "00-0099003", "sleeper_player_id": "fixture-te1"},
+      "numerator_field": "routes_run", "denominator_field": "team_dropbacks",
+      "definition": "routes_run / team dropbacks",
+      "source_record_id": "mc-pgr-1003-4001", "fetched_at": 1790590000, "revision_status": "preliminary", "license": "mock-commercial"
+    },
+    {
+      "id": "wr1_receiving_epa", "provider": "nflverse", "dataset": "player_stats",
+      "metric_name": "receiving_epa", "value": 3.41, "units": "expected_points", "scope": "player_game",
+      "model_family": "epa", "game": "2026_04_DEN_KC", "team": "DEN", "opponent": "KC",
+      "player": {"provider": "nflverse", "provider_player_id": "00-0099001", "gsis_id": "00-0099001", "sleeper_player_id": "fixture-wr1"},
+      "definition": "Total EPA on plays where this receiver was targeted",
+      "model": {"model_name": "nflfastR expected points", "model_version": "fixture-nflfastR-ep", "sample_size": 8, "sample_scope": "targets in game", "provenance_url": "https://nflfastr.com/articles/nflfastR.html", "calculated_by": "provider"},
+      "source_url": "https://github.com/nflverse/nflverse-data/releases/tag/stats_player", "fetched_at": 1790590000,
+      "revision_status": "preliminary", "license": "nflverse"
+    },
+    {
+      "id": "wr1_xfp", "provider": "nflverse", "dataset": "ff_opportunity",
+      "metric_name": "total_fantasy_points_exp", "value": 14.2, "units": "points", "scope": "player_game",
+      "model_family": "xfp", "game": "2026_04_DEN_KC", "team": "DEN", "opponent": "KC",
+      "player": {"provider": "nflverse", "provider_player_id": "00-0099001", "gsis_id": "00-0099001", "sleeper_player_id": "fixture-wr1"},
+      "definition": "Expected fantasy points from ffopportunity weekly output",
+      "model": {"model_name": "ffopportunity", "model_version": "v1.0.0", "sample_size": 8, "sample_scope": "opportunities in game", "provenance_url": "https://ffopportunity.ffverse.com/", "calculated_by": "provider"},
+      "source_url": "https://github.com/ffverse/ffopportunity/releases", "fetched_at": 1790590000,
+      "revision_status": "preliminary", "license": "nflverse"
+    }
+  ],
+  "traded": [
+    {
+      "id": "wr2_week3_lv", "provider": "nflverse", "dataset": "player_stats",
+      "metric_name": "target_share", "value": 0.166667, "units": "ratio", "scope": "player_game",
+      "context_input": "target_share", "game": "2026_03_LV_DEN", "team": "LV", "opponent": "DEN", "home_away": "away",
+      "player": {"provider": "nflverse", "provider_player_id": "00-0099004", "gsis_id": "00-0099004", "sleeper_player_id": "fixture-wr2"},
+      "numerator": 5, "denominator": 30, "numerator_field": "targets", "denominator_field": "team_targets",
+      "definition": "Player's share of team receiving targets in this game",
+      "source_url": "https://github.com/nflverse/nflverse-data/releases/tag/stats_player", "fetched_at": 1790590000,
+      "revision_status": "final", "license": "nflverse"
+    },
+    {
+      "id": "wr2_week4_kc", "provider": "nflverse", "dataset": "player_stats",
+      "metric_name": "target_share", "value": 0.171429, "units": "ratio", "scope": "player_game",
+      "context_input": "target_share", "game": "2026_04_DEN_KC", "team": "KC", "opponent": "DEN", "home_away": "home",
+      "player": {"provider": "nflverse", "provider_player_id": "00-0099004", "gsis_id": "00-0099004", "sleeper_player_id": "fixture-wr2"},
+      "numerator": 6, "denominator": 35, "numerator_field": "targets", "denominator_field": "team_targets",
+      "definition": "Player's share of team receiving targets in this game",
+      "source_url": "https://github.com/nflverse/nflverse-data/releases/tag/stats_player", "fetched_at": 1790590000,
+      "revision_status": "preliminary", "license": "nflverse"
+    }
+  ],
+  "invalid": [
+    {"case": "missing_denominator", "base": "wr1_target_share", "patch": {"denominator": null}, "expect": "provider_denominator_missing"},
+    {"case": "zero_denominator", "base": "wr1_target_share", "patch": {"numerator": 0, "denominator": 0, "value": 0.0}, "expect": "provider_denominator_missing"},
+    {"case": "missing_numerator", "base": "wr1_tprr", "patch": {"numerator": null}, "expect": "provider_numerator_missing"},
+    {"case": "missing_definition", "base": "wr1_target_share", "patch": {"definition": null}, "expect": "provider_definition_missing"},
+    {"case": "ratio_above_one", "base": "wr1_target_share", "patch": {"value": 1.4}, "expect": "provider_invalid_percentage"},
+    {"case": "negative_ratio", "base": "wr1_target_share", "patch": {"value": -0.1}, "expect": "provider_invalid_percentage"},
+    {"case": "percent_above_hundred", "base": "wr1_target_share", "patch": {"metric_name": "percent_share_of_intended_air_yards", "dataset": "nextgen_stats", "units": "percent", "value": 140.0, "numerator": 140, "denominator": 100}, "expect": "provider_invalid_percentage"},
+    {"case": "ratio_disagrees_with_parts", "base": "wr1_target_share", "patch": {"value": 0.3}, "expect": "provider_ratio_mismatch"},
+    {"case": "mismatched_week", "base": "wr1_target_share", "patch": {"game": "2026_03_LV_DEN", "opponent": "LV", "home_away": "home"}, "expect": "provider_week_mismatch"},
+    {"case": "team_not_in_game", "base": "wr1_target_share", "patch": {"team": "BUF", "opponent": "KC"}, "expect": "provider_game_mismatch"},
+    {"case": "wrong_home_away", "base": "wr1_target_share", "patch": {"home_away": "home"}, "expect": "provider_game_mismatch"},
+    {"case": "postponed_game", "base": "wr1_target_share", "patch": {"game": "2026_04_BUF_MIA", "team": "BUF", "opponent": "MIA", "home_away": "away"}, "expect": "provider_game_not_played"},
+    {"case": "unresolved_identity", "base": "wr1_target_share", "patch": {"player": {"provider": "nflverse", "provider_player_id": "00-0099999", "gsis_id": "00-0099999", "sleeper_player_id": null}}, "expect": "provider_identity_unresolved"},
+    {"case": "missing_player", "base": "wr1_target_share", "patch": {"player": null}, "expect": "provider_identity_unresolved"},
+    {"case": "stale", "base": "wr1_target_share", "patch": {"fetched_at": 1789700000}, "expect": "provider_data_stale"},
+    {"case": "source_mismatch", "base": "wr1_target_share", "patch": {"provider": "other-provider"}, "expect": "provider_source_mismatch"},
+    {"case": "raw_payload_source_mismatch", "base": "den_implied_total", "patch": {"raw_payload": {"provider": "other-provider", "source": "schedules", "payload": {}}}, "expect": "provider_source_mismatch"},
+    {"case": "missing_provenance", "base": "wr1_target_share", "patch": {"source_url": null, "source_record_id": null}, "expect": "provider_provenance_missing"},
+    {"case": "missing_fetch_timestamp", "base": "wr1_target_share", "patch": {"fetched_at": null}, "expect": "provider_provenance_missing"},
+    {"case": "epa_without_model_family_or_model", "base": "wr1_receiving_epa", "patch": {"model_family": null, "model": null}, "expect": "provider_model_metadata_missing"},
+    {"case": "epa_without_model","base": "wr1_receiving_epa", "patch": {"model": null}, "expect": "provider_model_metadata_missing"},
+    {"case": "xfp_without_version", "base": "wr1_xfp", "patch": {"model": {"model_name": "ffopportunity", "sample_size": 8, "sample_scope": "opportunities in game", "provenance_url": "https://ffopportunity.ffverse.com/"}}, "expect": "provider_model_metadata_missing"},
+    {"case": "dvoa_without_sample", "base": "den_pressure", "patch": {"metric_name": "offense_dvoa", "dataset": "team_dvoa", "units": "index", "value": 12.5, "numerator": null, "denominator": null, "context_input": null, "model_family": "dvoa", "model": {"model_name": "DVOA", "model_version": "fixture-2026", "provenance_url": "https://example.invalid/dvoa"}}, "expect": "provider_model_metadata_missing"},
+    {"case": "war_without_provenance", "base": "wr1_receiving_epa", "patch": {"metric_name": "war", "units": "index", "model_family": "war", "model": {"model_name": "fixture-war", "model_version": "1", "sample_size": 400, "sample_scope": "season snaps"}}, "expect": "provider_model_metadata_missing"}
+  ]
+}
