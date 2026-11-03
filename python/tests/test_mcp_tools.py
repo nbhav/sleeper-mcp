@@ -7,6 +7,7 @@ import pytest
 
 import sleeper_tooling.mcp_tools as mcp_tools
 from sleeper_tooling.db import SleeperNormalizedRepository
+from sleeper_tooling.decision_reports import build_faab_hint
 from sleeper_tooling.mcp_tools import FantasyToolRunner
 
 
@@ -1910,3 +1911,275 @@ class FakeBacktestClient:
             "player": {"full_name": name, "team": "DEN", "position": "RB"},
             "stats": {"pts_ppr": points},
         }
+
+
+# --- Issue #11 coverage gaps -------------------------------------------------
+
+
+def test_my_lineup_rows_carry_availability_projection_and_lineup_status(tmp_path) -> None:
+    runner = FantasyToolRunner(
+        client_factory=lambda: FakeLineupAvailabilityClient(),
+        players_cache=tmp_path / "players.json",
+    )
+
+    report = runner.my_lineup(
+        league_id="league-1",
+        roster_id=1,
+        season=2026,
+        week=1,
+        positions="RB,WR",
+    )
+
+    # season and week are report-level fields; rows inherit them from the report.
+    assert report["season"] == 2026
+    assert report["week"] == 1
+    rows_by_id = {row["player_id"]: row for row in report["lineup_table"]}
+    expected = {
+        # player_id: (slot, lineup_status, status, injury_status, projected_points)
+        "starter-rb": ("RB", "starter", "Active", "Questionable", 10),
+        "bench-wr": ("FLEX", "starter", "Active", "", 14),
+        "bench-rb": ("BN", "bench", "Inactive", "Doubtful", 20),
+        "drop-rb": ("BN", "bench", "Active", "", 5),
+    }
+    for player_id, (slot, lineup_status, status, injury_status, projected) in expected.items():
+        row = rows_by_id[player_id]
+        assert row["slot"] == slot, player_id
+        assert row["lineup_status"] == lineup_status, player_id
+        assert row["status"] == status, player_id
+        assert row["injury_status"] == injury_status, player_id
+        assert row["projected_points"] == projected, player_id
+        assert row["active_roster_spot"] is True, player_id
+    assert [row["lineup_status"] for row in report["starters"]] == ["starter", "starter"]
+    assert [row["lineup_status"] for row in report["bench"]] == ["bench", "bench"]
+    assert rows_by_id["ir-rb"]["status"] == "Inactive"
+    assert rows_by_id["ir-rb"]["injury_status"] == "IR"
+
+
+def test_waiver_wire_by_position_default_limit_returns_ten_per_position(tmp_path) -> None:
+    runner = FantasyToolRunner(
+        client_factory=lambda: FakeDeepWaiverClient(),
+        players_cache=tmp_path / "players.json",
+    )
+
+    report = runner.waiver_wire_by_position(
+        league_id="league-1",
+        roster_id=1,
+        season=2026,
+        week=1,
+        positions="RB,WR",
+    )
+
+    assert report["per_position_limit"] == 10
+    for position in ("RB", "WR"):
+        rows = report["by_position"][position]
+        assert len(rows) == 10, position
+        returned_ids = [row["add_player_id"] for row in rows]
+        # Injury risk lowers move_score, so order follows move_score, not raw projection.
+        assert set(returned_ids) == {f"free-{position.lower()}-{rank}" for rank in range(1, 11)}
+        move_scores = [row["move_score"] for row in rows]
+        assert move_scores == sorted(move_scores, reverse=True)
+        excluded_id = f"free-{position.lower()}-11"
+        assert excluded_id not in returned_ids
+        # The 11th candidate qualifies on its own merits; only the limit drops it.
+        excluded = next(
+            row
+            for row in report["diagnostics_by_position"][position]
+            if row["add_player_id"] == excluded_id
+        )
+        assert excluded["projected_gain_over_drop"] > 0
+        assert excluded["recommendation"] in {"recommend", "watch"}
+        assert excluded["move_score"] < min(move_scores)
+        for row in rows:
+            assert row["add_position"] == position
+            assert row["projected_gain_over_drop"] > 0
+            assert row["recommendation"] in {"recommend", "watch"}
+
+
+def test_waiver_wire_by_position_rows_carry_status_and_injury_status(tmp_path) -> None:
+    client = FakeDeepWaiverClient()
+    players = client.get_players()
+    runner = FantasyToolRunner(
+        client_factory=lambda: FakeDeepWaiverClient(),
+        players_cache=tmp_path / "players.json",
+    )
+
+    report = runner.waiver_wire_by_position(
+        league_id="league-1",
+        roster_id=1,
+        season=2026,
+        week=1,
+        positions="RB,WR",
+    )
+
+    rows = report["by_position"]["RB"] + report["by_position"]["WR"]
+    assert len(rows) == 20
+    for row in rows:
+        player = players[row["add_player_id"]]
+        assert row["add_status"] == player["status"], row["add_player_id"]
+        assert row["add_injury_status"] == player["injury_status"], row["add_player_id"]
+    injury_values = {row["add_injury_status"] for row in rows}
+    assert {"", "Questionable", "Doubtful"} <= injury_values
+
+
+@pytest.mark.parametrize(
+    ("projected_gain", "candidate", "tier", "bid_pct"),
+    [
+        # aggressive: gain >= 8, or gain >= 5 with net trend >= 1000
+        (8, {}, "aggressive", 14),
+        (12.5, {}, "aggressive", 14),
+        (5, {"net_trend_count": 1000}, "aggressive", 14),
+        # standard: 4 <= gain < 8 (unless the trend boost applies)
+        (7.99, {}, "standard", 9),
+        (5, {"net_trend_count": 999}, "standard", 9),
+        (4.99, {"net_trend_count": 1000}, "standard", 9),
+        (4, {}, "standard", 9),
+        # speculative: 1.5 <= gain < 4
+        (3.99, {}, "speculative", 5),
+        (3.99, {"net_trend_count": 5000}, "speculative", 5),
+        (1.5, {}, "speculative", 5),
+        # watch: 0 < gain < 1.5, or trend >= 1000, or rostered >= 40
+        (1.49, {}, "watch", 2),
+        (1.2, {"net_trend_count": 1000}, "watch", 2),
+        (0.01, {}, "watch", 2),
+        (0, {"net_trend_count": 1000}, "watch", 2),
+        (-3, {"net_trend_count": 1000}, "watch", 2),
+        (0, {"rostered_percent": 40}, "watch", 2),
+        # pass: nothing above
+        (0, {}, "pass", 0),
+        (-2, {}, "pass", 0),
+        (0, {"net_trend_count": 999}, "pass", 0),
+        (0, {"rostered_percent": 39.9}, "pass", 0),
+    ],
+)
+def test_build_faab_hint_tiers_and_boundaries(projected_gain, candidate, tier, bid_pct) -> None:
+    hint = build_faab_hint(projected_gain, {"projected_points": 10, **candidate})
+
+    assert hint["tier"] == tier
+    assert hint["bid_pct"] == bid_pct
+    assert hint["reasoning"]
+
+
+@pytest.mark.parametrize(
+    ("projected_gain", "candidate", "reasoning"),
+    [
+        (
+            8,
+            {"projected_points": 18, "net_trend_count": 1200, "rostered_percent": 55},
+            "projects 8.00 points above the drop candidate; net add trend is +1200; "
+            "rostered percentage signal is 55.0",
+        ),
+        (
+            4.257,
+            {"projected_points": 12},
+            "projects 4.26 points above the drop candidate",
+        ),
+        (
+            2,
+            {"projected_points": 9, "net_trend_count": -40},
+            "projects 2.00 points above the drop candidate; net add trend is -40",
+        ),
+        (
+            0,
+            {"projected_points": 0, "rostered_percent": 41.25},
+            "does not project above the drop candidate; rostered percentage signal is 41.2; "
+            "projection is currently zero",
+        ),
+        (
+            -1,
+            {"projected_points": 3, "rostered_percent": 0},
+            "does not project above the drop candidate",
+        ),
+    ],
+)
+def test_build_faab_hint_reasoning_strings(projected_gain, candidate, reasoning) -> None:
+    assert build_faab_hint(projected_gain, candidate)["reasoning"] == reasoning
+
+
+def test_trade_opportunities_returns_multiple_targets_and_offer_angles(tmp_path) -> None:
+    runner = FantasyToolRunner(
+        client_factory=lambda: FakeTradeClient(),
+        players_cache=tmp_path / "players.json",
+    )
+
+    report = runner.trade_opportunities(
+        league_id="league-1",
+        roster_id=1,
+        season=2026,
+        week=1,
+        positions="QB,RB,WR,TE",
+        targets_per_team=3,
+        offers_per_team=3,
+    )
+
+    wr_rich = next(team for team in report["teams"] if team["team_name"] == "WR Rich")
+    assert len(wr_rich["targets"]) > 1
+    assert len(wr_rich["offer_angles"]) > 1
+    for target in wr_rich["targets"]:
+        assert isinstance(target["projected_lineup_gain"], (int, float)), target["name"]
+        assert "upgrade_over" in target
+        assert target["target_reason"], target["name"]
+    for angle in wr_rich["offer_angles"]:
+        assert isinstance(angle["projected_lineup_gain"], (int, float))
+        assert isinstance(angle["my_gain"], (int, float))
+        assert angle["ask"] and angle["offer"]
+        assert angle["reasoning_summary"]
+    assert wr_rich["reasoning"]
+
+
+class FakeLineupAvailabilityClient(FakeLineupClient):
+    def get_players(self, *, position=None, active=None, sport="nfl") -> dict[str, dict[str, object]]:
+        players = super().get_players(position=position, active=active, sport=sport)
+        players["starter-rb"] = {**players["starter-rb"], "injury_status": "Questionable"}
+        players["bench-rb"] = {
+            **players["bench-rb"],
+            "status": "Inactive",
+            "injury_status": "Doubtful",
+        }
+        return players
+
+
+DEEP_WAIVER_INJURIES = ["", "Questionable", "", "Doubtful", "", "", "Questionable", "", "", "", ""]
+
+
+class FakeDeepWaiverClient(FakeLineupClient):
+    """Eleven unrostered candidates per position with strictly descending projections."""
+
+    def get_players(self, *, position=None, active=None, sport="nfl") -> dict[str, dict[str, object]]:
+        players = {
+            player_id: player
+            for player_id, player in super().get_players(position=position, active=active, sport=sport).items()
+            if player_id not in {"free-rb", "watch-wr"}
+        }
+        for pos in ("RB", "WR"):
+            for rank in range(1, 12):
+                players[f"free-{pos.lower()}-{rank}"] = {
+                    "full_name": f"Free {pos} {rank}",
+                    "team": "NYG",
+                    "position": pos,
+                    "fantasy_positions": [pos],
+                    "status": "Active",
+                    "injury_status": DEEP_WAIVER_INJURIES[rank - 1],
+                }
+        return players
+
+    def get_trending_players(self, trend_type, *, sport="nfl", lookback_hours=24, limit=25):
+        return []
+
+    def _rows(self, position: str | None, *, projected: bool) -> list[dict[str, object]]:
+        base = [
+            row
+            for row in super()._rows(position, projected=projected)
+            if row["player_id"] not in {"free-rb", "watch-wr"}
+        ]
+        if position not in {"RB", "WR"}:
+            return base
+        return base + [
+            self._row(
+                f"free-{position.lower()}-{rank}",
+                f"Free {position} {rank}",
+                "NYG",
+                position,
+                4.0 - 0.25 * rank,
+            )
+            for rank in range(1, 12)
+        ]
