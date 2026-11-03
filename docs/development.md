@@ -15,6 +15,7 @@ All development commands run through Docker or Docker Compose. Do not install Py
 | `make worker-build` | Build the Cloudflare Worker Docker image. |
 | `make worker-install` | Install Worker dependencies inside Docker with `npm ci`. |
 | `make worker-typecheck` | Typecheck the Cloudflare Worker inside Docker. |
+| `make worker-test` | Run the Cloudflare Worker tests inside Docker. |
 | `make worker-dev` | Run Wrangler dev inside Docker. |
 | `make worker-deploy` | Deploy the Cloudflare Worker through Docker. |
 | `make local-up` | Prepare local Docker workflow dependencies by building Python images and installing Worker dependencies in Docker. |
@@ -45,11 +46,12 @@ Run live Sleeper API smoke tests:
 make integration-test
 ```
 
-Run Worker typecheck:
+Run Worker typecheck and tests:
 
 ```bash
 make worker-install
 make worker-typecheck
+make worker-test
 ```
 
 After local Docker workflow checks:
