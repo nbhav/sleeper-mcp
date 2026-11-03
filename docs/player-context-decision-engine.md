@@ -442,16 +442,16 @@ Production quality metrics:
 
 Role-change flags:
 
-- `rb_touch_share_rise`: last-2 touches are at least 30% above baseline or at
-  least 5 touches per game above baseline.
+- `rb_touch_share_rise`: last-2 weighted touches are at least 30% above baseline or at
+  least 5 weighted touches per game above baseline.
 - `rb_receiving_role_rise`: targets rise by at least 2 per game.
 - `injury_replacement`: depth or availability context shows a player ahead of
   him is out or limited.
 
 Spike and one-off flags:
 
-- `low_touch_big_points`: at least 15 fantasy points on fewer than 10 touches.
-- `td_only_low_usage`: TDs create at least 40% of points and total touches are
+- `low_touch_big_points`: at least 15 fantasy points on fewer than 10 weighted touches.
+- `td_only_low_usage`: TDs create at least 40% of points and weighted touches are
   fewer than 12.
 - `long_run_spike_unconfirmed`: high yards on low carries without target or
   workload growth.
@@ -707,7 +707,7 @@ Create explicit flags:
 - `td_spike_low_usage`: High points, low opportunity, TD-heavy.
 - `injury_replacement`: Role likely tied to another player's injury/status.
 - `low_route_big_points`: WR/TE production without enough routes.
-- `low_touch_big_points`: RB production without enough touches.
+- `low_touch_big_points`: RB production without enough weighted touches (`rush_att + rec_tgt`).
 - `turnover_td_spike`: DEF production from volatile defensive scores.
 - `projection_disagreement`: Actuals rising while projections remain low, or projections high while actuals are weak.
 - `depth_chart_disagreement`: Production rising while depth chart remains low.
