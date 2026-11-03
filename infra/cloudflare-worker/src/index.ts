@@ -295,7 +295,16 @@ export default {
       return jsonResponse({ error: "method not allowed" }, 405);
     }
 
-    const message = (await request.json()) as JsonMap;
+    let parsed: unknown;
+    try {
+      parsed = await request.json();
+    } catch {
+      return jsonResponse({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } });
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return jsonResponse({ jsonrpc: "2.0", id: null, error: { code: -32600, message: "Invalid Request" } });
+    }
+    const message = parsed as JsonMap;
     const id = message.id;
     try {
       const result = await handleMcpMessage(message, env);

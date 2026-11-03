@@ -111,6 +111,36 @@ test("worker handles MCP lifecycle, notifications, and unknown messages", async 
   assert.equal((unknownTool.body.error as Record<string, unknown>).message, "Unknown tool: not_a_tool");
 });
 
+function rawRequest(body: string): Request {
+  return new Request("https://worker.test/mcp", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body
+  });
+}
+
+test("worker returns a JSON-RPC parse error for malformed JSON bodies", async () => {
+  const malformed = await envelope(rawRequest("{not json"));
+  assert.equal(malformed.response.status, 200);
+  assert.deepEqual(malformed.body, {
+    jsonrpc: "2.0",
+    id: null,
+    error: { code: -32700, message: "Parse error" }
+  });
+});
+
+test("worker returns a JSON-RPC invalid request error for non-object bodies", async () => {
+  for (const body of ["null", "[]", JSON.stringify([{ jsonrpc: "2.0", id: 1, method: "tools/list" }]), "\"text\"", "42"]) {
+    const invalid = await envelope(rawRequest(body));
+    assert.equal(invalid.response.status, 200, body);
+    assert.deepEqual(invalid.body, {
+      jsonrpc: "2.0",
+      id: null,
+      error: { code: -32600, message: "Invalid Request" }
+    }, body);
+  }
+});
+
 test("worker caches raw API responses in D1 between identical requests", async () => {
   const rows = new Map<string, string>();
   const statements: string[] = [];
