@@ -692,6 +692,22 @@ def test_player_context_golden_fixtures_execute_behaviorally() -> None:
         assert result["reason_codes"] == expected_reason_codes, fixture["id"]
         assert result["capped_modifiers"] == expected["capped_modifiers"], fixture["id"]
         assert all(reason["code"] in result["reason_codes"] for reason in result["reasons"]), fixture["id"]
+        if "trend_window" in expected:
+            for key, value in expected["trend_window"].items():
+                assert result["trend_window"][key] == value, fixture["id"]
+
+
+def test_player_context_golden_fixtures_cover_injury_replacement_and_post_change_window() -> None:
+    by_id = {fixture["id"]: fixture for fixture in PLAYER_USAGE_CONTEXT_GOLDEN_FIXTURES}
+    injury = by_id["rb_injury_fill_in"]
+    assert injury["expected"] == {"reason_codes": ["role_change_recent", "injury_replacement"], "capped_modifiers": {"context": 2.0}}
+    assert injury["inputs"]["teammate_availability"]["evidence_source"] == "player_week_availability"
+    assert all("injury_fill_in" not in row for row in injury["inputs"]["recent_weeks"])
+    post_change = by_id["rb_role_change_week4_eval_week7"]
+    result = evaluate_player_usage_context(post_change["position"], post_change["inputs"])
+    assert result["trend_window"]["name"] == "post_change_window"
+    assert result["trend_window"]["weeks"] == [4, 5, 6, 7]
+    assert result["trend_window"]["change_point"]["change_week"] == 4
 
 
 def test_player_context_recent_window_is_compared_against_earlier_season_rows() -> None:

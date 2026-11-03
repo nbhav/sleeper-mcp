@@ -152,12 +152,187 @@ Sleeper-only v1 should avoid weak guesses. For example, do not emit
 `low_route_big_points` unless route data exists; emit
 `not_evaluable_missing_routes` instead.
 
-## Derived Metrics Contract (player_usage_context.v2)
+## Derived Metrics Contract (player_usage_context.v3)
 
-`player_usage_context` output is versioned `player_usage_context.v2`
+`player_usage_context` output is versioned `player_usage_context.v3`
 (`PLAYER_USAGE_CONTEXT_SCHEMA_VERSION` in
 `python/src/sleeper_tooling/player_usage_context_rules.py`, mirrored by the
-Worker constant of the same name). v2 changes from v1:
+Worker constant of the same name).
+
+### Why v3
+
+v3 changes the meaning of an existing field and adds new ones, so consumers must
+be able to tell the versions apart:
+
+- `td_dependency_score` changed meaning. v2 used a fixed `td_count * 20 /
+  points` heuristic. v3 reports the league-scoring TD share on a 0-100 scale,
+  and the score can be `null`.
+- The trend window can now be `post_change_window`. This changes which weeks
+  feed `role_change_recent`/`role_loss_recent` and the opportunity scores.
+- New fields: `trend_window`, `windows.post_change_window`, `td_dependency`,
+  `td_dependency_method`, `projection_comparison`, and `injury_replacement`.
+- New reason codes: `injury_replacement`,
+  `not_evaluable_missing_teammate_availability`, and
+  `not_evaluable_missing_scoring_contributions`.
+- One reason code was renamed: `not_evaluable_missing_red_zone_use` is now
+  `not_evaluable_missing_red_zone_share`.
+- The new role label is `injury_fill_in`.
+- `points` is `null` when a row has no points value; v2 used 0.0. For actual
+  rows, `points` is league `fantasy_points` when present, otherwise Sleeper
+  `sleeper_points`.
+- The derived block is now `player_usage_derived_metrics.v2`, because it adds a
+  `post_change_window` window when a change is detected.
+
+### League-scoring TD dependency (Python and Worker)
+
+- **Source:** the `player_week_scoring_values` rows that
+  `scoring.calculate_fantasy_points` writes at sync time. Each row is the league
+  points awarded for one stat key.
+- **Denominator:** the league `player_week_rows.fantasy_points`. It is non-null
+  only when league scoring ran.
+- **Formula:** `td_dependency.value = sum(TD-scoring contribution points) /
+  sum(league fantasy_points)`, a ratio of sums over the trend window. The score
+  is `td_dependency_score = clamp(100 * value, 0, 100)`.
+- **TD-scoring keys:** contribution keys that end in `_td` or contain `_td_`.
+  Examples: `pass_td`, `rush_td`, `rec_td`, `def_td`, `def_st_td`, `st_td`,
+  `fum_rec_td`, `rec_td_40p`, and `bonus_def_int_td_50p`. `pass_int_td` is
+  excluded because it is a pick-six penalty (-1 in this league), not touchdown
+  value.
+- **Recorded keys:** `td_scoring_keys_used` lists the keys that contributed, and
+  `excluded_keys_present` lists the excluded keys that appeared.
+- **Missing data:** a window row is missing when it has no raw row, when
+  `fantasy_points` is null, or when the repository has no scoring-values
+  primitive. If any window row is missing, the value and score are `null` and
+  `not_evaluable_missing_scoring_contributions` is emitted. There is no
+  heuristic fallback.
+- **Real zero:** an empty contribution set with non-null `fantasy_points` is a
+  real zero, because zero-point keys are not stored. A non-positive denominator
+  gives `denominator_non_positive`.
+- **`td_dependency.position_formula`:** evaluates `TD_DEPENDENCY_FORMULAS` as
+  code and reports its `numerator_keys_used`, `value`, `dependency_threshold`,
+  and `above_threshold`. The formulas are evidence only and change no
+  modifiers:
+
+  | Position | Formula |
+  |---|---|
+  | QB | passing TD points / points |
+  | RB | rushing and receiving TD points / points |
+  | WR/TE | receiving TD points / points |
+  | K | long-FG points (`fgm_50_59`, `fgm_60p`, `fgm_50p`) / points |
+  | DEF | all TD and turnover (`int`, `fum_rec`) points / points |
+
+- **Kicker in a yardage-scored league:** when a league scores field goals by
+  yardage (`fgm_yds`) and its distance buckets are 0, as this league's are, the
+  K formula is `not_evaluable_long_field_goal_points_not_separable`.
+- **`long_kick_point_share` for K rows:** the same K formula is applied to each
+  row. In v2 Python never computed this field, and the Worker read
+  `fgm_50_plus`, a key that never appears in Sleeper data. The share feeds
+  `long_kick_spike` (>= 0.40) only when it is non-null. In this league it is
+  always null, so spike behavior is unchanged here. In a league that scores
+  distance buckets, a kicker whose long-FG bucket points reach 40% of his
+  points now triggers `long_kick_spike`.
+- **Worker:** `player_usage_context` now resolves league scoring through
+  `league_id` or `SLEEPER_DEFAULT_LEAGUE_ID` and computes the same breakdown
+  with `calculateFantasyPoints`. Rows then carry league `points`,
+  `scoring_breakdown`, and `td_dependency_method:
+  "league_scoring_contributions"`. Without league scoring settings, the Worker
+  keeps the v2 heuristic and labels it `td_dependency_method: "heuristic"`
+  (`td_dependency.reason: "league_scoring_settings_unavailable"`). Python never
+  uses the heuristic. Consumers must read `td_dependency_method` before
+  comparing `td_dependency_score` across runtimes.
+
+### Change points and `post_change_window` (Python and Worker)
+
+`detect_change_point` (Python) and `detectWorkerChangePoint` (Worker) run on
+the position opportunity series:
+
+| Position | Opportunity metric |
+|---|---|
+| QB | `dropbacks` |
+| RB | `weighted_touches` |
+| WR/TE | `targets` |
+| K | `total_kick_attempts` |
+| DEF | `sacks` |
+
+The series uses active, non-bye actual weeks that have the metric. The rule:
+
+- The change week is the earliest week `i` that meets all of these conditions:
+  - At least 1 week comes before `i`.
+  - At least 2 weeks run from `i` through the latest week.
+  - Every week from `i` through the latest week clears the position role
+    threshold against the mean of the weeks before `i`, all in the same
+    direction. The thresholds come from `POSITION_USAGE_THRESHOLDS`: the change
+    must be greater than `increase_pct`, or at least `increase_per_game`.
+- `post_change_window` is weeks `i` through the latest week, and
+  `pre_change_baseline` is the weeks before `i`.
+- When a change is detected, the role signal compares those two windows instead
+  of using the fixed `last_2_weeks`/`last_3_weeks` split. Opportunity scores and
+  TD dependency also use `post_change_window`. Spike and `season_average_stale`
+  checks still read the last two weeks.
+- A single-week spike never qualifies. Neither does a shift that reverts before
+  the latest week, or a series with fewer than 3 eligible weeks.
+- Output:
+  - `trend_window`: `name`, `weeks`, `baseline_weeks`, and `change_point`.
+  - `windows.post_change_window`: always present, with `detected` and `status`.
+  - `derived_metrics.windows.post_change_window`: only when a change is
+    detected.
+- Example: the golden fixture `rb_role_change_week4_eval_week7` has
+  `weighted_touches` of 10, 10, 10, 14, 14, 14, 14. It detects the change at
+  Week 4 and compares weeks 4-7 against weeks 1-3 (+40%), which gives
+  `role_change_recent`. The v2 fixed split compared weeks 6-7 against weeks 1-5
+  (+20.7%, +2.4 per game), which is stable.
+- The Worker mirrors the rule, but uses float arithmetic where Python uses
+  Decimal, and keeps its pct-only role threshold for the signal itself.
+
+### `injury_replacement` (Python only)
+
+- **Trigger:** `role_change_recent` for an RB, WR, or TE.
+- **Evidence:** `player_week_availability` rows for the player's team in each
+  trend-window week. The evidence reports each row's `source` and
+  `snapshot_at`. Real rows today come from
+  `sleeper_players_current_metadata`, captured at sync time.
+- **Rule:** `injury_replacement` is emitted when one teammate meets all of these
+  conditions:
+  - Same team and same `players.position`.
+  - Absent in every trend-window week. Absent means `status` in {out,
+    inactive, ir, reserve} or `injury_status` in {out, ir}, the same check that
+    marks a player's own week inactive.
+  - Averaged at least the position's `increase_per_game` in actual opportunity
+    over the pre-change baseline weeks: RB 5 weighted touches, WR 2.5 targets,
+    TE 2 targets. This keeps buried IR players from qualifying.
+- **Modifier:** `injury_replacement` adds context -2.0, so the net is +2.0
+  against +4.0 for a durable `role_change_recent`. The role label becomes
+  `injury_fill_in`.
+- **Missing data:** if any trend-window week has no availability rows for the
+  team, the result is `not_evaluable_missing_teammate_availability` and no
+  modifier applies. This is never a guess.
+- **Rules layer:** the pure rules function evaluates injury replacement only
+  when `inputs` contains `teammate_availability`. The service always supplies
+  it for RB/WR/TE.
+- **Worker:** it has no availability store, so it always emits
+  `not_evaluable_missing_teammate_availability` with an RB/WR/TE role increase.
+- **Golden fixture `rb_injury_fill_in`:**
+  - Inputs: the unsourced `injury_fill_in: true` row flags are replaced by an
+    explicit `teammate_availability` block. That block has
+    `evidence_source: player_week_availability` and the starter absent in
+    weeks 4-5 with an 18.0 baseline.
+  - Expected output: was `["role_change_recent"]` with `{"context": 4.0}`, is
+    now `["role_change_recent", "injury_replacement"]` with
+    `{"context": 2.0}`.
+
+### Projection presence (Python and Worker)
+
+- `projection_comparison` has one entry per actual week with:
+  - `projection_row_present`.
+  - `projection_key_present`, a map of `points` and the exact opportunity keys.
+  - `projected_points` and `projected_values`, which are null when absent.
+  - `projection_delta` (projected - actual points), which exists only when the
+    same-week row and its points key are present.
+- The legacy `projection_delta` on recent rows is now same-week only. v2
+  compared the latest actual row with the latest projection row, which could be
+  different weeks.
+
+### v2 changes from v1 (still in force)
 
 - Row fields read exact canonical Sleeper keys (`STAT_KEYS` /
   `POSITION_STAT_KEYS` in `player_usage_context.py`). There are no fallback
@@ -175,8 +350,8 @@ Worker constant of the same name). v2 changes from v1:
   unchanged. The missing-input code is now
   `not_evaluable_missing_weighted_touches`. The new `touches = rush_att + rec`
   is evidence only.
-- `last_1_week` is added to the trend windows. `post_change_window` is not
-  implemented yet.
+- `last_1_week` is added to the trend windows. (`post_change_window` was added
+  in v3; see above.)
 - Absolute air yards (`rec_air_yd`, `pass_air_yd`) are available evidence. The
   WR missing input is now `air_yard_share`
   (`not_evaluable_missing_air_yard_share`), because Sleeper has no team
@@ -185,11 +360,12 @@ Worker constant of the same name). v2 changes from v1:
 ### `derived_metrics` evidence block (Python only)
 
 The Python `player_usage_context` adds a `derived_metrics` section
-(`player_usage_derived_metrics.v1`, built by `compute_derived_metrics`). The
-Worker emits the v2 row fields and windows but **not** `derived_metrics`.
+(`player_usage_derived_metrics.v2`, built by `compute_derived_metrics`). The
+Worker emits the v3 row fields and windows but **not** `derived_metrics`.
 
 The section has one entry per trend window (`last_1_week`, `last_2_weeks`,
-`last_3_weeks`, `last_4_weeks`, `season_to_date`). Each window lists its active,
+`last_3_weeks`, `last_4_weeks`, `season_to_date`, plus `post_change_window` only
+when a change point is detected). Each window lists its active,
 non-bye weeks, `sample_size`, `minimum_samples`, and `sufficient_sample`. Each
 metric record has these fields:
 
@@ -246,9 +422,8 @@ and is a team-offensive-snap proxy, not a position-specific snap share.
 These metrics are evidence and proxies only. They do not feed waiver or lineup
 scoring, and they do not include route share, target share, carry share,
 air-yard share, xFP, EPA, DVOA, WAR, pace, pressure rate, or opponent-adjusted
-efficiency. TD dependency still uses the v1 heuristic. League-scoring
-contributions, projection row/key presence flags, and `post_change_window` are
-planned follow-ups.
+efficiency. TD dependency (league scoring contributions), projection row/key
+presence flags, and `post_change_window` are covered in the v3 sections above.
 
 ## Core Derived Scores
 

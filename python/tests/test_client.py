@@ -45,6 +45,8 @@ EXPECTED_PLAYER_CONTEXT_REASON_CODES = (
     "rb_touch_share_rise",
     "rb_receiving_role_rise",
     "injury_replacement",
+    "not_evaluable_missing_teammate_availability",
+    "not_evaluable_missing_scoring_contributions",
     "long_run_spike_unconfirmed",
     "wr_target_role_rise",
     "wr_depth_chart_breakout",

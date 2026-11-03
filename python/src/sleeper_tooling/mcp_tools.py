@@ -266,8 +266,14 @@ class FantasyToolRunner:
             "td_dependency_score",
             "context_confidence",
         )
+        # A score can be null (td_dependency_score when league scoring
+        # contributions are missing); its delta is then null, never 0.
         deltas = {
-            key: round(float(left["scores"].get(key, 0)) - float(right["scores"].get(key, 0)), 2)
+            key: (
+                round(float(left["scores"][key]) - float(right["scores"][key]), 2)
+                if left["scores"].get(key) is not None and right["scores"].get(key) is not None
+                else None
+            )
             for key in score_keys
         }
         decision_scores = {
@@ -2092,12 +2098,15 @@ def parse_positions(positions: str) -> list[str]:
 
 def _usage_decision_score(profile: dict[str, Any]) -> float:
     scores = profile.get("scores", {})
+    # Null scores (for example td_dependency_score without league scoring
+    # contributions) add nothing; the profile carries the explicit
+    # not_evaluable_missing_* reason code instead.
     positive = sum(
-        float(scores.get(key, 0))
+        float(scores.get(key) or 0)
         for key in ("opportunity_score", "role_stability_score", "production_quality_score", "context_confidence")
     )
     risk = sum(
-        float(scores.get(key, 0))
+        float(scores.get(key) or 0)
         for key in ("td_dependency_score", "small_sample_risk", "one_off_risk")
     )
     return round(positive - risk, 2)
