@@ -220,7 +220,8 @@
     {"case": "raw_payload_source_mismatch", "base": "den_implied_total", "patch": {"raw_payload": {"provider": "other-provider", "source": "schedules", "payload": {}}}, "expect": "provider_source_mismatch"},
     {"case": "missing_provenance", "base": "wr1_target_share", "patch": {"source_url": null, "source_record_id": null}, "expect": "provider_provenance_missing"},
     {"case": "missing_fetch_timestamp", "base": "wr1_target_share", "patch": {"fetched_at": null}, "expect": "provider_provenance_missing"},
-    {"case": "epa_without_model", "base": "wr1_receiving_epa", "patch": {"model": null}, "expect": "provider_model_metadata_missing"},
+    {"case": "epa_without_model_family_or_model", "base": "wr1_receiving_epa", "patch": {"model_family": null, "model": null}, "expect": "provider_model_metadata_missing"},
+    {"case": "epa_without_model","base": "wr1_receiving_epa", "patch": {"model": null}, "expect": "provider_model_metadata_missing"},
     {"case": "xfp_without_version", "base": "wr1_xfp", "patch": {"model": {"model_name": "ffopportunity", "sample_size": 8, "sample_scope": "opportunities in game", "provenance_url": "https://ffopportunity.ffverse.com/"}}, "expect": "provider_model_metadata_missing"},
     {"case": "dvoa_without_sample", "base": "den_pressure", "patch": {"metric_name": "offense_dvoa", "dataset": "team_dvoa", "units": "index", "value": 12.5, "numerator": null, "denominator": null, "context_input": null, "model_family": "dvoa", "model": {"model_name": "DVOA", "model_version": "fixture-2026", "provenance_url": "https://example.invalid/dvoa"}}, "expect": "provider_model_metadata_missing"},
     {"case": "war_without_provenance", "base": "wr1_receiving_epa", "patch": {"metric_name": "war", "units": "index", "model_family": "war", "model": {"model_name": "fixture-war", "model_version": "1", "sample_size": 400, "sample_scope": "season snaps"}}, "expect": "provider_model_metadata_missing"}

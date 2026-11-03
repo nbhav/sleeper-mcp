@@ -237,6 +237,11 @@ RATIO_UNITS: frozenset[MetricUnit] = frozenset(
 )
 
 
+MODEL_VALUE_UNITS: frozenset[MetricUnit] = frozenset(
+    {MetricUnit.EXPECTED_POINTS, MetricUnit.INDEX}
+)
+
+
 class RevisionStatus(StrEnum):
     PRELIMINARY = "preliminary"
     FINAL = "final"
@@ -759,7 +764,9 @@ def _validate_ratio(obs: ProviderMetricObservation, add: Any, tolerance: float) 
 
 def _is_model_metric(obs: ProviderMetricObservation) -> bool:
     family = (obs.model_family or "").lower()
-    if family in MODEL_METRIC_FAMILIES:
+    # Model-valued units are enforced even when an adapter omits model_family,
+    # so provider EPA/DVOA/WAR cannot bypass the metadata requirement.
+    if family in MODEL_METRIC_FAMILIES or obs.units in MODEL_VALUE_UNITS:
         return obs.model is None or obs.model.calculated_by == "provider"
     return False
 

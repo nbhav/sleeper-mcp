@@ -45,7 +45,7 @@ Related docs: [Player Context Source Audit](player-context-source-audit.md)
 |---|---|---|---|---|---|
 | **nflverse** (nflreadpy loaders over `nflverse-data` GitHub releases) | Open data | Parquet/CSV release files. `nflreadpy==0.1.5` is already a dependency (`python/pyproject.toml`) | Free | No key. Configurable cache (`NFLREADPY_CACHE`, `_DIR`, `_DURATION`) ([config][nflreadpy-config]). GitHub release download limits **unverified** | Package MIT. Most data CC-BY 4.0. FTN-sourced data CC-BY-SA 4.0 ([nflreadpy][nflreadpy], [LICENSE][nflverse-license], [load_ftn_charting][nflreadr-ftn]) |
 | **SportsDataIO** (formerly FantasyData) | Commercial REST | `https://api.sportsdata.io/v3/nfl/{scores\|stats\|odds}/json/...` ([API docs][sdio-api]) | Fantasy $99/mo or $599/yr. Odds $99/mo or $599/yr. Fantasy + Odds $149/mo or $899/yr. Free tier with last season's data ([getting started][sdio-start]) | `key` query parameter or `Ocp-Apim-Subscription-Key` header ([API docs][sdio-api]). 100–1,000 calls/day on Discovery Lab tiers. The trial returns scrambled data ([getting started][sdio-start]). The API docs page says the free trial covers only the UEFA Champions League, which **conflicts** with the getting-started page | Discovery Lab data is "not licensed for commercial redistribution". Trial data cannot be used for analysis or display. Storage, caching, and MCP-exposure rights for paid tiers are **unverified** |
-| **Sportradar NFL** | Enterprise REST | Schedules, game statistics, play-by-play, weekly depth charts, injuries, and seasonal stats ([NFL overview][sr-overview]) | Not published (**unverified**, sales-led) | Trial: 30 days, 1,000 requests per rolling 30 days, 1 QPS, with production-quality data ([account docs][sr-account]) | **Unverified** |
+| **Sportradar NFL** | Enterprise REST | Schedules, game statistics, play-by-play, weekly depth charts, injuries, and seasonal stats ([NFL overview][sr-overview]) | Not published (**unverified**, sales-led) | Trial: 30 days, 1,000 requests per rolling 30 days, 1 QPS, with production-quality data ([account docs][sr-account], from a search-result summary, not a direct fetch) | **Unverified** |
 | **FTN Data** | Commercial charting API | REST JSON "Advanced Charted NFL Data and Player Participation" (search-result snippet; [ftnfantasy.com/data][ftn-data] returned 403) | A $5,000 entry package with charting back to 2019 appears in a search snippet only (**unverified**). DVOA is an add-on (**unverified**) | **Unverified** | **Unverified**. The subset nflverse republishes is CC-BY-SA 4.0 ([load_ftn_charting][nflreadr-ftn]) |
 | **PFF** | Commercial grades/charting | Pro tier includes "API and programmatic data access" via API or CLI ([PFF premium][pff-premium]) | $199.99/yr ([PFF premium][pff-premium]) | **Unverified** (see developer.pff.com) | Not stated on the page (**unverified**) |
 | **NFL Savant** | Public site / CSV | The site exposes no documented API. The about page returned no content ([about][savant-about]) | **Unverified** | **Unverified** | **Unverified**. Research-only, per the owner's comment on #42 |
@@ -81,6 +81,9 @@ Units: `ratio` is 0–1 and `percent` is 0–100.
 | Red-zone opportunity | **D** | pbp `yardline_100 <= 20` with `receiver_player_id` or `rusher_player_id`. Denominator: team plays inside the 20 ([pbp dictionary][nflreadr-dict-pbp]) | 1999+ | As above |
 | Air-yard share | **Y** | `receiving_air_yards` (includes incompletions), `air_yards_share`, `wopr` = 1.5 × target_share + 0.7 × air_yards_share ([playerstats dictionary][nflreadr-dict-ps-csv]). NGS `percent_share_of_intended_air_yards` is a **percent**, 0–100 ([NGS dictionary][nflreadr-dict-ngs]) | pbp 1999+. NGS 2016+ ([load_nextgen_stats][nflreadr-ngs]) | NGS updates nightly. NGS applies a minimum-attempt threshold, so an absent row is not zero ([load_nextgen_stats][nflreadr-ngs]) |
 | Explosive rates | **D** | pbp `rushing_yards` / `receiving_yards` / `air_yards` at a local threshold (proposed: rush ≥ 10, pass ≥ 20), over team plays of that type. Threshold and version belong in `definition` and `calculation_version` | 1999+ | Nightly |
+| Route efficiency (receptions, yards, first downs, targets per route) | **N** | Numerators exist: `receptions`, `receiving_yards`, `receiving_first_downs`, `targets` ([dictionary][nflreadr-dict-ps-json]). There is no all-routes denominator, so TPRR, YPRR, and first downs per route are `not_evaluable_missing_routes` | – | – |
+| Defensive matchup (opponent volume, efficiency, sacks allowed, turnovers, explosives, pressure allowed) | **D / P** | pbp grouped by `defteam`: plays, `epa`, `pass_attempt`, `rush_attempt`, sacks, `interception`, `fumble_lost`, explosive plays at the local threshold ([pbp dictionary][nflreadr-dict-pbp]). Pressure allowed has the same limits as the Pressure row | 1999+ | Nightly. A `calculation_version` is required |
+| Kicker / game context (scoring opportunities, venue, roof, wind) | **D / Y** | pbp field-goal and extra-point attempts with `yardline_100` (kick distance), drives ending inside the opponent 30 (local definition), schedules `roof`, `surface`, `wind`, `temp`, `stadium_id` ([dictionaries][nflreadr-dict-schedules]) | 1999+ | Nightly. Schedules every 5 min |
 | Neutral pace | **D** | pbp `wp`, `qtr`, `half_seconds_remaining`, `game_seconds_remaining`, `pass_oe`/`xpass` ([pbp dictionary][nflreadr-dict-pbp]). Proposed definition: offensive plays with 0.20 ≤ wp ≤ 0.80, qtr ≤ 4, and more than 120 s left in the half. Unit: seconds per play | 1999+ | Nightly |
 | Pressure | **P / Y (lagged)** | pbp `qb_hit`, sacks (outcomes only). Participation `was_pressure`, `number_of_pass_rushers`, `time_to_throw` ([dictionary][nflreadr-dict-participation]) arrive only after the postseason for 2023+. FTN charting has `n_pass_rushers` and `n_blitzers` but no pressure field ([FTN dictionary][nflreadr-dict-ftn]). `load_pfr_advstats` has `times_pressured` and `pressure_pct` ([PFR dictionary][nflreadr-dict-pfr]). Weekly availability of the pressure columns is **unverified**, since "some data is only available at the season level" ([load_pfr_advstats][nflreadr-pfr]) | Participation 2016+. PFR 2018+. FTN 2022+ | FTN charting is done "within 48 hours" of each game ([load_ftn_charting][nflreadr-ftn]) and updates four times daily ([data schedule][nflverse-schedule]) |
 | Schedule / game identity | **Y** | `load_schedules`: `game_id` = season_week_away_home, `gameday`, `gametime` (24-hour, **US Eastern**), `home_team`, `away_team`, `location` (Home/Neutral), plus alternate game ids `old_game_id`, `gsis`, `pfr`, `pff`, `espn` ([schedules dictionary][nflreadr-dict-schedules]) | All seasons ([load_schedules][nflreadr-schedules]) | Every 5 minutes in season ([data schedule][nflverse-schedule]) |
@@ -100,12 +103,41 @@ The field names below come from its NFL data dictionary ([data dictionary][sdio-
 | Routes, route participation, yards per route | **U** | Listed as "Route Participation", "Yards / Pass Route", and "Fantasy Points / Pass Route" in a 2019 PlayerProfiler partnership PDF ([advanced metrics PDF][sdio-pdf]). The current data dictionary has no field containing "route" ([data dictionary][sdio-dict]). Needs a trial payload |
 | Snaps + team denominators | **Y** | `OffensiveSnapsPlayed`, `OffensiveTeamSnaps`, `DefensiveSnapsPlayed`, `DefensiveTeamSnaps`, `SpecialTeamsSnapsPlayed`, `SpecialTeamsTeamSnaps`, "from 2012", "available the morning after the game" ([data dictionary][sdio-dict]) |
 | Targets / carries / red zone | **Y** | Player game stats, plus `PlayerGameRedZoneStats` and the inside-five and inside-ten variants (from 2015) ([API docs][sdio-api], [data dictionary][sdio-dict]) |
+| Route efficiency | **U** | Depends on the unverified route fields above |
+| Defensive matchup | **Y / U** | `TeamGameStats` and fantasy-defense game records exist, including fantasy points allowed ([data dictionary][sdio-dict]). Sacks allowed, turnovers, explosives, and pressure allowed at field level are **unverified** |
+| Kicker / game context | **Y / U** | Player game stats include kicking. Schedule venue, surface, and forecast weather are covered under Weather / venue. Field-goal distance buckets are **unverified** |
 | Air yards, explosive plays, pace, pressure | **U** | Play-by-play endpoints exist ([API docs][sdio-api]). Field-level air-yard and pressure coverage is unverified. The 2019 PDF lists "Under Pressure Completion %" and "Air Yards" ([PDF][sdio-pdf]) |
 | Schedule / game identity | **Y** | `GameKey` (season, season type, week, home team), `GlobalGameID`, `ScoreID` (superseded by `GameID`), `Status` (with a postponed/suspended guide), `Canceled`, and `DateTime` in US Eastern. "All dates & times are in US Eastern Time" ([data dictionary][sdio-dict]) |
 | Weather / venue | **Y (forecast)** | `ForecastTempLow`/`High`, `ForecastWindSpeed` (from 2015), `StadiumID`, `PlayingSurface`, `GeoLat`/`GeoLong`. The `Schedules` endpoint includes stadium, betting, and weather ([API docs][sdio-api], [data dictionary][sdio-dict]) |
 | Spread / total / implied totals | **Y** | `PointSpread`, `OverUnder`, moneylines, pre-game odds, and line-movement endpoints. `Updated` on betting markets is in US Eastern ([API docs][sdio-api], [data dictionary][sdio-dict]) |
 | EPA / DVOA / xFP / WAR | **U / N** | The 2019 PDF lists "Expected Touchdowns" and "Production Premium" ([PDF][sdio-pdf]). No EPA, DVOA, or WAR fields were found |
 | Player identity | **Y** | `PlayerID` plus a `SportRadarPlayerID` cross-reference. No `GsisID` field was found ([data dictionary][sdio-dict]) |
+
+### All providers at a glance
+
+Same notation as above. Cells marked U have no primary-source evidence yet. That
+is the honest state of public documentation, not a claim that the data is missing.
+
+| Input | nflverse | SportsDataIO | Sportradar | FTN Data | PFF | NFL Savant | The Odds API | NWS / Open-Meteo |
+|---|---|---|---|---|---|---|---|---|
+| Routes / route participation | N (P) | U | U | U | U | U | N | N |
+| Snaps + team snaps | Y | Y | U | U | U | U | N | N |
+| Target / carry share | Y | Y (D) | U | U | U | U | N | N |
+| Red-zone use | D | Y | U | U | U | U | N | N |
+| Air-yard share | Y | U | U | U | U | U | N | N |
+| Route efficiency (TPRR/YPRR) | N | U | U | U | U | U | N | N |
+| Explosive rates | D | U | U | U | U | U | N | N |
+| Neutral pace | D | U | U | U | U | U | N | N |
+| Pressure | P / lagged | U | U (per-play "Players Rushed") | U | U (fields listed in 2018) | U | N | N |
+| Defensive matchup | D | Y / U | U | U | U | U | N | N |
+| Kicker / game context | D / Y | Y / U | U | N | U | U | N | N |
+| Schedule / game identity | Y | Y | Y | U | U | U | Y (event id, `commence_time`) | N |
+| Weather / venue | Y (observed) | Y (forecast) | U | N | N | U | N | Y (forecast) |
+| Spread / total / implied totals | Y / D (no timestamp) | Y | U | N | N | U | Y (timestamped) / D | N |
+| EPA | Y (model) | U | U | U | U | U | N | N |
+| DVOA | N | N | N | U (add-on) | N | N | N | N |
+| xFP | Y (model) | U | U | U | U | U | N | N |
+| WAR | N | N | N | N | U | N | N | N |
 
 ### Sportradar, FTN, PFF, The Odds API, weather
 
@@ -123,7 +155,10 @@ The field names below come from its NFL data dictionary ([data dictionary][sdio-
   [PFF play data fields][pff-fields], from a search-result summary). Current API field names are **unverified**.
 - **The Odds API.** It covers spreads and totals per bookmaker with ISO-8601 UTC
   timestamps. Historical snapshots go back to 2020-06-06 at 10-minute intervals,
-  and 5-minute intervals from September 2022 ([v4 guide][odds-guide]). A
+  and 5-minute intervals from September 2022 ([v4 guide][odds-guide]). The guide
+  says historical odds are paid-only, but the pricing table lists "Historical
+  Odds" on every plan, including the free one ([pricing][odds-home]). That
+  conflict is **unverified**. A
   `team_totals` market is not documented in the v4 guide, so we derive implied
   team totals from spread and total.
 - **Weather.** NWS offers hourly forecasts for the next 7 days ([NWS][nws]).
@@ -163,7 +198,7 @@ reason codes and never a zero:
 | `provider_denominator_missing` / `provider_numerator_missing` / `provider_definition_missing` | Ratio without its parts or definition |
 | `provider_invalid_percentage` | Ratio outside 0–1, percent outside 0–100, negative, or non-numeric |
 | `provider_ratio_mismatch` | Value disagrees with numerator / denominator |
-| `provider_model_metadata_missing` | EPA/DVOA/xFP/WAR from a provider without model name, version, sample, and provenance |
+| `provider_model_metadata_missing` | EPA/DVOA/xFP/WAR (`model_family`, or `expected_points`/`index` units) from a provider without model name, version, sample, and provenance |
 | `provider_data_stale` | `now - fetched_at > max_age_seconds` |
 | `provider_duplicate_record` | Two or more rows share a key. All of them are rejected as ambiguous |
 
@@ -213,12 +248,14 @@ value, a traded player, and a postponed game.
   by name.
 - **Traded players.** Observation keys include `game_id` and `team`, so a player
   who changes teams has distinct rows each week (fixture rows `wr2_week3_lv` and
-  `wr2_week4_kc`). **Known gap in merged code:**
-  `nflverse.sync_nflverse_stats` uses `recent_team` before `team`. The current
-  player_stats dictionary defines a per-game `team` and `opponent_team`
-  ([dictionary][nflreadr-dict-ps-json]), and `recent_team` is a legacy
-  "most recent team" field ([playerstats dictionary][nflreadr-dict-ps-csv]). The
-  follow-up should prefer `team`.
+  `wr2_week4_kc`). **Conditional risk in merged code:**
+  `nflverse.sync_nflverse_stats` reads `raw.get("recent_team") or raw.get("team")`.
+  The current player_stats dictionary defines a per-game `team` and
+  `opponent_team` ([dictionary][nflreadr-dict-ps-json]). `recent_team` is a
+  legacy "most recent team" field ([playerstats dictionary][nflreadr-dict-ps-csv]).
+  It is **unverified** whether nflreadpy 0.1.5 output still carries `recent_team`.
+  If it does, a traded player's earlier weeks could be attributed to the new team.
+  The follow-up should check the column and prefer `team`.
 - **Multi-team games.** A player has at most one row per game, so the key
   `(provider, dataset, metric, season, season_type, week, game_id, team, player, scope)`
   is unique. Duplicates are rejected, not merged.
@@ -298,8 +335,10 @@ Rules for all providers:
 >   implied totals (`revision_status=unknown`, no line timestamp).
 > - snap_counts with a pfr → sleeper join. Verify whether `offense_pct` is 0–1 or
 >   0–100.
-> - player_stats target/air-yard share with team denominators. Prefer per-game
->   `team` over `recent_team`, and fix that in `nflverse.sync_nflverse_stats`.
+> - player_stats target/air-yard share with team denominators. Check whether
+>   nflreadpy output still carries `recent_team`. If it does, change
+>   `nflverse.sync_nflverse_stats` to prefer per-game `team`, with a traded-player
+>   test.
 > - pbp-derived red-zone share, explosive rates, and neutral pace, each with a
 >   `calculation_version`.
 > - ff_opportunity xFP and pbp EPA, with model metadata.
