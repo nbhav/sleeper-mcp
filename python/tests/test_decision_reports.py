@@ -620,33 +620,33 @@ def test_player_context_windows_drop_byes_and_inactive_weeks() -> None:
 
 
 def test_player_context_role_boundary_requires_position_threshold_and_sample() -> None:
-    rows = [{"week": 1, "active": True, "touches": 10}, {"week": 2, "active": True, "touches": 10}, {"week": 3, "active": True, "touches": 14}, {"week": 4, "active": True, "touches": 15}]
-    signal = opportunity_signal("RB", rows, metric="touches")
+    rows = [{"week": 1, "active": True, "weighted_touches": 10}, {"week": 2, "active": True, "weighted_touches": 10}, {"week": 3, "active": True, "weighted_touches": 14}, {"week": 4, "active": True, "weighted_touches": 15}]
+    signal = opportunity_signal("RB", rows, metric="weighted_touches")
     assert signal["status"] == "increased"
     assert signal["delta_per_game"] == pytest.approx(4.5)
-    boundary = rows[:-1] + [{"week": 4, "active": True, "touches": 12}]
-    assert opportunity_signal("RB", boundary, metric="touches")["status"] == "stable"
+    boundary = rows[:-1] + [{"week": 4, "active": True, "weighted_touches": 12}]
+    assert opportunity_signal("RB", boundary, metric="weighted_touches")["status"] == "stable"
     assert MINIMUM_SAMPLE_REQUIREMENTS["role_change_recent"] == {"recent": 2, "baseline": 1}
 
 
 def test_player_context_exact_thresholds_and_missing_metrics_are_deterministic() -> None:
-    exact = [{"week": 1, "active": True, "touches": 10}, {"week": 2, "active": True, "touches": 10}, {"week": 3, "active": True, "touches": 15}, {"week": 4, "active": True, "touches": 15}]
-    assert opportunity_signal("RB", exact, metric="touches")["status"] == "increased"
-    absent = opportunity_signal("RB", [{"week": 1, "active": True}, {"week": 2, "active": True}], metric="touches")
-    assert absent["status"] == "not_evaluable_missing_touches"
-    assert absent["reasons"][0]["code"] == "not_evaluable_missing_touches"
+    exact = [{"week": 1, "active": True, "weighted_touches": 10}, {"week": 2, "active": True, "weighted_touches": 10}, {"week": 3, "active": True, "weighted_touches": 15}, {"week": 4, "active": True, "weighted_touches": 15}]
+    assert opportunity_signal("RB", exact, metric="weighted_touches")["status"] == "increased"
+    absent = opportunity_signal("RB", [{"week": 1, "active": True}, {"week": 2, "active": True}], metric="weighted_touches")
+    assert absent["status"] == "not_evaluable_missing_weighted_touches"
+    assert absent["reasons"][0]["code"] == "not_evaluable_missing_weighted_touches"
     assert absent["reasons"][0]["computability_tier"] == "not_evaluable_missing_source"
 
 
 def test_player_context_emits_role_loss_when_opportunity_declines_past_threshold() -> None:
     rows = [
-        {"week": 1, "active": True, "touches": 18},
-        {"week": 2, "active": True, "touches": 18},
-        {"week": 3, "active": True, "touches": 10},
-        {"week": 4, "active": True, "touches": 10},
+        {"week": 1, "active": True, "weighted_touches": 18},
+        {"week": 2, "active": True, "weighted_touches": 18},
+        {"week": 3, "active": True, "weighted_touches": 10},
+        {"week": 4, "active": True, "weighted_touches": 10},
     ]
 
-    signal = opportunity_signal("RB", rows, metric="touches")
+    signal = opportunity_signal("RB", rows, metric="weighted_touches")
     result = evaluate_player_usage_context("RB", {"season_weeks": rows})
 
     assert signal["status"] == "decreased"
@@ -659,7 +659,7 @@ def test_player_context_missing_opportunity_does_not_create_spike_penalties() ->
     missing_wr = spike_reason_codes("WR", {"points": 24, "rec_tds": 2})
     missing_defense = spike_reason_codes("DEF", {"takeaways": 4})
 
-    assert missing_rb == ["not_evaluable_missing_touches"]
+    assert missing_rb == ["not_evaluable_missing_weighted_touches"]
     assert missing_wr == ["not_evaluable_missing_targets"]
     assert missing_defense == ["not_evaluable_missing_pressure_proxy_rise"]
     assert evaluate_player_usage_context(
@@ -672,7 +672,7 @@ def test_player_context_contract_contains_dynamic_missing_source_codes() -> None
 
     for code in (
         "not_evaluable_missing_dropbacks",
-        "not_evaluable_missing_touches",
+        "not_evaluable_missing_weighted_touches",
         "not_evaluable_missing_targets",
         "not_evaluable_missing_rush_attempts",
         "not_evaluable_missing_pressure_proxy_rise",
@@ -715,8 +715,8 @@ def test_player_context_position_caps_and_spike_boundaries() -> None:
     assert cap_modifier("matchup", 2.5, position="DEF") == 2.5
     assert cap_modifier("matchup", 4, position="DEF") == 3.0
     assert POSITION_MODIFIER_CAPS["DEF"]["matchup"] == MODIFIER_CAPS["def_streaming_matchup"]
-    assert spike_reason_codes("RB", {"points": 20, "touches": 12, "total_tds": 1}) == ["low_touch_big_points"]
-    assert spike_reason_codes("RB", {"points": 20, "touches": 13, "total_tds": 1}) == []
+    assert spike_reason_codes("RB", {"points": 20, "weighted_touches": 12, "total_tds": 1}) == ["low_touch_big_points"]
+    assert spike_reason_codes("RB", {"points": 20, "weighted_touches": 13, "total_tds": 1}) == []
     assert spike_reason_codes("WR", {"points": 15, "targets": 5, "rec_tds": 2}) == ["low_target_big_points", "td_only_low_usage"]
     assert spike_reason_codes("K", {"made_50_plus": 2, "long_kick_point_share": 0.2}) == ["long_kick_spike"]
     assert spike_reason_codes("DEF", {"def_or_special_teams_tds": 1, "takeaways": 3, "pressure_proxy_rise": False}) == ["def_td_spike", "turnover_spike_without_pressure"]
@@ -738,7 +738,7 @@ def test_player_context_uses_canonical_qb_passing_td_names() -> None:
 def test_player_context_thresholds_and_contract_are_exported_without_aliasing() -> None:
     assert set(POSITION_USAGE_THRESHOLDS) == set(POSITION_FAMILIES)
     assert POSITION_USAGE_THRESHOLDS["QB"]["dropbacks"] == {"increase_pct": 0.15, "window": "last_2_weeks"}
-    assert POSITION_USAGE_THRESHOLDS["RB"]["touches"] == {"increase_pct": 0.30, "increase_per_game": 5.0, "window": "last_2_weeks"}
+    assert POSITION_USAGE_THRESHOLDS["RB"]["weighted_touches"] == {"increase_pct": 0.30, "increase_per_game": 5.0, "window": "last_2_weeks"}
     assert POSITION_USAGE_THRESHOLDS["K"]["total_kick_attempts"]["window"] == "last_3_weeks"
     assert POSITION_USAGE_THRESHOLDS["DEF"]["points_allowed"]["lower_is_better"] is True
     contract = player_usage_context_contract()

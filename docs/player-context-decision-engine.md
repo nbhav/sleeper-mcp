@@ -152,6 +152,104 @@ Sleeper-only v1 should avoid weak guesses. For example, do not emit
 `low_route_big_points` unless route data exists; emit
 `not_evaluable_missing_routes` instead.
 
+## Derived Metrics Contract (player_usage_context.v2)
+
+`player_usage_context` output is versioned `player_usage_context.v2`
+(`PLAYER_USAGE_CONTEXT_SCHEMA_VERSION` in
+`python/src/sleeper_tooling/player_usage_context_rules.py`, mirrored by the
+Worker constant of the same name). v2 changes from v1:
+
+- Row fields read exact canonical Sleeper keys (`STAT_KEYS` /
+  `POSITION_STAT_KEYS` in `player_usage_context.py`). There are no fallback
+  aliases (`targets`, `carries`, `fg_att`, `fgm_50_plus`, `td`, ...), and
+  alternative spellings are never summed.
+- Sacks are position-aware. A QB row reads `pass_sack` as `sacks_taken` and uses
+  it in `dropbacks = pass_att + pass_sack`. A DEF row reads `sack` as `sacks`
+  (the DEF opportunity metric). Neither position falls back to the other key.
+- The only explicit sum of distinct canonical stats in the row fields is DEF
+  `takeaways = int + fum_rec`. `def_tds` reads `def_td` only, and `def_st_td` is
+  reported separately in derived metrics.
+- RB: `weighted_touches = rush_att + rec_tgt` is the opportunity metric used by
+  thresholds, `low_touch_floor` (`weighted_touches_max: 12`), golden fixtures,
+  and spike reasons. This is the v1 `touches` value renamed, so behavior is
+  unchanged. The missing-input code is now
+  `not_evaluable_missing_weighted_touches`. The new `touches = rush_att + rec`
+  is evidence only.
+- `last_1_week` is added to the trend windows. `post_change_window` is not
+  implemented yet.
+- Absolute air yards (`rec_air_yd`, `pass_air_yd`) are available evidence. The
+  WR missing input is now `air_yard_share`
+  (`not_evaluable_missing_air_yard_share`), because Sleeper has no team
+  air-yards denominator.
+
+### `derived_metrics` evidence block (Python only)
+
+The Python `player_usage_context` adds a `derived_metrics` section
+(`player_usage_derived_metrics.v1`, built by `compute_derived_metrics`). The
+Worker emits the v2 row fields and windows but **not** `derived_metrics`.
+
+The section has one entry per trend window (`last_1_week`, `last_2_weeks`,
+`last_3_weeks`, `last_4_weeks`, `season_to_date`). Each window lists its active,
+non-bye weeks, `sample_size`, `minimum_samples`, and `sufficient_sample`. Each
+metric record has these fields:
+
+- `name`, `kind` (`count`, `ratio`, `max`), and `label` (`absolute_count`,
+  `absolute_max`, `rate`, `proxy`).
+- `formula` and exact `input_keys`, plus `input_key_presence`: how many window
+  rows had each key.
+- `denominator_key`, `denominator_input_keys`, `denominator_value`,
+  `denominator_valid`, and `denominator_weeks`. These are null for counts.
+- `value`, `per_game` (counts only), and `reason`: null, or the explanation for
+  a null value.
+- `classification: "actual"`, `source: "stats"`, `window`, `weeks`, and
+  `sample_size`.
+
+Policy:
+
+- **Source:** only actual `stats` rows are used. Projection rows are dropped
+  before windowing (`projection_rows_used: false`). Projections never produce
+  derived usage.
+- **Absent numerator keys:** Sleeper omits zero-valued keys, so an absent
+  numerator key in a present stats row counts as 0. `input_key_presence` shows
+  which keys were actually observed.
+- **Ratios:** a ratio is computed as a ratio of sums over the window rows where
+  the denominator is present. It is never a mean of weekly ratios.
+  - If no row has the denominator, the value is null with reason
+    `not_evaluable_missing_<denominator>`.
+  - If the denominator sums to 0, the value is null with reason
+    `denominator_zero`.
+  - A ratio is never reported as 0 in place of not evaluable.
+- **Composite denominators:** `dropbacks` (`pass_att + pass_sack`) and `touches`
+  (`rush_att + rec`) count as present in a row when at least one component key
+  is present. This keeps a sack-free game evaluable.
+- **Longest plays:** `longest_rush` (`rush_lng`) and `longest_fg` (`fgm_lng`)
+  take the max over rows that have the key. Precomputed rates such as
+  `rush_ypa` are not summed. `rush_yards_per_attempt` is recomputed as
+  `rush_yd / rush_att`.
+- **Empty windows:** a window with no eligible actual rows gives null values with
+  `not_evaluable_missing_actual_stats`.
+- **Rounding:** ratio and per-game values are rounded to 4 decimals.
+
+| Position | Metrics (formula / exact keys) |
+|---|---|
+| QB | `dropbacks` = pass_att + pass_sack; `pass_attempts` pass_att; `pass_completions` pass_cmp; `completion_rate` = pass_cmp / pass_att; `pass_yards` pass_yd; `yards_per_dropback` = pass_yd / dropbacks; `pass_tds` pass_td; `pass_interceptions` pass_int; `sacks_taken` pass_sack; `pass_air_yards` pass_air_yd (absolute); `rush_attempts`/`rush_yards`/`rush_tds` rush_att/rush_yd/rush_td; `fumbles` fum; `fumbles_lost` fum_lost; `offensive_snaps` off_snp; `actual_snap_share_proxy` |
+| RB | `rush_attempts` (carries) rush_att; `receptions` rec; `targets` rec_tgt; `touches` = rush_att + rec; `weighted_touches` = rush_att + rec_tgt; `yards_per_touch` = (rush_yd + rec_yd) / touches; `rush_yards_per_attempt` = rush_yd / rush_att; `red_zone_rush_attempts` rush_rz_att; `red_zone_targets` rec_rz_tgt; `rush_yards_after_contact` rush_yac; `rush_broken_tackles` rush_btkl; `longest_rush` max(rush_lng); `rush_yards`, `rec_yards`, `rush_tds`, `rec_tds`; `rec_air_yards` rec_air_yd; `drops` rec_drop; `fumbles`, `fumbles_lost`; `offensive_snaps` off_snp; `special_teams_snaps` st_snp; `actual_snap_share_proxy` |
+| WR/TE | `targets` rec_tgt; `receptions` rec; `catch_rate` = rec / rec_tgt; `yards_per_target` = rec_yd / rec_tgt; `rec_yards` rec_yd; `rec_tds` rec_td; `red_zone_targets` rec_rz_tgt; `rec_air_yards` rec_air_yd (absolute); `drops` rec_drop; `rush_attempts`/`rush_yards`/`rush_tds`; `fumbles`, `fumbles_lost`; `offensive_snaps`, `special_teams_snaps`; `actual_snap_share_proxy` |
+| K | `fg_attempts` fga; `fg_made` fgm; `fg_missed` fgmiss; `xp_attempts` xpa; `xp_made` xpm; `total_kick_attempts` = fga + xpa; `total_kick_makes` = fgm + xpm; `fgm_20_29` .. `fgm_50_59`, `fgm_60p`, `fgm_50p`, and the matching `fgmiss_*` buckets, each read as its own key (overlapping buckets such as `fgm_50p` vs `fgm_50_59` + `fgm_60p` are never summed together); `longest_fg` max(fgm_lng); `special_teams_snaps` st_snp |
+| DEF | `sacks` sack; `qb_hits` qb_hit; `tackles_for_loss` tkl_loss; `interceptions` int; `fumble_recoveries` fum_rec; `takeaways` = int + fum_rec; `def_tds` def_td; `def_st_tds` def_st_td; `points_allowed` pts_allow; `yards_allowed` yds_allow |
+
+`actual_snap_share_proxy = off_snp / tm_off_snp` is the only share-like value.
+It has `label: "proxy"`, is valid only when `tm_off_snp` is present and nonzero,
+and is a team-offensive-snap proxy, not a position-specific snap share.
+`off_snp`, `st_snp`, `rec_air_yd`, and `pass_air_yd` stay absolute counts.
+
+These metrics are evidence and proxies only. They do not feed waiver or lineup
+scoring, and they do not include route share, target share, carry share,
+air-yard share, xFP, EPA, DVOA, WAR, pace, pressure rate, or opponent-adjusted
+efficiency. TD dependency still uses the v1 heuristic. League-scoring
+contributions, projection row/key presence flags, and `post_change_window` are
+planned follow-ups.
+
 ## Core Derived Scores
 
 Add a deterministic context profile per player/week:
@@ -203,6 +301,7 @@ The engine should compare multiple windows, not just current-week projection or
 full-season average:
 
 - `current_week`: latest actual/projection context.
+- `last_1_week`: the latest active, non-bye actual week (implemented in v2).
 - `last_2_weeks`: short-term role and usage signal.
 - `last_3_weeks`: near-term stability signal.
 - `last_4_weeks`: early-season smoothing window when available.
@@ -270,7 +369,7 @@ Trend windows:
 
 Opportunity metrics:
 
-- `dropbacks = pass_attempts + sacks`.
+- `dropbacks = pass_att + pass_sack` (QB sacks taken; never the DEF `sack` key).
 - `rush_attempts`.
 - Designed-rush proxy, if an enriched provider supports it.
 
@@ -326,7 +425,8 @@ Trend windows:
 
 Opportunity metrics:
 
-- `weighted_touches = carries + targets`.
+- `weighted_touches = rush_att + rec_tgt` (the implemented RB opportunity metric).
+- `touches = rush_att + rec` (evidence only in v2; not used by the rules).
 - Receptions as receiving-floor evidence.
 - Red-zone carries and targets, if available.
 - Team RB touch share, if available.
@@ -342,16 +442,16 @@ Production quality metrics:
 
 Role-change flags:
 
-- `rb_touch_share_rise`: last-2 touches are at least 30% above baseline or at
-  least 5 touches per game above baseline.
+- `rb_touch_share_rise`: last-2 weighted touches are at least 30% above baseline or at
+  least 5 weighted touches per game above baseline.
 - `rb_receiving_role_rise`: targets rise by at least 2 per game.
 - `injury_replacement`: depth or availability context shows a player ahead of
   him is out or limited.
 
 Spike and one-off flags:
 
-- `low_touch_big_points`: at least 15 fantasy points on fewer than 10 touches.
-- `td_only_low_usage`: TDs create at least 40% of points and total touches are
+- `low_touch_big_points`: at least 15 fantasy points on fewer than 10 weighted touches.
+- `td_only_low_usage`: TDs create at least 40% of points and weighted touches are
   fewer than 12.
 - `long_run_spike_unconfirmed`: high yards on low carries without target or
   workload growth.
@@ -607,7 +707,7 @@ Create explicit flags:
 - `td_spike_low_usage`: High points, low opportunity, TD-heavy.
 - `injury_replacement`: Role likely tied to another player's injury/status.
 - `low_route_big_points`: WR/TE production without enough routes.
-- `low_touch_big_points`: RB production without enough touches.
+- `low_touch_big_points`: RB production without enough weighted touches (`rush_att + rec_tgt`).
 - `turnover_td_spike`: DEF production from volatile defensive scores.
 - `projection_disagreement`: Actuals rising while projections remain low, or projections high while actuals are weak.
 - `depth_chart_disagreement`: Production rising while depth chart remains low.

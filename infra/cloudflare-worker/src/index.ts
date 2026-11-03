@@ -1289,7 +1289,7 @@ async function playerUsageContext(args: JsonMap, env: Env): Promise<JsonMap> {
   const evaluated = evaluateWorkerUsageContext(position, actualRows, projectionRows, metadata);
   const evaluatedScores = objectValue(evaluated.scores);
   return {
-    schema_version: "player_usage_context.v1",
+    schema_version: PLAYER_USAGE_CONTEXT_SCHEMA_VERSION,
     data_source: "sleeper_worker_raw_data",
     player_id: playerId,
     name: playerName(player, playerId),
@@ -1324,10 +1324,14 @@ async function playerUsageContext(args: JsonMap, env: Env): Promise<JsonMap> {
   };
 }
 
+// Worker emits the v2 contract (exact keys, weighted_touches, position-aware
+// sacks, last_1_week window). The derived_metrics evidence block is Python-only.
+export const PLAYER_USAGE_CONTEXT_SCHEMA_VERSION = "player_usage_context.v2";
+
 const USAGE_MISSING_CONTEXT: Record<string, string[]> = {
   QB: ["pressure", "implied_total"],
   RB: ["touch_share", "red_zone_use", "nfl_schedule", "implied_total"],
-  WR: ["routes", "target_share", "air_yards", "nfl_schedule"],
+  WR: ["routes", "target_share", "air_yard_share", "nfl_schedule"],
   TE: ["routes", "target_share", "red_zone_use", "nfl_schedule"],
   K: ["nfl_schedule", "weather", "implied_total"],
   DEF: ["nfl_schedule", "pressure", "implied_total"]
@@ -1337,7 +1341,7 @@ export function evaluateWorkerUsageContext(position: string, actualRows: JsonMap
   const primaryRows = actualRows.length ? actualRows : projectionRows;
   const recent = eligibleRows(primaryRows).slice(-2);
   const baseline = eligibleRows(actualRows).slice(0, -2);
-  const opportunityKey = position === "QB" ? "dropbacks" : position === "RB" ? "touches" : ["WR", "TE"].includes(position) ? "targets" : position === "K" ? "total_kick_attempts" : "sacks";
+  const opportunityKey = position === "QB" ? "dropbacks" : position === "RB" ? "weighted_touches" : ["WR", "TE"].includes(position) ? "targets" : position === "K" ? "total_kick_attempts" : "sacks";
   const recentOpportunity = averageUsage(recent, opportunityKey);
   const baselineOpportunity = averageUsage(baseline, opportunityKey);
   const reasonCodes: string[] = [];
@@ -1389,37 +1393,49 @@ function addMissingReason(codes: string[], reasons: JsonMap[], code: string, com
 function uniqueReasons(reasons: JsonMap[]): JsonMap[] { return reasons.filter((item, index, all) => all.findIndex((candidate) => candidate.code === item.code) === index); }
 function metadataContext(player: JsonMap): JsonMap { return Object.fromEntries(Object.entries({ depth_chart_order: player.depth_chart_order, depth_chart_position: player.depth_chart_position, status: player.status, injury_status: player.injury_status, depth_chart_role: player.depth_chart_position || player.depth_chart_order }).filter(([, value]) => value !== undefined && value !== null)); }
 function eligibleRows(rows: JsonMap[]): JsonMap[] { return rows.filter((row) => row.active !== false && row.bye !== true).sort((a, b) => Number(a.week) - Number(b.week)); }
-function usageWindows(actualRows: JsonMap[], projectionRows: JsonMap[]): JsonMap { const output: JsonMap = {}; for (const [name, count] of [["last_2_weeks", 2], ["last_3_weeks", 3], ["last_4_weeks", 4], ["season_to_date", undefined]] as const) { const actual = eligibleRows(actualRows); const projection = eligibleRows(projectionRows); output[name] = { actual: count === undefined ? actual : actual.slice(-count), projection: count === undefined ? projection : projection.slice(-count), sample_size: count === undefined ? actual.length : actual.slice(-count).length }; } return output; }
-function workerScores(primary: JsonMap[], recent: JsonMap[], baseline: JsonMap[], position: string, modifiers: Record<string, number>, missingCount: number, actualCount: number): JsonMap { const key = position === "QB" ? "dropbacks" : position === "RB" ? "touches" : ["WR", "TE"].includes(position) ? "targets" : position === "K" ? "total_kick_attempts" : "sacks"; const opportunity = averageUsage(recent, key) || 0; const points = averageUsage(recent, "points") || 0; const baselineOpportunity = averageUsage(baseline, key); const td = recent.reduce((sum, row) => sum + (numberValue(row.pass_tds) || 0) + (numberValue(row.rush_tds) || 0) + (numberValue(row.rec_tds) || 0) + (numberValue(row.def_tds) || 0), 0) / Math.max(recent.length, 1); return { opportunity_score: round(Math.min(100, opportunity * 5), 2), role_stability_score: recent.length ? 60 : 0, production_quality_score: round(Math.min(100, Math.max(0, points * 4)), 2), td_dependency_score: round(Math.min(100, td * 20 / Math.max(points, 1)), 2), depth_chart_confidence: 60, small_sample_risk: Math.max(0, 100 - recent.length * 35), one_off_risk: modifiers.context && modifiers.context < 0 ? round(-modifiers.context * 12.5, 2) : 0, trend_change_score: round(Math.max(0, Math.min(100, 50 + (baselineOpportunity ? ((opportunity - baselineOpportunity) / Math.abs(baselineOpportunity)) * 12.5 : 0))), 2), season_context_score: 50, context_confidence: round(Math.max(0, 100 - missingCount * 7 - (actualCount < 2 ? 20 : 0)), 2) }; }
-function spikeReasons(position: string, row: JsonMap): string[] { const points = numberValue(row.points) || 0; const tds = (numberValue(row.pass_tds) || 0) + (numberValue(row.rush_tds) || 0) + (numberValue(row.rec_tds) || 0) + (numberValue(row.def_tds) || 0); const codes: string[] = []; const opportunityKey = position === "QB" ? "rush_attempts" : position === "RB" ? "touches" : ["WR", "TE"].includes(position) ? "targets" : undefined; if (position === "RB" && points >= 20 && numberValue(row.touches) !== undefined && Number(row.touches) <= 12) codes.push("low_touch_big_points"); if (["WR", "TE"].includes(position) && points >= 15 && numberValue(row.targets) !== undefined && Number(row.targets) <= (position === "TE" ? 4 : 5)) codes.push("low_target_big_points"); if (["QB", "RB", "WR", "TE"].includes(position) && tds >= (position === "TE" ? 1 : position === "WR" || position === "RB" ? 2 : 3)) { if (opportunityKey && numberValue(row[opportunityKey]) === undefined) codes.push(`not_evaluable_missing_${opportunityKey}`); else if (opportunityKey) codes.push("td_only_low_usage"); } if (position === "K" && (Number(row.made_50_plus) >= 2 || Number(row.long_kick_point_share) >= 0.4)) codes.push("long_kick_spike"); if (position === "DEF" && Number(row.def_tds) >= 1) codes.push("def_td_spike"); return codes; }
-function spikeReasonDefinition(code: string): JsonMap | undefined { const definitions: Record<string, JsonMap> = { low_touch_big_points: reason(code, "one_off_risk", "negative", "computed", ["fantasy points", "touches"], "high", "skill-player points spiked on a low-touch week"), low_target_big_points: reason(code, "one_off_risk", "negative", "computed", ["fantasy points", "targets"], "high", "receiving points spiked on a low-target week"), td_only_low_usage: reason(code, "td_dependency", "negative", "computed", ["touches or targets", "touchdown stats"], "high", "touchdown points dominate a low-usage performance"), long_kick_spike: reason(code, "one_off_risk", "negative", "computed", ["long field goals", "kicking points"], "medium", "kicker value was inflated by long field goals"), def_td_spike: reason(code, "one_off_risk", "negative", "computed", ["defensive touchdown stats"], "high", "defensive value was inflated by a touchdown") }; return definitions[code]; }
+function usageWindows(actualRows: JsonMap[], projectionRows: JsonMap[]): JsonMap { const output: JsonMap = {}; for (const [name, count] of [["last_1_week", 1], ["last_2_weeks", 2], ["last_3_weeks", 3], ["last_4_weeks", 4], ["season_to_date", undefined]] as const) { const actual = eligibleRows(actualRows); const projection = eligibleRows(projectionRows); output[name] = { actual: count === undefined ? actual : actual.slice(-count), projection: count === undefined ? projection : projection.slice(-count), sample_size: count === undefined ? actual.length : actual.slice(-count).length }; } return output; }
+function workerScores(primary: JsonMap[], recent: JsonMap[], baseline: JsonMap[], position: string, modifiers: Record<string, number>, missingCount: number, actualCount: number): JsonMap { const key = position === "QB" ? "dropbacks" : position === "RB" ? "weighted_touches" : ["WR", "TE"].includes(position) ? "targets" : position === "K" ? "total_kick_attempts" : "sacks"; const opportunity = averageUsage(recent, key) || 0; const points = averageUsage(recent, "points") || 0; const baselineOpportunity = averageUsage(baseline, key); const td = recent.reduce((sum, row) => sum + (numberValue(row.pass_tds) || 0) + (numberValue(row.rush_tds) || 0) + (numberValue(row.rec_tds) || 0) + (numberValue(row.def_tds) || 0), 0) / Math.max(recent.length, 1); return { opportunity_score: round(Math.min(100, opportunity * 5), 2), role_stability_score: recent.length ? 60 : 0, production_quality_score: round(Math.min(100, Math.max(0, points * 4)), 2), td_dependency_score: round(Math.min(100, td * 20 / Math.max(points, 1)), 2), depth_chart_confidence: 60, small_sample_risk: Math.max(0, 100 - recent.length * 35), one_off_risk: modifiers.context && modifiers.context < 0 ? round(-modifiers.context * 12.5, 2) : 0, trend_change_score: round(Math.max(0, Math.min(100, 50 + (baselineOpportunity ? ((opportunity - baselineOpportunity) / Math.abs(baselineOpportunity)) * 12.5 : 0))), 2), season_context_score: 50, context_confidence: round(Math.max(0, 100 - missingCount * 7 - (actualCount < 2 ? 20 : 0)), 2) }; }
+function spikeReasons(position: string, row: JsonMap): string[] { const points = numberValue(row.points) || 0; const tds = (numberValue(row.pass_tds) || 0) + (numberValue(row.rush_tds) || 0) + (numberValue(row.rec_tds) || 0) + (numberValue(row.def_tds) || 0); const codes: string[] = []; const opportunityKey = position === "QB" ? "rush_attempts" : position === "RB" ? "weighted_touches" : ["WR", "TE"].includes(position) ? "targets" : undefined; if (position === "RB" && points >= 20 && numberValue(row.weighted_touches) !== undefined && Number(row.weighted_touches) <= 12) codes.push("low_touch_big_points"); if (["WR", "TE"].includes(position) && points >= 15 && numberValue(row.targets) !== undefined && Number(row.targets) <= (position === "TE" ? 4 : 5)) codes.push("low_target_big_points"); if (["QB", "RB", "WR", "TE"].includes(position) && tds >= (position === "TE" ? 1 : position === "WR" || position === "RB" ? 2 : 3)) { if (opportunityKey && numberValue(row[opportunityKey]) === undefined) codes.push(`not_evaluable_missing_${opportunityKey}`); else if (opportunityKey) codes.push("td_only_low_usage"); } if (position === "K" && (Number(row.made_50_plus) >= 2 || Number(row.long_kick_point_share) >= 0.4)) codes.push("long_kick_spike"); if (position === "DEF" && Number(row.def_tds) >= 1) codes.push("def_td_spike"); return codes; }
+function spikeReasonDefinition(code: string): JsonMap | undefined { const definitions: Record<string, JsonMap> = { low_touch_big_points: reason(code, "one_off_risk", "negative", "computed", ["fantasy points", "weighted touches (rush_att + rec_tgt)"], "high", "skill-player points spiked on a low weighted-touch week"), low_target_big_points: reason(code, "one_off_risk", "negative", "computed", ["fantasy points", "targets"], "high", "receiving points spiked on a low-target week"), td_only_low_usage: reason(code, "td_dependency", "negative", "computed", ["weighted touches or targets", "touchdown stats"], "high", "touchdown points dominate a low-usage performance"), long_kick_spike: reason(code, "one_off_risk", "negative", "computed", ["long field goals", "kicking points"], "medium", "kicker value was inflated by long field goals"), def_td_spike: reason(code, "one_off_risk", "negative", "computed", ["defensive touchdown stats"], "high", "defensive value was inflated by a touchdown") }; return definitions[code]; }
 
 function appendUsageRow(target: JsonMap[], rows: JsonMap[], playerId: string, position: string, source: string, week: number, player: JsonMap): void {
   const row = rows.find((candidate) => String(candidate.player_id || "") === playerId);
   if (!row) return;
   const stats = objectValue(row.stats);
-  const normalized: JsonMap = { week, player_id: playerId, team: String(player.team || ""), position, source, raw: row, raw_stats: stats, points: numberValue(stats.pts_ppr) ?? numberValue(stats.pts_half_ppr) ?? numberValue(stats.pts_std) ?? 0, active: true, bye: false };
+  target.push({ week, player_id: playerId, team: String(player.team || ""), position, source, raw: row, raw_stats: stats, points: numberValue(stats.pts_ppr) ?? numberValue(stats.pts_half_ppr) ?? numberValue(stats.pts_std) ?? 0, active: true, bye: false, ...normalizeUsageStats(position, stats) });
+}
+
+function sumPresent(values: Array<number | undefined>): number | undefined {
+  return values.every((value) => value === undefined) ? undefined : values.reduce<number>((sum, value) => sum + (value || 0), 0);
+}
+
+// Mirrors the Python STAT_KEYS contract: each field reads one exact Sleeper key,
+// sacks are position-aware (QB pass_sack for dropbacks, DEF sack), and the only
+// sums are of distinct canonical stats (DEF takeaways = int + fum_rec).
+export function normalizeUsageStats(position: string, stats: JsonMap): JsonMap {
+  const normalized: JsonMap = {};
   normalized.pass_attempts = numberValue(stats.pass_att);
-  normalized.sacks = numberValue(stats.pass_sack) ?? numberValue(stats.sack);
   normalized.rush_attempts = numberValue(stats.rush_att);
   normalized.targets = numberValue(stats.rec_tgt);
+  normalized.receptions = numberValue(stats.rec);
   normalized.pass_tds = numberValue(stats.pass_td);
   normalized.rush_tds = numberValue(stats.rush_td);
   normalized.rec_tds = numberValue(stats.rec_td);
-  normalized.def_tds = numberValue(stats.def_td) ?? numberValue(stats.td);
-  normalized.takeaways = (numberValue(stats.int) || 0) + (numberValue(stats.fum_rec) || 0);
   normalized.field_goal_attempts = numberValue(stats.fga);
-  normalized.made_50_plus = numberValue(stats.fgm_50_plus) ?? numberValue(stats.fgm_50p);
+  normalized.made_50_plus = numberValue(stats.fgm_50p);
   normalized.long_kick_point_share = numberValue(stats.fgm_50_plus) === undefined ? undefined : (numberValue(stats.fgm_50_plus) || 0) / Math.max(numberValue(stats.fgm) || 1, 1);
-  const extraPointAttempts = numberValue(stats.xpa);
-  const passAttempts = numberValue(normalized.pass_attempts);
-  const sacks = numberValue(normalized.sacks);
-  const rushAttempts = numberValue(normalized.rush_attempts);
-  const targets = numberValue(normalized.targets);
-  normalized.total_kick_attempts = normalized.field_goal_attempts === undefined && extraPointAttempts === undefined ? undefined : (numberValue(normalized.field_goal_attempts) || 0) + (extraPointAttempts || 0);
-  normalized.dropbacks = passAttempts === undefined && sacks === undefined ? undefined : (passAttempts || 0) + (sacks || 0);
-  normalized.touches = rushAttempts === undefined && targets === undefined ? undefined : (rushAttempts || 0) + (targets || 0);
-  target.push(normalized);
+  if (position === "QB") normalized.sacks_taken = numberValue(stats.pass_sack);
+  if (position === "DEF") {
+    normalized.sacks = numberValue(stats.sack);
+    normalized.def_tds = numberValue(stats.def_td);
+    normalized.takeaways = sumPresent([numberValue(stats.int), numberValue(stats.fum_rec)]);
+  }
+  normalized.total_kick_attempts = sumPresent([numberValue(stats.fga), numberValue(stats.xpa)]);
+  normalized.dropbacks = sumPresent([numberValue(stats.pass_att), numberValue(normalized.sacks_taken)]);
+  // weighted_touches (rush_att + rec_tgt) is the RB opportunity metric; touches (rush_att + rec) is evidence only.
+  normalized.weighted_touches = sumPresent([numberValue(stats.rush_att), numberValue(stats.rec_tgt)]);
+  normalized.touches = sumPresent([numberValue(stats.rush_att), numberValue(stats.rec)]);
+  return Object.fromEntries(Object.entries(normalized).filter(([, value]) => value !== undefined));
 }
 
 function averageUsage(rows: JsonMap[], key: string): number | undefined {

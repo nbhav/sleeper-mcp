@@ -11,35 +11,47 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 from sleeper_tooling.player_usage_context_rules import (
+    PLAYER_USAGE_CONTEXT_SCHEMA_VERSION,
     REASON_CODES,
     SCORE_COMPONENT_KEYS,
     TREND_WINDOWS,
+    compute_derived_metrics,
     evaluate_player_usage_context,
     trend_window,
 )
 
-STAT_ALIASES: dict[str, tuple[str, ...]] = {
-    "pass_attempts": ("pass_att", "pass_attempts"),
-    "sacks": ("sacks", "sack", "pass_sack"),
-    "rush_attempts": ("rush_att", "rush_attempts", "carries"),
-    "targets": ("rec_tgt", "targets", "target"),
-    "receptions": ("rec", "receptions"),
-    "pass_yards": ("pass_yd", "pass_yards"),
-    "rush_yards": ("rush_yd", "rush_yards"),
-    "rec_yards": ("rec_yd", "rec_yards"),
-    "pass_tds": ("pass_td", "pass_tds", "passing_tds"),
-    "rush_tds": ("rush_td", "rush_tds"),
-    "rec_tds": ("rec_td", "rec_tds"),
-    "def_tds": ("def_td", "def_tds", "td"),
-    "takeaways": ("def_int", "interceptions", "int", "fumble_recovery", "fum_rec"),
-    "field_goal_attempts": ("fg_att", "fga", "field_goal_attempts"),
-    "made_50_plus": ("fgm_50_plus", "fgm_50p", "made_50_plus"),
-    "points_allowed": ("pts_allow", "points_allowed"),
+# Exact canonical Sleeper stat keys for the row fields the rules read.  Each
+# field reads exactly one key; there are no fallback aliases and nothing is
+# summed implicitly.  Sums of distinct canonical stats are built explicitly in
+# ``_materialize_rows`` (for example DEF ``takeaways = int + fum_rec``).
+STAT_KEYS: dict[str, str] = {
+    "pass_attempts": "pass_att",
+    "rush_attempts": "rush_att",
+    "targets": "rec_tgt",
+    "receptions": "rec",
+    "pass_yards": "pass_yd",
+    "rush_yards": "rush_yd",
+    "rec_yards": "rec_yd",
+    "pass_tds": "pass_td",
+    "rush_tds": "rush_td",
+    "rec_tds": "rec_td",
+    "field_goal_attempts": "fga",
+    "made_50_plus": "fgm_50p",
+}
+# Sack keys are position-aware: QB rows report sacks taken as ``pass_sack``
+# (used for dropbacks), team DEF rows report sacks made as ``sack``.
+POSITION_STAT_KEYS: dict[str, dict[str, str]] = {
+    "QB": {"sacks_taken": "pass_sack"},
+    "DEF": {"sacks": "sack", "def_tds": "def_td", "points_allowed": "pts_allow"},
+}
+# Explicit sums of distinct canonical stats (never alternative spellings).
+POSITION_STAT_SUMS: dict[str, dict[str, tuple[str, ...]]] = {
+    "DEF": {"takeaways": ("int", "fum_rec")},
 }
 
 POSITION_OPPORTUNITY = {
     "QB": "dropbacks",
-    "RB": "touches",
+    "RB": "weighted_touches",
     "WR": "targets",
     "TE": "targets",
     "K": "total_kick_attempts",
@@ -49,7 +61,7 @@ POSITION_OPPORTUNITY = {
 POSITION_MISSING_CONTEXT = {
     "QB": ("pressure", "implied_total"),
     "RB": ("touch_share", "red_zone_use", "nfl_schedule", "implied_total"),
-    "WR": ("routes", "target_share", "air_yards", "nfl_schedule"),
+    "WR": ("routes", "target_share", "air_yard_share", "nfl_schedule"),
     "TE": ("routes", "target_share", "red_zone_use", "nfl_schedule"),
     "K": ("nfl_schedule", "weather", "implied_total"),
     "DEF": ("nfl_schedule", "pressure", "implied_total"),
@@ -80,8 +92,8 @@ class PlayerUsageContextService:
 
         actual_rows = self._stat_rows(player_id, season, week, "stats")
         projection_rows = self._stat_rows(player_id, season, week, "projections")
-        actuals = self._materialize_rows(actual_rows, player, source="stats")
-        projections = self._materialize_rows(projection_rows, player, source="projections")
+        actuals = self._materialize_rows(actual_rows, player, source="stats", position=resolved_position)
+        projections = self._materialize_rows(projection_rows, player, source="projections", position=resolved_position)
         self._apply_snapshots(actuals, player_id, season)
         self._apply_snapshots(projections, player_id, season)
         actuals = [row for row in actuals if row["week"] <= week]
@@ -112,7 +124,7 @@ class PlayerUsageContextService:
         role = self._role_label(scores, reasons, player)
         snapshots = self._snapshots(player_id, season, week)
         return {
-            "schema_version": "player_usage_context.v1",
+            "schema_version": PLAYER_USAGE_CONTEXT_SCHEMA_VERSION,
             "data_source": "sleeper_normalized_data",
             "player_id": str(player_id),
             "name": player.get("full_name") or player.get("player_name") or str(player_id),
@@ -133,6 +145,7 @@ class PlayerUsageContextService:
             "role_snapshots": snapshots["role"],
             "availability_snapshots": snapshots["availability"],
             "windows": self._windows(actuals, projections),
+            "derived_metrics": compute_derived_metrics(resolved_position, actuals),
             "evidence": {
                 "recent_actual_weeks": [row["week"] for row in recent],
                 "season_actual_weeks": [row["week"] for row in actuals],
@@ -164,7 +177,7 @@ class PlayerUsageContextService:
         by_week = {int(row["week"]): row for row in raw_rows}
         return [{**row, "raw_row": by_week.get(int(row["week"]))} for row in rows]
 
-    def _materialize_rows(self, rows: Iterable[Mapping[str, Any]], player: Mapping[str, Any], *, source: str) -> list[dict[str, Any]]:
+    def _materialize_rows(self, rows: Iterable[Mapping[str, Any]], player: Mapping[str, Any], *, source: str, position: str) -> list[dict[str, Any]]:
         grouped: dict[int, dict[str, Any]] = defaultdict(dict)
         for raw in rows:
             week = int(raw["week"])
@@ -180,13 +193,18 @@ class PlayerUsageContextService:
             if isinstance(raw_json, Mapping):
                 row["raw"] = dict(raw_json)
             row["raw_stats"] = dict(stats)
-            for field, aliases in STAT_ALIASES.items():
-                values = [stats[key] for key in aliases if key in stats]
-                if values:
-                    row[field] = sum(values) if field == "takeaways" else values[0]
-            row["dropbacks"] = (row.get("pass_attempts") or 0) + (row.get("sacks") or 0) if row.get("pass_attempts") is not None or row.get("sacks") is not None else None
-            row["touches"] = (row.get("rush_attempts") or 0) + (row.get("targets") or 0) if row.get("rush_attempts") is not None or row.get("targets") is not None else None
-            row["total_kick_attempts"] = (row.get("field_goal_attempts") or 0) + (stats.get("extra_point_attempts") or stats.get("xpa") or 0) if row.get("field_goal_attempts") is not None or "extra_point_attempts" in stats or "xpa" in stats else None
+            for field, key in (STAT_KEYS | POSITION_STAT_KEYS.get(position, {})).items():
+                if key in stats:
+                    row[field] = stats[key]
+            for field, keys in POSITION_STAT_SUMS.get(position, {}).items():
+                if any(key in stats for key in keys):
+                    row[field] = sum(stats.get(key) or 0 for key in keys)
+            row["dropbacks"] = _sum_present(row, ("pass_attempts", "sacks_taken"))
+            # weighted_touches (rush_att + rec_tgt) is the RB opportunity metric;
+            # touches (rush_att + rec) is evidence only.
+            row["weighted_touches"] = _sum_present(row, ("rush_attempts", "targets"))
+            row["touches"] = _sum_present(row, ("rush_attempts", "receptions"))
+            row["total_kick_attempts"] = _sum_present(stats, ("fga", "xpa"))
             row["total_tds"] = sum(row.get(key) or 0 for key in ("pass_tds", "rush_tds", "rec_tds"))
             row["def_or_special_teams_tds"] = row.get("def_tds") or 0
             row["points"] = raw_row.get("fantasy_points", raw_row.get("sleeper_points")) if isinstance(raw_row, Mapping) else None
@@ -287,6 +305,13 @@ class PlayerUsageContextService:
 
 def build_player_usage_context(repository: Any, **kwargs: Any) -> dict[str, Any]:
     return PlayerUsageContextService(repository).build(**kwargs)
+
+
+def _sum_present(values: Mapping[str, Any], keys: Iterable[str]) -> float | None:
+    keys = tuple(keys)
+    if all(values.get(key) is None for key in keys):
+        return None
+    return sum(values.get(key) or 0 for key in keys)
 
 
 def _average(rows: Iterable[Mapping[str, Any]], key: str) -> float | None:

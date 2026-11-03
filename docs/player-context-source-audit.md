@@ -295,7 +295,7 @@ must remain in the same row as the code they qualify.
 | `season_average_stale` | all | computed | last_2_weeks + season_to_date | Completed active-week points only. | Projection-only version is allowed for forecast context. | none for the stated points comparison |
 | `recent_spike_against_stable_usage` | all | partial | last_2_weeks + season_to_date | Points versus raw opportunity; stable share is unavailable. | Not qualified as observed usage. | stable route/snap/share denominator |
 | `insufficient_post_change_sample` | all | computed | post_change_window | Count active actual weeks after the change. | Not qualified; forecast weeks are not post-change samples. | none; insufficient sample is the reason |
-| `low_touch_big_points` | RB/WR/TE | computed | last_1_week | `rush_att + rec` touch proxy versus actual points. | Not qualified as an actual spike. | touch proxy is not opportunity share |
+| `low_touch_big_points` | RB/WR/TE | computed | last_1_week | `weighted_touches = rush_att + rec_tgt` proxy versus actual points (v2 implementation; `touches = rush_att + rec` is evidence only). | Not qualified as an actual spike. | touch proxy is not opportunity share |
 | `low_target_big_points` | RB/WR/TE | computed | last_1_week | Actual `rec_tgt` versus actual receiving points. | Not qualified as an actual spike. | target share denominator |
 | `low_route_big_points` | WR/TE | not_evaluable_missing_source | last_1_week | No route input is stored. | No route input is stored. | routes/route share |
 | `td_only_low_usage` | QB/RB/WR/TE | partial | last_1_week | `partial` by contract: TD keys plus raw usage are useful but lack an opportunity/share denominator. | TD and usage forecast can be compared, not observed. | opportunity share and position-specific denominator |
@@ -315,7 +315,7 @@ must remain in the same row as the code they qualify.
 | `pass_td_spike_low_volume` | QB | partial | last_1_week | Actual passing TDs versus actual volume. | Forecast TD/volume comparison only. | stable opportunity and game-script context |
 | `rushing_td_spike` | QB | partial | last_1_week | Actual rushing TDs versus rush volume. | Forecast only. | red-zone/designated-rush context |
 | `garbage_time_unconfirmed` | QB | not_evaluable_missing_source | last_1_week | No game-state or play-time context. | Same. | game state and drive/play context |
-| `rb_touch_share_rise` | RB | partial | last_2_weeks + season_to_date | Touch proxy from actual carries plus receptions. | Not qualified as observed share. | team RB touch denominator |
+| `rb_touch_share_rise` | RB | partial | last_2_weeks + season_to_date | `weighted_touches` proxy from actual carries plus targets (`touches` = carries plus receptions is reported as evidence). | Not qualified as observed share. | team RB touch denominator |
 | `rb_receiving_role_rise` | RB | partial | last_2_weeks + season_to_date | Actual target/reception trend. | Forecast receiving volume only. | route and target-share denominator |
 | `injury_replacement` | RB | current_metadata_only | current_week + post_change_window | Current injury/depth metadata can suggest, not prove, replacement history. | Current metadata only; projections do not add historical availability. | week-specific availability/depth snapshot |
 | `long_run_spike_unconfirmed` | RB | partial | last_1_week | Actual long-run and rushing output fields. | Forecast explosive-run keys are not observed outcomes. | stable workload and play context |

@@ -4,7 +4,7 @@ from copy import deepcopy
 from decimal import Decimal
 from typing import Any, Iterable, Mapping, Sequence
 
-PLAYER_USAGE_CONTEXT_SCHEMA_VERSION = "player_usage_context.v1"
+PLAYER_USAGE_CONTEXT_SCHEMA_VERSION = "player_usage_context.v2"
 POSITION_FAMILIES = ("QB", "RB", "WR", "TE", "K", "DEF")
 SCORE_COMPONENT_KEYS = (
     "opportunity", "role_stability", "production_quality", "td_dependency",
@@ -20,6 +20,7 @@ COMPUTABILITY_TIERS: dict[str, dict[str, Any]] = {
 }
 
 TREND_WINDOWS: dict[str, dict[str, Any]] = {
+    "last_1_week": {"weeks": 1, "minimum_samples": 1, "eligible_weeks": "active_non_bye"},
     "last_2_weeks": {"weeks": 2, "minimum_samples": 2, "eligible_weeks": "active_non_bye"},
     "last_3_weeks": {"weeks": 3, "minimum_samples": 3, "eligible_weeks": "active_non_bye"},
     "last_4_weeks": {"weeks": 4, "minimum_samples": 3, "eligible_weeks": "active_non_bye"},
@@ -50,7 +51,7 @@ POSITION_MODIFIER_CAPS["DEF"]["matchup"] = deepcopy(MODIFIER_CAPS["def_streaming
 
 POSITION_USAGE_THRESHOLDS: dict[str, dict[str, Any]] = {
     "QB": {"dropbacks": {"increase_pct": 0.15, "window": "last_2_weeks"}, "rush_attempts": {"increase_per_game": 2.5, "window": "last_2_weeks"}},
-    "RB": {"touches": {"increase_pct": 0.30, "increase_per_game": 5.0, "window": "last_2_weeks"}, "targets": {"increase_per_game": 2.0, "window": "last_2_weeks"}},
+    "RB": {"weighted_touches": {"increase_pct": 0.30, "increase_per_game": 5.0, "window": "last_2_weeks"}, "targets": {"increase_per_game": 2.0, "window": "last_2_weeks"}},
     "WR": {"targets": {"increase_pct": 0.30, "increase_per_game": 2.5, "window": "last_2_weeks"}},
     "TE": {"targets": {"increase_pct": 0.30, "increase_per_game": 2.0, "window": "last_2_weeks"}, "red_zone_targets": {"straight_weeks": 2, "window": "last_2_weeks"}},
     "K": {"total_kick_attempts": {"increase_pct": 0.25, "window": "last_3_weeks"}},
@@ -59,7 +60,7 @@ POSITION_USAGE_THRESHOLDS: dict[str, dict[str, Any]] = {
 
 TD_DEPENDENCY_FORMULAS: dict[str, dict[str, Any]] = {
     "QB": {"formula": "passing_td_points / max(fantasy_points, 1)", "dependency_threshold": 0.45, "stability_counter_signal": "rush_attempts_per_game >= 4"},
-    "RB": {"formula": "(rush_td_points + rec_td_points) / max(fantasy_points, 1)", "dependency_threshold": 0.35, "stability_counter_signal": "touches_per_game >= 14"},
+    "RB": {"formula": "(rush_td_points + rec_td_points) / max(fantasy_points, 1)", "dependency_threshold": 0.35, "stability_counter_signal": "weighted_touches_per_game >= 14"},
     "WR": {"formula": "rec_td_points / max(fantasy_points, 1)", "dependency_threshold": 0.40, "stability_counter_signal": "targets_per_game >= 7"},
     "TE": {"formula": "rec_td_points / max(fantasy_points, 1)", "dependency_threshold": 0.45, "stability_counter_signal": "targets_per_game >= 5"},
     "K": {"formula": "long_field_goal_points / max(kicking_points, 1)", "dependency_threshold": 0.40, "stability_counter_signal": "total_kick_attempts_last_3_increase_pct >= 0.25"},
@@ -67,7 +68,7 @@ TD_DEPENDENCY_FORMULAS: dict[str, dict[str, Any]] = {
 }
 SPIKE_THRESHOLDS: dict[str, dict[str, Any]] = {
     "QB": {"passing_tds": {"min": 3}, "low_rushing_floor": {"rush_attempts_max": 3}},
-    "RB": {"total_tds": {"min": 2}, "low_touch_floor": {"touches_max": 12}},
+    "RB": {"total_tds": {"min": 2}, "low_touch_floor": {"weighted_touches_max": 12}},
     "WR": {"rec_tds": {"min": 2}, "low_target_floor": {"targets_max": 5}},
     "TE": {"rec_tds": {"min": 1}, "low_target_floor": {"targets_max": 4}},
     "K": {"made_50_plus": {"min": 2}, "long_kick_point_share": {"min": 0.40}},
@@ -97,10 +98,10 @@ REASON_CODES: dict[str, dict[str, Any]] = {
     "season_average_stale": _reason("season_average_stale", "season_context_score", "negative", "computed", ("recent points", "season points"), "low", "season average is stale relative to the recent active-week window"),
     "recent_spike_against_stable_usage": _reason("recent_spike_against_stable_usage", "one_off_risk", "negative", "partial", ("recent points", "stable opportunity"), "medium", "points rose without matching opportunity growth"),
     "insufficient_post_change_sample": _reason("insufficient_post_change_sample", "small_sample_risk", "negative", "computed", ("post-change active weeks",), "high", "too few active weeks exist after the detected role change"),
-    "low_touch_big_points": _reason("low_touch_big_points", "one_off_risk", "negative", "computed", ("fantasy points", "rush attempts", "receptions"), "high", "skill-player points spiked on a low-touch week"),
+    "low_touch_big_points": _reason("low_touch_big_points", "one_off_risk", "negative", "computed", ("fantasy points", "weighted touches (rush_att + rec_tgt)"), "high", "skill-player points spiked on a low weighted-touch week"),
     "low_target_big_points": _reason("low_target_big_points", "one_off_risk", "negative", "computed", ("fantasy points", "targets"), "high", "receiving points spiked on a low-target week"),
     "low_route_big_points": _reason("low_route_big_points", "one_off_risk", "negative", "not_evaluable_missing_source", (), "high", "route-based spike cannot be evaluated without route data", ("routes",)),
-    "td_only_low_usage": _reason("td_only_low_usage", "td_dependency", "negative", "computed", ("touches or targets", "touchdown stats"), "high", "touchdown points dominate a low-usage performance"),
+    "td_only_low_usage": _reason("td_only_low_usage", "td_dependency", "negative", "computed", ("weighted touches or targets", "touchdown stats"), "high", "touchdown points dominate a low-usage performance"),
     "def_td_spike": _reason("def_td_spike", "one_off_risk", "negative", "computed", ("defensive touchdown stats",), "high", "defensive value was inflated by a touchdown"),
     "turnover_spike_without_pressure": _reason("turnover_spike_without_pressure", "one_off_risk", "negative", "partial", ("turnovers", "sacks or qb hits"), "medium", "turnovers rose without the available pressure proxy rising"),
     "long_kick_spike": _reason("long_kick_spike", "one_off_risk", "negative", "computed", ("long field goals", "kicking points"), "medium", "kicker value was inflated by long field goals"),
@@ -111,7 +112,7 @@ REASON_CODES: dict[str, dict[str, Any]] = {
     "not_evaluable_missing_matchup_implied_total": _reason("not_evaluable_missing_matchup_implied_total", "matchup_adjustment", "neutral", "not_evaluable_missing_source", (), "low", "betting and implied-total data are missing", ("implied total",)),
     "not_evaluable_missing_matchup_pressure": _reason("not_evaluable_missing_matchup_pressure", "matchup_adjustment", "neutral", "not_evaluable_missing_source", (), "medium", "opponent pressure context is missing", ("pressure matchup",)),
     "not_evaluable_missing_dropbacks": _reason("not_evaluable_missing_dropbacks", "opportunity", "neutral", "not_evaluable_missing_source", (), "medium", "dropbacks are missing; this signal is not evaluable", ("dropbacks",)),
-    "not_evaluable_missing_touches": _reason("not_evaluable_missing_touches", "opportunity", "neutral", "not_evaluable_missing_source", (), "medium", "touches are missing; this signal is not evaluable", ("touches",)),
+    "not_evaluable_missing_weighted_touches": _reason("not_evaluable_missing_weighted_touches", "opportunity", "neutral", "not_evaluable_missing_source", (), "medium", "weighted touches (rush_att + rec_tgt) are missing; this signal is not evaluable", ("weighted_touches",)),
     "not_evaluable_missing_targets": _reason("not_evaluable_missing_targets", "opportunity", "neutral", "not_evaluable_missing_source", (), "medium", "targets are missing; this signal is not evaluable", ("targets",)),
     "not_evaluable_missing_rush_attempts": _reason("not_evaluable_missing_rush_attempts", "opportunity", "neutral", "not_evaluable_missing_source", (), "medium", "rush attempts are missing; this signal is not evaluable", ("rush_attempts",)),
     "not_evaluable_missing_pressure_proxy_rise": _reason("not_evaluable_missing_pressure_proxy_rise", "one_off_risk", "neutral", "not_evaluable_missing_source", (), "medium", "turnover spike risk is not evaluable without a pressure proxy", ("pressure_proxy_rise",)),
@@ -120,7 +121,7 @@ REASON_CODES: dict[str, dict[str, Any]] = {
     "not_evaluable_missing_routes": _reason("not_evaluable_missing_routes", "context_confidence", "neutral", "not_evaluable_missing_source", (), "medium", "route participation is not available in normalized Sleeper data", ("routes",)),
     "not_evaluable_missing_target_share": _reason("not_evaluable_missing_target_share", "context_confidence", "neutral", "not_evaluable_missing_source", (), "medium", "target share is not available in normalized Sleeper data", ("target_share",)),
     "not_evaluable_missing_red_zone_use": _reason("not_evaluable_missing_red_zone_use", "context_confidence", "neutral", "not_evaluable_missing_source", (), "medium", "red-zone usage is not available in normalized Sleeper data", ("red_zone_use",)),
-    "not_evaluable_missing_air_yards": _reason("not_evaluable_missing_air_yards", "context_confidence", "neutral", "not_evaluable_missing_source", (), "medium", "air yards are not available in normalized Sleeper data", ("air_yards",)),
+    "not_evaluable_missing_air_yard_share": _reason("not_evaluable_missing_air_yard_share", "context_confidence", "neutral", "not_evaluable_missing_source", (), "medium", "air-yard share needs a team air-yards denominator that Sleeper does not provide; absolute rec_air_yd/pass_air_yd are exposed in derived_metrics", ("air_yard_share",)),
     "not_evaluable_missing_touch_share": _reason("not_evaluable_missing_touch_share", "context_confidence", "neutral", "not_evaluable_missing_source", (), "medium", "touch share is not available in normalized Sleeper data", ("touch_share",)),
     "current_metadata_only_depth_chart": _reason("current_metadata_only_depth_chart", "depth_chart_confidence", "neutral", "current_metadata_only", ("current depth metadata",), "medium", "depth chart metadata is current-only and not historical", ("historical depth chart",)),
     "current_metadata_only_injury": _reason("current_metadata_only_injury", "role_stability", "neutral", "current_metadata_only", ("current injury metadata",), "medium", "injury metadata is current-only and not historical", ("historical availability",)),
@@ -235,9 +236,9 @@ def spike_reason_codes(position: str, row: Mapping[str, Any]) -> list[str]:
     thresholds = SPIKE_THRESHOLDS[position]
     codes: list[str] = []
     if position == "RB" and points >= 20:
-        if row.get("touches") is None:
-            codes.append("not_evaluable_missing_touches")
-        elif int(row["touches"]) <= thresholds["low_touch_floor"]["touches_max"]:
+        if row.get("weighted_touches") is None:
+            codes.append("not_evaluable_missing_weighted_touches")
+        elif int(row["weighted_touches"]) <= thresholds["low_touch_floor"]["weighted_touches_max"]:
             codes.append("low_touch_big_points")
     if position in {"WR", "TE"} and points >= 15:
         if row.get("targets") is None:
@@ -246,7 +247,7 @@ def spike_reason_codes(position: str, row: Mapping[str, Any]) -> list[str]:
             codes.append("low_target_big_points")
     td_count = int(row.get("total_tds", 0) or row.get("rec_tds", 0) or row.get("pass_tds", 0) or row.get("passing_tds", 0))
     if position in {"RB", "WR", "TE", "QB"} and td_count >= (thresholds.get("total_tds") or thresholds.get("rec_tds") or thresholds.get("passing_tds"))["min"]:
-        opportunity_field = {"RB": "touches", "WR": "targets", "TE": "targets", "QB": "rush_attempts"}[position]
+        opportunity_field = {"RB": "weighted_touches", "WR": "targets", "TE": "targets", "QB": "rush_attempts"}[position]
         if row.get(opportunity_field) is None:
             codes.append(f"not_evaluable_missing_{opportunity_field}")
         else:
@@ -274,7 +275,7 @@ def cap_modifier(cap_name: str, value: float, *, position: str | None = None) ->
 
 _OPPORTUNITY_METRIC_BY_POSITION = {
     "QB": "dropbacks",
-    "RB": "touches",
+    "RB": "weighted_touches",
     "WR": "targets",
     "TE": "targets",
 }
@@ -346,11 +347,241 @@ def evaluate_player_usage_context(position: str, inputs: Mapping[str, Any]) -> d
     return {"reason_codes": reason_codes, "reasons": reasons, "modifiers": capped_modifiers, "capped_modifiers": capped_modifiers}
 
 
+DERIVED_METRICS_SCHEMA_VERSION = "player_usage_derived_metrics.v1"
+DERIVED_METRIC_ROUNDING = 4
+DERIVED_METRICS_POLICY: dict[str, str] = {
+    "source": "Derived metrics use only rows from the actual `stats` source. Projection rows are never inputs.",
+    "classification": "Every derived metric is classified `actual`.",
+    "input_keys": "Each metric reads exact Sleeper stat keys from the normalized row; aliases are never summed.",
+    "absent_numerator": "Sleeper omits zero-valued stat keys, so an absent numerator key in a present stats row counts as 0. `input_key_presence` records how many window rows actually had each key.",
+    "absent_denominator": "A ratio sums numerator and denominator over the window rows where the denominator is present (ratio of sums, not mean of weekly ratios). No such row gives value null with `not_evaluable_missing_<denominator>`; never 0.",
+    "composite_denominator": "A composite denominator such as `dropbacks` (pass_att + pass_sack) or `touches` (rush_att + rec) is present in a row when at least one component key is present; absent components count as 0.",
+    "zero_denominator": "A denominator that sums to 0 gives value null with reason `denominator_zero`; never 0.",
+    "max": "Longest-play metrics take the maximum over rows that have the key; none gives `not_evaluable_missing_<key>`.",
+    "empty_window": "A window with no eligible actual rows gives value null with `not_evaluable_missing_actual_stats`.",
+    "absolute_counts": "off_snp, st_snp, rec_air_yd, and pass_air_yd are absolute counts, never shares. actual_snap_share_proxy (off_snp / tm_off_snp) is the only share-like value and is a team-snap proxy, not a position-specific snap share.",
+    "rounding": f"Ratio and per-game values are rounded to {DERIVED_METRIC_ROUNDING} decimal places.",
+}
+
+
+def _count_metric(name: str, keys: Sequence[str], formula: str | None = None, *, label: str = "absolute_count") -> dict[str, Any]:
+    return {"name": name, "kind": "count", "label": label, "formula": formula or " + ".join(keys), "input_keys": list(keys), "denominator_key": None, "denominator_input_keys": []}
+
+
+def _max_metric(name: str, key: str) -> dict[str, Any]:
+    return {"name": name, "kind": "max", "label": "absolute_max", "formula": f"max({key})", "input_keys": [key], "denominator_key": None, "denominator_input_keys": []}
+
+
+def _ratio_metric(name: str, numerator: Sequence[str], denominator_key: str, denominator_keys: Sequence[str], *, label: str = "rate") -> dict[str, Any]:
+    numerator_text = " + ".join(numerator)
+    denominator_text = " + ".join(denominator_keys)
+    if len(numerator) > 1:
+        numerator_text = f"({numerator_text})"
+    if len(denominator_keys) > 1:
+        denominator_text = f"({denominator_text})"
+    return {"name": name, "kind": "ratio", "label": label, "formula": f"sum({numerator_text}) / sum({denominator_text})", "input_keys": list(numerator), "numerator_keys": list(numerator), "denominator_key": denominator_key, "denominator_input_keys": list(denominator_keys)}
+
+
+DERIVED_METRIC_DEFINITIONS: dict[str, dict[str, Any]] = {
+    definition["name"]: definition
+    for definition in (
+        # QB passing volume and efficiency.
+        _count_metric("pass_attempts", ("pass_att",)),
+        _count_metric("pass_completions", ("pass_cmp",)),
+        _count_metric("pass_yards", ("pass_yd",)),
+        _count_metric("pass_tds", ("pass_td",)),
+        _count_metric("pass_interceptions", ("pass_int",)),
+        _count_metric("sacks_taken", ("pass_sack",)),
+        _count_metric("dropbacks", ("pass_att", "pass_sack")),
+        _ratio_metric("completion_rate", ("pass_cmp",), "pass_att", ("pass_att",)),
+        _ratio_metric("yards_per_dropback", ("pass_yd",), "dropbacks", ("pass_att", "pass_sack")),
+        _count_metric("pass_air_yards", ("pass_air_yd",)),
+        # Rushing.
+        _count_metric("rush_attempts", ("rush_att",)),
+        _count_metric("rush_yards", ("rush_yd",)),
+        _count_metric("rush_tds", ("rush_td",)),
+        _ratio_metric("rush_yards_per_attempt", ("rush_yd",), "rush_att", ("rush_att",)),
+        _count_metric("red_zone_rush_attempts", ("rush_rz_att",)),
+        _count_metric("rush_yards_after_contact", ("rush_yac",)),
+        _count_metric("rush_broken_tackles", ("rush_btkl",)),
+        _max_metric("longest_rush", "rush_lng"),
+        # Receiving.
+        _count_metric("targets", ("rec_tgt",)),
+        _count_metric("receptions", ("rec",)),
+        _count_metric("rec_yards", ("rec_yd",)),
+        _count_metric("rec_tds", ("rec_td",)),
+        _count_metric("red_zone_targets", ("rec_rz_tgt",)),
+        _count_metric("rec_air_yards", ("rec_air_yd",)),
+        _count_metric("drops", ("rec_drop",)),
+        _ratio_metric("catch_rate", ("rec",), "rec_tgt", ("rec_tgt",)),
+        _ratio_metric("yards_per_target", ("rec_yd",), "rec_tgt", ("rec_tgt",)),
+        # RB workload. `touches` is evidence; `weighted_touches` is the RB opportunity metric used by the rules.
+        _count_metric("touches", ("rush_att", "rec")),
+        _count_metric("weighted_touches", ("rush_att", "rec_tgt")),
+        _ratio_metric("yards_per_touch", ("rush_yd", "rec_yd"), "touches", ("rush_att", "rec")),
+        # Ball security.
+        _count_metric("fumbles", ("fum",)),
+        _count_metric("fumbles_lost", ("fum_lost",)),
+        # Snaps: absolute counts plus one explicitly named proxy.
+        _count_metric("offensive_snaps", ("off_snp",)),
+        _count_metric("special_teams_snaps", ("st_snp",)),
+        _ratio_metric("actual_snap_share_proxy", ("off_snp",), "tm_off_snp", ("tm_off_snp",), label="proxy"),
+        # Kicking.
+        _count_metric("fg_attempts", ("fga",)),
+        _count_metric("fg_made", ("fgm",)),
+        _count_metric("fg_missed", ("fgmiss",)),
+        _count_metric("xp_attempts", ("xpa",)),
+        _count_metric("xp_made", ("xpm",)),
+        _count_metric("total_kick_attempts", ("fga", "xpa")),
+        _count_metric("total_kick_makes", ("fgm", "xpm")),
+        *(_count_metric(key, (key,)) for key in ("fgm_20_29", "fgm_30_39", "fgm_40_49", "fgm_50_59", "fgm_60p", "fgm_50p", "fgmiss_20_29", "fgmiss_30_39", "fgmiss_40_49", "fgmiss_50_59", "fgmiss_60p", "fgmiss_50p")),
+        _max_metric("longest_fg", "fgm_lng"),
+        # Team defense.
+        _count_metric("sacks", ("sack",)),
+        _count_metric("qb_hits", ("qb_hit",)),
+        _count_metric("tackles_for_loss", ("tkl_loss",)),
+        _count_metric("interceptions", ("int",)),
+        _count_metric("fumble_recoveries", ("fum_rec",)),
+        _count_metric("takeaways", ("int", "fum_rec")),
+        _count_metric("def_tds", ("def_td",)),
+        _count_metric("def_st_tds", ("def_st_td",)),
+        _count_metric("points_allowed", ("pts_allow",)),
+        _count_metric("yards_allowed", ("yds_allow",)),
+    )
+}
+
+_SNAP_METRICS = ("offensive_snaps", "special_teams_snaps", "actual_snap_share_proxy")
+_RECEIVER_METRICS = ("targets", "receptions", "catch_rate", "yards_per_target", "rec_yards", "rec_tds", "red_zone_targets", "rec_air_yards", "drops")
+_RUSH_PRODUCTION_METRICS = ("rush_attempts", "rush_yards", "rush_tds")
+_BALL_SECURITY_METRICS = ("fumbles", "fumbles_lost")
+POSITION_DERIVED_METRICS: dict[str, tuple[str, ...]] = {
+    "QB": ("dropbacks", "pass_attempts", "pass_completions", "completion_rate", "pass_yards", "yards_per_dropback", "pass_tds", "pass_interceptions", "sacks_taken", "pass_air_yards", *_RUSH_PRODUCTION_METRICS, *_BALL_SECURITY_METRICS, "offensive_snaps", "actual_snap_share_proxy"),
+    "RB": (*_RUSH_PRODUCTION_METRICS, "receptions", "targets", "touches", "weighted_touches", "rec_yards", "rec_tds", "yards_per_touch", "rush_yards_per_attempt", "red_zone_rush_attempts", "red_zone_targets", "rush_yards_after_contact", "rush_broken_tackles", "longest_rush", "rec_air_yards", "drops", *_BALL_SECURITY_METRICS, *_SNAP_METRICS),
+    "WR": (*_RECEIVER_METRICS, *_RUSH_PRODUCTION_METRICS, *_BALL_SECURITY_METRICS, *_SNAP_METRICS),
+    "TE": (*_RECEIVER_METRICS, *_RUSH_PRODUCTION_METRICS, *_BALL_SECURITY_METRICS, *_SNAP_METRICS),
+    "K": ("fg_attempts", "fg_made", "fg_missed", "xp_attempts", "xp_made", "total_kick_attempts", "total_kick_makes", "fgm_20_29", "fgm_30_39", "fgm_40_49", "fgm_50_59", "fgm_60p", "fgm_50p", "fgmiss_20_29", "fgmiss_30_39", "fgmiss_40_49", "fgmiss_50_59", "fgmiss_60p", "fgmiss_50p", "longest_fg", "special_teams_snaps"),
+    "DEF": ("sacks", "qb_hits", "tackles_for_loss", "interceptions", "fumble_recoveries", "takeaways", "def_tds", "def_st_tds", "points_allowed", "yards_allowed"),
+}
+
+
+def _round_metric(value: float) -> float:
+    return float(round(Decimal(str(value)), DERIVED_METRIC_ROUNDING))
+
+
+def _row_stats(row: Mapping[str, Any]) -> Mapping[str, Any]:
+    stats = row.get("raw_stats")
+    return stats if isinstance(stats, Mapping) else {}
+
+
+def _key_presence(rows: Sequence[Mapping[str, Any]], keys: Iterable[str]) -> dict[str, int]:
+    return {key: sum(1 for row in rows if _row_stats(row).get(key) is not None) for key in keys}
+
+
+def _sum_keys(rows: Sequence[Mapping[str, Any]], keys: Sequence[str]) -> float:
+    return sum(float(_row_stats(row).get(key) or 0) for row in rows for key in keys)
+
+
+def compute_derived_metric(name: str, rows: Sequence[Mapping[str, Any]], *, window: str) -> dict[str, Any]:
+    """Compute one derived metric from exact stat keys over an actual-stats window."""
+
+    definition = DERIVED_METRIC_DEFINITIONS[name]
+    rows = [row for row in rows if row.get("source", "stats") == "stats"]
+    input_keys = list(definition["input_keys"])
+    denominator_keys = list(definition["denominator_input_keys"])
+    record: dict[str, Any] = {
+        "name": name,
+        "kind": definition["kind"],
+        "label": definition["label"],
+        "formula": definition["formula"],
+        "input_keys": input_keys,
+        "input_key_presence": _key_presence(rows, input_keys),
+        "denominator_key": definition["denominator_key"],
+        "denominator_input_keys": denominator_keys,
+        "denominator_value": None,
+        "denominator_valid": None,
+        "denominator_weeks": [],
+        "value": None,
+        "reason": None,
+        "classification": "actual",
+        "source": "stats",
+        "window": window,
+        "weeks": [int(row["week"]) for row in rows if row.get("week") is not None],
+        "sample_size": len(rows),
+    }
+    if definition["kind"] == "count":
+        record["per_game"] = None
+    if definition["kind"] == "ratio":
+        record["denominator_valid"] = False
+    if not rows:
+        record["reason"] = "not_evaluable_missing_actual_stats"
+        return record
+    if definition["kind"] == "count":
+        total = _sum_keys(rows, input_keys)
+        record["value"] = _round_metric(total)
+        record["per_game"] = _round_metric(total / len(rows))
+        return record
+    if definition["kind"] == "max":
+        key = input_keys[0]
+        values = [float(_row_stats(row)[key]) for row in rows if _row_stats(row).get(key) is not None]
+        if not values:
+            record["reason"] = f"not_evaluable_missing_{key}"
+        else:
+            record["value"] = _round_metric(max(values))
+        return record
+    denominator_rows = [row for row in rows if any(_row_stats(row).get(key) is not None for key in denominator_keys)]
+    record["denominator_weeks"] = [int(row["week"]) for row in denominator_rows if row.get("week") is not None]
+    record["denominator_key_presence"] = _key_presence(rows, denominator_keys)
+    if not denominator_rows:
+        record["reason"] = f"not_evaluable_missing_{definition['denominator_key']}"
+        return record
+    denominator = _sum_keys(denominator_rows, denominator_keys)
+    record["denominator_value"] = _round_metric(denominator)
+    if denominator == 0:
+        record["reason"] = "denominator_zero"
+        return record
+    record["denominator_valid"] = True
+    record["value"] = _round_metric(_sum_keys(denominator_rows, definition["numerator_keys"]) / denominator)
+    return record
+
+
+def compute_derived_metrics(position: str, actual_rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    """Build the versioned derived-metrics evidence block for one player.
+
+    Only actual `stats` rows are accepted; projection rows are dropped before
+    any window is formed so a forecast can never be labeled observed usage.
+    """
+
+    position = position.upper()
+    actual = [row for row in actual_rows if row.get("source", "stats") == "stats"]
+    windows: dict[str, Any] = {}
+    for window_name, window_definition in TREND_WINDOWS.items():
+        rows = trend_window(actual, window_name)
+        windows[window_name] = {
+            "weeks": [int(row["week"]) for row in rows],
+            "sample_size": len(rows),
+            "minimum_samples": window_definition["minimum_samples"],
+            "sufficient_sample": len(rows) >= window_definition["minimum_samples"],
+            "metrics": {name: compute_derived_metric(name, rows, window=window_name) for name in POSITION_DERIVED_METRICS[position]},
+        }
+    return {
+        "schema_version": DERIVED_METRICS_SCHEMA_VERSION,
+        "contract_version": PLAYER_USAGE_CONTEXT_SCHEMA_VERSION,
+        "position": position,
+        "source": "stats",
+        "classification": "actual",
+        "projection_rows_used": False,
+        "implementation": "python_only",
+        "metric_names": list(POSITION_DERIVED_METRICS[position]),
+        "policy": deepcopy(DERIVED_METRICS_POLICY),
+        "windows": windows,
+    }
+
+
 PLAYER_USAGE_CONTEXT_GOLDEN_FIXTURES: tuple[dict[str, Any], ...] = (
     {"id": "wr_high_points_low_usage", "case": "high_points_with_low_usage", "position": "WR", "inputs": {"recent_weeks": [{"week": 4, "active": True, "targets": 3, "points": 24, "rec_tds": 2}, {"week": 5, "active": True, "targets": 3, "points": 24, "rec_tds": 2}], "season_weeks": [{"week": 1, "active": True, "targets": 7, "points": 12}, {"week": 2, "active": True, "targets": 8, "points": 13}, {"week": 3, "active": True, "targets": 7, "points": 12}]}, "expected": {"reason_codes": ["role_loss_recent", "low_target_big_points", "td_only_low_usage"], "capped_modifiers": {"context": -6.0}}},
-    {"id": "rb_rising_usage_lagging_projection", "case": "rising_usage_with_lagging_projections", "position": "RB", "inputs": {"recent_weeks": [{"week": 4, "active": True, "touches": 19, "projection_delta": -2}, {"week": 5, "active": True, "touches": 20, "projection_delta": -2}], "season_weeks": [{"week": 1, "active": True, "touches": 14}, {"week": 2, "active": True, "touches": 14}, {"week": 3, "active": True, "touches": 14}]}, "expected": {"reason_codes": ["role_change_recent", "projection_lagging_role_change"], "capped_modifiers": {"trend": 4.0, "context": 4.0}}},
+    {"id": "rb_rising_usage_lagging_projection", "case": "rising_usage_with_lagging_projections", "position": "RB", "inputs": {"recent_weeks": [{"week": 4, "active": True, "weighted_touches": 19, "projection_delta": -2}, {"week": 5, "active": True, "weighted_touches": 20, "projection_delta": -2}], "season_weeks": [{"week": 1, "active": True, "weighted_touches": 14}, {"week": 2, "active": True, "weighted_touches": 14}, {"week": 3, "active": True, "weighted_touches": 14}]}, "expected": {"reason_codes": ["role_change_recent", "projection_lagging_role_change"], "capped_modifiers": {"trend": 4.0, "context": 4.0}}},
     {"id": "qb_high_projection_weak_actuals", "case": "high_projections_with_weak_actuals", "position": "QB", "inputs": {"recent_weeks": [{"week": 4, "active": True, "dropbacks": 25, "points": 11, "projected_points": 23}, {"week": 5, "active": True, "dropbacks": 25, "points": 11, "projected_points": 23}], "season_weeks": [{"week": 1, "active": True, "dropbacks": 35, "points": 18}, {"week": 2, "active": True, "dropbacks": 36, "points": 19}, {"week": 3, "active": True, "dropbacks": 34, "points": 18}]}, "expected": {"reason_codes": ["role_loss_recent", "season_average_stale"], "capped_modifiers": {"context": -6.0}}},
-    {"id": "rb_injury_fill_in", "case": "injury_fill_in", "position": "RB", "inputs": {"recent_weeks": [{"week": 4, "active": True, "touches": 17, "injury_fill_in": True}, {"week": 5, "active": True, "touches": 17, "injury_fill_in": True}], "season_weeks": [{"week": 1, "active": True, "touches": 6}, {"week": 2, "active": True, "touches": 7}, {"week": 3, "active": True, "touches": 6}]}, "expected": {"reason_codes": ["role_change_recent"], "capped_modifiers": {"context": 4.0}}},
+    {"id": "rb_injury_fill_in", "case": "injury_fill_in", "position": "RB", "inputs": {"recent_weeks": [{"week": 4, "active": True, "weighted_touches": 17, "injury_fill_in": True}, {"week": 5, "active": True, "weighted_touches": 17, "injury_fill_in": True}], "season_weeks": [{"week": 1, "active": True, "weighted_touches": 6}, {"week": 2, "active": True, "weighted_touches": 7}, {"week": 3, "active": True, "weighted_touches": 6}]}, "expected": {"reason_codes": ["role_change_recent"], "capped_modifiers": {"context": 4.0}}},
     {"id": "te_buried_depth_breakout", "case": "buried_depth_chart_breakout", "position": "TE", "inputs": {"recent_weeks": [{"week": 4, "active": True, "targets": 5, "red_zone_targets": 1}, {"week": 5, "active": True, "targets": 5, "red_zone_targets": 1}], "season_weeks": [{"week": 1, "active": True, "targets": 2}, {"week": 2, "active": True, "targets": 2}, {"week": 3, "active": True, "targets": 2}], "current_metadata": {"depth_chart_role": "third_te"}}, "expected": {"reason_codes": ["role_change_recent", "current_metadata_only_depth_chart"], "capped_modifiers": {"context": 6.0}}},
     {"id": "k_long_kick_spike", "case": "k_long_kick_spike", "position": "K", "inputs": {"recent_weeks": [{"week": 4, "active": True, "total_kick_attempts": 3, "made_50_plus": 2, "long_kick_point_share": 0.56}, {"week": 5, "active": True, "total_kick_attempts": 3, "made_50_plus": 2, "long_kick_point_share": 0.56}], "season_weeks": [{"week": 1, "active": True, "total_kick_attempts": 3, "made_50_plus": 0}, {"week": 2, "active": True, "total_kick_attempts": 3, "made_50_plus": 0}, {"week": 3, "active": True, "total_kick_attempts": 3, "made_50_plus": 0}]}, "expected": {"reason_codes": ["long_kick_spike"], "capped_modifiers": {"context": -4.5}}},
     {"id": "def_td_turnover_spike", "case": "def_touchdown_or_turnover_spike", "position": "DEF", "inputs": {"recent_weeks": [{"week": 4, "active": True, "def_or_special_teams_tds": 1, "takeaways": 4, "sacks": 1, "pressure_proxy_rise": False}, {"week": 5, "active": True, "def_or_special_teams_tds": 1, "takeaways": 4, "sacks": 1, "pressure_proxy_rise": False}], "season_weeks": [{"week": 1, "active": True, "def_or_special_teams_tds": 0, "takeaways": 1, "sacks": 4}, {"week": 2, "active": True, "def_or_special_teams_tds": 0, "takeaways": 1, "sacks": 4}, {"week": 3, "active": True, "def_or_special_teams_tds": 0, "takeaways": 1, "sacks": 4}], "matchup": {"raw_modifier": 4, "nfl_schedule_available": True}}, "expected": {"reason_codes": ["def_td_spike", "turnover_spike_without_pressure"], "capped_modifiers": {"context": -6.0, "matchup": 3.0}}},
@@ -380,4 +611,11 @@ def player_usage_context_contract() -> dict[str, Any]:
         "td_dependency_formulas": deepcopy(TD_DEPENDENCY_FORMULAS),
         "spike_thresholds": deepcopy(SPIKE_THRESHOLDS),
         "golden_fixtures": deepcopy(list(PLAYER_USAGE_CONTEXT_GOLDEN_FIXTURES)),
+        "derived_metrics": {
+            "schema_version": DERIVED_METRICS_SCHEMA_VERSION,
+            "implementation": "python_only",
+            "policy": deepcopy(DERIVED_METRICS_POLICY),
+            "definitions": deepcopy(DERIVED_METRIC_DEFINITIONS),
+            "position_metrics": {position: list(names) for position, names in POSITION_DERIVED_METRICS.items()},
+        },
     }
