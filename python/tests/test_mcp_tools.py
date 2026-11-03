@@ -2183,3 +2183,27 @@ class FakeDeepWaiverClient(FakeLineupClient):
             )
             for rank in range(1, 12)
         ]
+
+
+def test_usage_decision_score_counts_only_td_share_above_position_threshold() -> None:
+    from sleeper_tooling.mcp_tools import _usage_decision_score
+
+    def profile(position: str, td_share: float | None) -> dict:
+        return {
+            "position": position,
+            "scores": {
+                "opportunity_score": 80,
+                "role_stability_score": 70,
+                "production_quality_score": 60,
+                "context_confidence": 90,
+                "td_dependency_score": td_share,
+                "small_sample_risk": 0,
+                "one_off_risk": 0,
+            },
+        }
+
+    assert _usage_decision_score(profile("QB", 30)) == 300
+    assert _usage_decision_score(profile("QB", 45)) == 300
+    assert _usage_decision_score(profile("QB", 61)) == 284
+    assert _usage_decision_score(profile("RB", 44)) == 291
+    assert _usage_decision_score(profile("WR", None)) == 300
