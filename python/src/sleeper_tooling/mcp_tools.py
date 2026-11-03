@@ -29,6 +29,7 @@ from sleeper_tooling.league_context import (
 from sleeper_tooling.matchup_model import build_repository_matchup_profile
 from sleeper_tooling.player_values import build_player_values
 from sleeper_tooling.player_usage_context import PlayerUsageContextService
+from sleeper_tooling.player_usage_context_rules import TD_DEPENDENCY_FORMULAS
 from sleeper_tooling.roster_analysis import (
     build_league_roster_analysis,
     build_roster_analysis,
@@ -266,8 +267,14 @@ class FantasyToolRunner:
             "td_dependency_score",
             "context_confidence",
         )
+        # A score can be null (td_dependency_score when league scoring
+        # contributions are missing); its delta is then null, never 0.
         deltas = {
-            key: round(float(left["scores"].get(key, 0)) - float(right["scores"].get(key, 0)), 2)
+            key: (
+                round(float(left["scores"][key]) - float(right["scores"][key]), 2)
+                if left["scores"].get(key) is not None and right["scores"].get(key) is not None
+                else None
+            )
             for key in score_keys
         }
         decision_scores = {
@@ -2092,15 +2099,31 @@ def parse_positions(positions: str) -> list[str]:
 
 def _usage_decision_score(profile: dict[str, Any]) -> float:
     scores = profile.get("scores", {})
+    # Null scores (for example td_dependency_score without league scoring
+    # contributions) add nothing; the profile carries the explicit
+    # not_evaluable_missing_* reason code instead.
     positive = sum(
-        float(scores.get(key, 0))
+        float(scores.get(key) or 0)
         for key in ("opportunity_score", "role_stability_score", "production_quality_score", "context_confidence")
     )
     risk = sum(
-        float(scores.get(key, 0))
-        for key in ("td_dependency_score", "small_sample_risk", "one_off_risk")
+        float(scores.get(key) or 0)
+        for key in ("small_sample_risk", "one_off_risk")
     )
-    return round(positive - risk, 2)
+    return round(positive - risk - _td_dependency_risk(profile), 2)
+
+
+def _td_dependency_risk(profile: dict[str, Any]) -> float:
+    # td_dependency_score is a 0-100 league TD share. Only the share above the
+    # position's dependency_threshold counts as risk, so ordinary TD scorers
+    # are not penalized for scoring touchdowns.
+    score = profile.get("scores", {}).get("td_dependency_score")
+    if score is None:
+        return 0.0
+    position = str(profile.get("position") or "").upper()
+    formula = TD_DEPENDENCY_FORMULAS.get(position)
+    threshold = float(formula["dependency_threshold"]) * 100 if formula else 0.0
+    return max(0.0, float(score) - threshold)
 
 
 def _usage_context_disagreement(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:

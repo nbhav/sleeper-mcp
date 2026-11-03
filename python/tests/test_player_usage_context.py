@@ -79,14 +79,15 @@ def stats_row(week: int, stats: dict[str, float], *, source: str = "stats", acti
 # --- contract version and windows -------------------------------------------------
 
 
-def test_contract_version_is_v2_in_output_and_contract() -> None:
-    assert PLAYER_USAGE_CONTEXT_SCHEMA_VERSION == "player_usage_context.v2"
+def test_contract_version_is_v3_in_output_and_contract() -> None:
+    assert PLAYER_USAGE_CONTEXT_SCHEMA_VERSION == "player_usage_context.v3"
     result = build("WR", {1: {"rec_tgt": 5, "rec": 3}})
-    assert result["schema_version"] == "player_usage_context.v2"
+    assert result["schema_version"] == "player_usage_context.v3"
+    assert DERIVED_METRICS_SCHEMA_VERSION == "player_usage_derived_metrics.v2"
     assert result["derived_metrics"]["schema_version"] == DERIVED_METRICS_SCHEMA_VERSION
-    assert result["derived_metrics"]["contract_version"] == "player_usage_context.v2"
+    assert result["derived_metrics"]["contract_version"] == "player_usage_context.v3"
     contract = player_usage_context_contract()
-    assert contract["schema_version"] == "player_usage_context.v2"
+    assert contract["schema_version"] == "player_usage_context.v3"
     assert contract["derived_metrics"]["schema_version"] == DERIVED_METRICS_SCHEMA_VERSION
     assert contract["derived_metrics"]["implementation"] == "python_only"
     assert set(contract["derived_metrics"]["position_metrics"]) == {"QB", "RB", "WR", "TE", "K", "DEF"}
@@ -452,3 +453,472 @@ def test_golden_fixtures_use_weighted_touches_inputs() -> None:
         result = evaluate_player_usage_context(fixture["position"], fixture["inputs"])
         assert result["reason_codes"] == fixture["expected"]["reason_codes"]
         assert result["capped_modifiers"] == fixture["expected"]["capped_modifiers"]
+
+
+# --- v3: league repository fake ---------------------------------------------------
+
+
+class LeagueRepository:
+    """Multi-player normalized-store fake with raw rows, scoring values, and availability.
+
+    stats: {(source, player_id): {week: {stat_key: value}}}
+    points: {(source, player_id, week): fantasy_points or None}
+    scoring: {(player_id, week): {stat_key: points}}
+    availability: {(week, team): [availability rows]}
+    """
+
+    def __init__(self, players, stats, *, points=None, scoring=None, availability=None, scoring_method=True, raw=None):
+        self.players = players
+        self.stats = stats
+        self.raw = raw or {}
+        self.points = points or {}
+        self.scoring = scoring or {}
+        self.availability = availability
+        if not scoring_method:
+            self.list_player_week_scoring_values = None  # type: ignore[assignment]
+
+    def get_player(self, player_id):
+        return self.players.get(player_id, {"player_id": player_id})
+
+    def query_numeric_stat_rows(self, *, source, season, start_week, end_week, player_ids):
+        rows = []
+        for player_id in player_ids:
+            player = self.players.get(player_id, {})
+            for week, stats in sorted(self.stats.get((source, player_id), {}).items()):
+                if start_week <= week <= end_week:
+                    rows.extend({"week": week, "player_id": player_id, "team": player.get("team"), "position": player.get("position"), "stat_key": key, "stat_value": value} for key, value in stats.items())
+        return rows
+
+    def list_player_week_rows(self, *, source, season, week, player_id=None):
+        key = (source, player_id, week)
+        if key not in self.points:
+            return []
+        return [{"source": source, "week": week, "player_id": player_id, "fantasy_points": self.points[key], "sleeper_points": 99.0, "raw_json": self.raw.get(key, {})}]
+
+    def list_player_week_scoring_values(self, *, source, season, week, player_id=None):
+        return [{"stat_key": key, "points": value} for key, value in self.scoring.get((player_id, week), {}).items()]
+
+    def list_player_week_availability(self, *, season, week, team=None, player_id=None):
+        if self.availability is None:
+            return []
+        rows = [row for (row_week, row_team), group in self.availability.items() if row_week == week and (team is None or row_team == team) for row in group]
+        return [row for row in rows if player_id is None or row["player_id"] == player_id]
+
+    def get_team_week_schedule(self, **kwargs):
+        return None
+
+    def list_player_role_snapshots(self, **kwargs):
+        return []
+
+
+def league_build(repo: LeagueRepository, player_id: str, week: int) -> dict[str, Any]:
+    return PlayerUsageContextService(repo).build(player_id=player_id, season=2026, week=week)
+
+
+# --- v3: league-scoring TD dependency ---------------------------------------------
+
+
+def test_td_share_uses_league_scoring_contributions() -> None:
+    players = {"wr": {"player_id": "wr", "team": "DEN", "position": "WR"}}
+    stats = {("stats", "wr"): {1: {"rec_tgt": 8, "rec": 6, "rec_yd": 80, "rec_td": 1}, 2: {"rec_tgt": 8, "rec": 5, "rec_yd": 60}}}
+    points = {("stats", "wr", 1): 20.0, ("stats", "wr", 2): 11.0}
+    scoring = {("wr", 1): {"rec": 6.0, "rec_yd": 8.0, "rec_td": 6.0}, ("wr", 2): {"rec": 5.0, "rec_yd": 6.0}}
+    result = league_build(LeagueRepository(players, stats, points=points, scoring=scoring), "wr", 2)
+    td = result["td_dependency"]
+    assert result["td_dependency_method"] == "league_scoring_contributions"
+    assert td["source"] == "player_week_scoring_values"
+    assert td["window"] == "last_2_weeks"
+    assert td["weeks"] == [1, 2]
+    assert td["td_scoring_keys_used"] == ["rec_td"]
+    assert td["td_points"] == 6.0
+    assert td["fantasy_points"] == 31.0
+    assert td["value"] == round(6 / 31, 4)
+    assert result["scores"]["td_dependency_score"] == round(6 / 31 * 100, 2)
+    assert td["position_formula"]["formula"] == "sum(receiving_td_points) / sum(fantasy_points)"
+    assert td["position_formula"]["value"] == round(6 / 31, 4)
+    assert td["position_formula"]["above_threshold"] is False
+    assert "not_evaluable_missing_scoring_contributions" not in result["reason_codes"]
+    # League fantasy_points (not sleeper_points) is the row points value.
+    assert [row["points"] for row in result["evidence"]["actual_rows"]] == [20.0, 11.0]
+
+
+def test_td_share_reflects_non_standard_td_values() -> None:
+    players = {"qb": {"player_id": "qb", "team": "DEN", "position": "QB"}}
+    stats = {("stats", "qb"): {1: {"pass_att": 30, "pass_td": 2, "rush_td": 1, "pass_yd": 250, "pass_int": 1}}}
+
+    def qb_result(pass_td_points: float) -> dict[str, Any]:
+        contributions = {"pass_td": 2 * pass_td_points, "rush_td": 6.0, "pass_yd": 10.0, "pass_int_td": -1.0}
+        total = sum(contributions.values())
+        repo = LeagueRepository(players, stats, points={("stats", "qb", 1): total}, scoring={("qb", 1): contributions})
+        return league_build(repo, "qb", 1)
+
+    six_point = qb_result(6.0)["td_dependency"]
+    four_point = qb_result(4.0)["td_dependency"]
+    # 6-pt passing TD league: (12 + 6) / 27.
+    assert six_point["td_points"] == 18.0
+    assert six_point["fantasy_points"] == 27.0
+    assert six_point["value"] == round(18 / 27, 4)
+    assert six_point["td_scoring_keys_used"] == ["pass_td", "rush_td"]
+    assert six_point["excluded_keys_present"] == ["pass_int_td"]
+    assert six_point["position_formula"]["numerator_keys_used"] == ["pass_td"]
+    assert six_point["position_formula"]["value"] == round(12 / 27, 4)
+    # Same stat line in a 4-pt league gives a different share: no fixed heuristic.
+    assert four_point["value"] == round(14 / 23, 4)
+    assert four_point["value"] != six_point["value"]
+
+
+def test_td_family_classifier_covers_bonus_and_defensive_keys() -> None:
+    from sleeper_tooling.player_usage_context_rules import td_scoring_key_family
+
+    assert td_scoring_key_family("pass_td") == "passing_td"
+    assert td_scoring_key_family("rec_td_40p") == "receiving_td"
+    assert td_scoring_key_family("bonus_rush_td_qb") == "rushing_td"
+    assert td_scoring_key_family("def_st_td") == "defense_special_teams_td"
+    assert td_scoring_key_family("bonus_def_int_td_50p") == "defense_special_teams_td"
+    assert td_scoring_key_family("st_td") == "defense_special_teams_td"
+    assert td_scoring_key_family("fum_rec_td") == "other_td"
+    assert td_scoring_key_family("pass_int_td") is None
+    assert td_scoring_key_family("pass_yd") is None
+    assert td_scoring_key_family("td") is None
+
+
+def test_def_td_dependency_counts_def_tds_and_turnovers() -> None:
+    players = {"den": {"player_id": "den", "team": "DEN", "position": "DEF"}}
+    stats = {("stats", "den"): {1: {"sack": 3, "int": 2, "def_td": 1, "pts_allow": 17}}}
+    repo = LeagueRepository(players, stats, points={("stats", "den", 1): 13.0}, scoring={("den", 1): {"sack": 3.0, "int": 4.0, "def_td": 6.0}})
+    td = league_build(repo, "den", 1)["td_dependency"]
+    assert td["td_points"] == 6.0
+    assert td["value"] == round(6 / 13, 4)
+    assert td["position_formula"]["numerator_keys_used"] == ["def_td", "int"]
+    assert td["position_formula"]["value"] == round(10 / 13, 4)
+    assert td["position_formula"]["above_threshold"] is True
+
+
+def test_missing_scoring_contributions_emit_explicit_code_without_heuristic() -> None:
+    players = {"wr": {"player_id": "wr", "team": "DEN", "position": "WR"}}
+    stats = {("stats", "wr"): {1: {"rec_tgt": 3, "rec_td": 2}}}
+    # No scoring-values primitive at all.
+    no_method = league_build(LeagueRepository(players, stats, points={("stats", "wr", 1): 24.0}, scoring_method=False), "wr", 1)
+    # League scoring did not run for the row (fantasy_points is null).
+    null_points = league_build(LeagueRepository(players, stats, points={("stats", "wr", 1): None}, scoring={("wr", 1): {"rec_td": 12.0}}), "wr", 1)
+    # No raw row at all.
+    no_raw = build("WR", {1: {"rec_tgt": 3, "rec_td": 2}})
+    for result in (no_method, null_points, no_raw):
+        assert "not_evaluable_missing_scoring_contributions" in result["reason_codes"]
+        assert result["td_dependency"]["value"] is None
+        assert result["td_dependency"]["reason"] == "not_evaluable_missing_scoring_contributions"
+        assert result["td_dependency"]["missing_contribution_weeks"] == [1]
+        assert result["scores"]["td_dependency_score"] is None
+        assert result["td_dependency_method"] == "league_scoring_contributions"
+    reason = next(row for row in no_method["reasons"] if row["code"] == "not_evaluable_missing_scoring_contributions")
+    assert reason["computability_tier"] == "not_evaluable_missing_source"
+
+
+def test_empty_contributions_with_league_points_is_a_real_zero() -> None:
+    players = {"rb": {"player_id": "rb", "team": "DEN", "position": "RB"}}
+    stats = {("stats", "rb"): {1: {"rush_att": 3}}}
+    result = league_build(LeagueRepository(players, stats, points={("stats", "rb", 1): 0.0}, scoring={}), "rb", 1)
+    assert result["td_dependency"]["reason"] == "denominator_non_positive"
+    assert "not_evaluable_missing_scoring_contributions" not in result["reason_codes"]
+    stats = {("stats", "rb"): {1: {"rush_att": 10, "rush_yd": 50}}}
+    result = league_build(LeagueRepository(players, stats, points={("stats", "rb", 1): 5.0}, scoring={("rb", 1): {"rush_yd": 5.0}}), "rb", 1)
+    assert result["td_dependency"]["value"] == 0.0
+    assert result["scores"]["td_dependency_score"] == 0.0
+
+
+def test_td_dependency_formulas_are_evaluated_not_strings_with_max() -> None:
+    from sleeper_tooling.player_usage_context_rules import TD_DEPENDENCY_FORMULAS
+
+    contract = player_usage_context_contract()
+    assert contract["td_dependency"]["method"] == "league_scoring_contributions"
+    assert contract["td_dependency"]["excluded_keys"] == ["pass_int_td"]
+    for position, formula in TD_DEPENDENCY_FORMULAS.items():
+        assert formula["numerator_families"], position
+        assert "max(" not in formula["formula"], position
+
+
+# --- v3: kicker long-kick share from real keys ------------------------------------
+
+
+def test_long_kick_point_share_uses_league_bucket_points() -> None:
+    players = {"k": {"player_id": "k", "team": "DEN", "position": "K"}}
+    stats = {("stats", "k"): {1: {"fga": 1, "fgm": 1, "fgm_50_59": 1, "fgm_50p": 1, "fgm_lng": 52, "xpa": 2, "xpm": 2}}}
+    repo = LeagueRepository(players, stats, points={("stats", "k", 1): 7.0}, scoring={("k", 1): {"fgm_50_59": 5.0, "xpm": 2.0}})
+    result = league_build(repo, "k", 1)
+    row = result["evidence"]["actual_rows"][0]
+    assert row["long_kick_point_share"] == round(5 / 7, 4)
+    assert row["made_50_plus"] == 1
+    assert "long_kick_spike" in result["reason_codes"]
+
+
+def test_long_kick_point_share_not_separable_when_league_scores_fg_yards() -> None:
+    players = {"k": {"player_id": "k", "team": "DEN", "position": "K"}}
+    stats = {("stats", "k"): {1: {"fga": 1, "fgm": 1, "fgm_50_59": 1, "fgm_50p": 1, "fgm_yds": 52, "xpa": 2, "xpm": 2}}}
+    repo = LeagueRepository(players, stats, points={("stats", "k", 1): 7.2}, scoring={("k", 1): {"fgm_yds": 5.2, "xpm": 2.0}})
+    result = league_build(repo, "k", 1)
+    row = result["evidence"]["actual_rows"][0]
+    assert row["long_kick_point_share"] is None
+    assert row["long_kick_point_share_reason"] == "not_evaluable_long_field_goal_points_not_separable"
+    assert "long_kick_spike" not in result["reason_codes"]
+    assert result["td_dependency"]["position_formula"]["reason"] == "not_evaluable_long_field_goal_points_not_separable"
+    # Legacy fgm_50_plus is never read.
+    assert spike_reason_codes("K", {"fgm_50_plus": 3, "long_kick_point_share": None}) == []
+
+
+# --- v3: projection presence flags ------------------------------------------------
+
+
+def test_projection_row_and_key_presence_flags() -> None:
+    players = {"wr": {"player_id": "wr", "team": "DEN", "position": "WR"}}
+    stats = {
+        ("stats", "wr"): {1: {"rec_tgt": 6}, 2: {"rec_tgt": 7}, 3: {"rec_tgt": 5}},
+        # Week 1: no projection row. Week 2: projection row without rec_tgt or points.
+        # Week 3: genuine projected zero for rec_tgt and points.
+        ("projections", "wr"): {2: {"rec": 3}, 3: {"rec_tgt": 0}},
+    }
+    points = {("stats", "wr", 1): 10.0, ("stats", "wr", 2): 12.0, ("stats", "wr", 3): 8.0, ("projections", "wr", 3): 0.0}
+    result = league_build(LeagueRepository(players, stats, points=points), "wr", 3)
+    by_week = {row["week"]: row for row in result["projection_comparison"]}
+    assert by_week[1]["projection_row_present"] is False
+    assert by_week[1]["projection_key_present"] == {"points": False, "rec_tgt": False}
+    assert by_week[1]["projected_points"] is None
+    assert by_week[1]["projection_delta"] is None
+    assert by_week[2]["projection_row_present"] is True
+    assert by_week[2]["projection_key_present"] == {"points": False, "rec_tgt": False}
+    assert by_week[2]["projected_values"] == {"rec_tgt": None}
+    assert by_week[2]["projection_delta"] is None
+    assert by_week[3]["projection_row_present"] is True
+    assert by_week[3]["projection_key_present"] == {"points": True, "rec_tgt": True}
+    assert by_week[3]["projected_values"] == {"rec_tgt": 0}
+    assert by_week[3]["projected_points"] == 0.0
+    assert by_week[3]["projection_delta"] == -8.0
+
+
+def test_projection_comparison_and_td_dependency_label_source_and_classification() -> None:
+    players = {"wr": {"player_id": "wr", "team": "DEN", "position": "WR"}}
+    stats = {("stats", "wr"): {1: {"rec_tgt": 6}}, ("projections", "wr"): {1: {"rec_tgt": 5, "pts_ppr": 9}}}
+    result = league_build(LeagueRepository(players, stats, points={("stats", "wr", 1): 10.0}, scoring={("wr", 1): {"rec_yd": 10.0}}), "wr", 1)
+    entry = result["projection_comparison"][0]
+    assert (entry["classification"], entry["actual_source"], entry["projection_source"]) == ("same_week_delta", "stats", "projections")
+    assert result["td_dependency"]["classification"] == "actual"
+    assert result["td_dependency"]["source"] == "player_week_scoring_values"
+
+
+def test_raw_weekly_identity_fields_are_evidence_without_matchup_claims() -> None:
+    players = {"wr": {"player_id": "wr", "team": "DEN", "position": "WR"}}
+    stats = {("stats", "wr"): {1: {"rec_tgt": 6}}}
+    raw = {("stats", "wr", 1): {"opponent": "KC", "game_id": "202609101", "date": "2026-09-10"}}
+    result = league_build(LeagueRepository(players, stats, points={("stats", "wr", 1): 10.0}, raw=raw), "wr", 1)
+    row = result["evidence"]["actual_rows"][0]
+    assert row["raw"] == {"opponent": "KC", "game_id": "202609101", "date": "2026-09-10"}
+    assert result["scores"]["matchup_adjustment"] == 0.0
+    assert "matchup" not in result["modifiers"]
+    assert "not_evaluable_missing_nfl_schedule" in result["reason_codes"]
+    assert not any(code in result["reason_codes"] for code in ("matchup_opponent_label_present", "not_evaluable_missing_matchup_strength"))
+
+
+def test_projection_delta_uses_same_week_only() -> None:
+    players = {"wr": {"player_id": "wr", "team": "DEN", "position": "WR"}}
+    # Latest actual is week 2; the only projection row is week 1.
+    stats = {("stats", "wr"): {1: {"rec_tgt": 6}, 2: {"rec_tgt": 7}}, ("projections", "wr"): {1: {"rec_tgt": 5, "pts_ppr": 30}}}
+    result = league_build(LeagueRepository(players, stats, points={("stats", "wr", 1): 10.0, ("stats", "wr", 2): 12.0}), "wr", 2)
+    assert all("projection_delta" not in row for row in result["evidence"]["actual_rows"])
+    assert result["projection_comparison"][-1]["projection_row_present"] is False
+
+
+# --- v3: change-point detection / post_change_window ------------------------------
+
+
+def rb_rows(values: list[float | None], *, bye_weeks: tuple[int, ...] = ()) -> list[dict[str, Any]]:
+    return [{"week": week, "active": True, "bye": week in bye_weeks, "weighted_touches": value} for week, value in enumerate(values, start=1)]
+
+
+def test_change_point_none_for_flat_series() -> None:
+    from sleeper_tooling.player_usage_context_rules import detect_change_point
+
+    result = detect_change_point("RB", rb_rows([10, 11, 10, 11, 10, 11]))
+    assert result["status"] == "no_change"
+    assert result["post_change_weeks"] == []
+    assert detect_change_point("RB", rb_rows([10, 11, 12]))["status"] == "no_change"
+    assert detect_change_point("RB", rb_rows([10, 18]))["status"] == "insufficient_sample"
+    assert detect_change_point("RB", [{"week": 1, "active": True}, {"week": 2, "active": True}])["status"] == "not_evaluable_missing_weighted_touches"
+
+
+def test_change_point_detects_week4_role_change() -> None:
+    from sleeper_tooling.player_usage_context_rules import detect_change_point
+
+    result = detect_change_point("RB", rb_rows([10, 10, 10, 14, 14, 14, 14]))
+    assert result["status"] == "change_detected"
+    assert result["change_week"] == 4
+    assert result["direction"] == "increased"
+    assert result["post_change_weeks"] == [4, 5, 6, 7]
+    assert result["pre_change_weeks"] == [1, 2, 3]
+    assert result["pre_change_average"] == 10.0
+    assert result["post_change_average"] == 14.0
+
+
+def test_noisy_single_week_spike_is_not_a_change() -> None:
+    from sleeper_tooling.player_usage_context_rules import detect_change_point
+
+    assert detect_change_point("RB", rb_rows([10, 10, 10, 16, 10]))["status"] == "no_change"
+    assert detect_change_point("RB", rb_rows([10, 10, 10, 20, 10, 10]))["status"] == "no_change"
+    # A two-week shift that reverts before the latest week is not sustained.
+    assert detect_change_point("RB", rb_rows([10, 10, 10, 16, 16, 10]))["status"] == "no_change"
+    # Bye and inactive weeks are skipped, not read as a usage drop.
+    with_bye = detect_change_point("RB", rb_rows([10, 10, 10, 16, 0, 16], bye_weeks=(5,)))
+    assert with_bye["status"] == "change_detected"
+    assert with_bye["post_change_weeks"] == [4, 6]
+
+
+def test_week4_change_evaluated_at_week7_uses_post_change_window_end_to_end() -> None:
+    weeks = {week: {"rush_att": value, "rec_tgt": 0} for week, value in enumerate([10, 10, 10, 14, 14, 14, 14], start=1)}
+    result = build("RB", weeks)
+    trend = result["trend_window"]
+    assert trend["name"] == "post_change_window"
+    assert trend["weeks"] == [4, 5, 6, 7]
+    assert trend["baseline_weeks"] == [1, 2, 3]
+    assert trend["change_point"]["change_week"] == 4
+    assert "role_change_recent" in result["reason_codes"]
+    assert result["evidence"]["recent_actual_weeks"] == [4, 5, 6, 7]
+    assert result["evidence"]["baseline_weeks"] == [1, 2, 3]
+    window = result["windows"]["post_change_window"]
+    assert window["detected"] is True
+    assert [row["week"] for row in window["actual"]] == [4, 5, 6, 7]
+    derived = result["derived_metrics"]["windows"]["post_change_window"]
+    assert derived["weeks"] == [4, 5, 6, 7]
+    assert derived["metrics"]["rush_attempts"]["value"] == 56
+    # The old fixed split (last 2 vs weeks 1-5) would not have flagged this.
+    rows = rb_rows([10, 10, 10, 14, 14, 14, 14])
+    from sleeper_tooling.player_usage_context_rules import opportunity_signal
+
+    assert opportunity_signal("RB", rows, metric="weighted_touches")["status"] == "stable"
+
+
+def test_no_change_keeps_fixed_trend_window() -> None:
+    result = build("WR", {1: {"rec_tgt": 6}, 2: {"rec_tgt": 6}, 3: {"rec_tgt": 12}, 4: {"rec_tgt": 6}})
+    assert result["trend_window"]["name"] == "last_2_weeks"
+    assert result["trend_window"]["change_point"]["status"] == "no_change"
+    assert result["windows"]["post_change_window"]["detected"] is False
+    assert result["windows"]["post_change_window"]["actual"] == []
+    assert "post_change_window" not in result["derived_metrics"]["windows"]
+
+
+# --- v3: injury_replacement --------------------------------------------------------
+
+
+def injury_repo(*, availability, teammate_baseline: float = 15.0, teammate_position: str = "RB") -> LeagueRepository:
+    players = {
+        "backup": {"player_id": "backup", "full_name": "Backup Back", "team": "DEN", "position": "RB"},
+        "starter": {"player_id": "starter", "full_name": "Starter Back", "team": "DEN", "position": teammate_position},
+    }
+    backup = {week: {"rush_att": value, "rec_tgt": 1} for week, value in ((1, 5), (2, 6), (3, 5), (4, 16), (5, 16))}
+    starter = {week: {"rush_att": teammate_baseline, "rec_tgt": 0, "rec": 0} for week in (1, 2, 3)}
+    return LeagueRepository(players, {("stats", "backup"): backup, ("stats", "starter"): starter}, availability=availability)
+
+
+def availability_row(player_id: str, week: int, status: str, injury_status: str | None = None) -> dict[str, Any]:
+    return {"season": 2026, "week": week, "team": "DEN", "player_id": player_id, "status": status, "injury_status": injury_status, "source": "sleeper_players_current_metadata", "snapshot_at": 1760000000.0 + week}
+
+
+def test_injury_replacement_with_teammate_absence() -> None:
+    availability = {(week, "DEN"): [availability_row("starter", week, "Inactive", "Out"), availability_row("backup", week, "Active")] for week in (4, 5)}
+    result = league_build(injury_repo(availability=availability), "backup", 5)
+    assert result["reason_codes"][:2] == ["role_change_recent", "injury_replacement"]
+    assert result["modifiers"]["context"] == 2.0
+    assert result["role_label"] == "injury_fill_in"
+    injury = result["injury_replacement"]
+    assert injury["status"] == "injury_replacement"
+    assert injury["evidence_source"] == "player_week_availability"
+    assert injury["trend_weeks"] == [4, 5]
+    teammate = injury["teammates"][0]
+    assert teammate["player_id"] == "starter"
+    assert [week["source"] for week in teammate["weeks"]] == ["sleeper_players_current_metadata"] * 2
+    assert [week["snapshot_at"] for week in teammate["weeks"]] == [1760000004.0, 1760000005.0]
+    assert teammate["weeks"][0]["baseline_opportunity_per_game"] == 15.0
+    assert "not_evaluable_missing_teammate_availability" not in result["reason_codes"]
+
+
+def test_injury_replacement_modifier_is_bounded_below_durable_role_change() -> None:
+    fixture = next(f for f in PLAYER_USAGE_CONTEXT_GOLDEN_FIXTURES if f["id"] == "rb_injury_fill_in")
+    with_injury = evaluate_player_usage_context("RB", fixture["inputs"])
+    durable = evaluate_player_usage_context("RB", {key: value for key, value in fixture["inputs"].items() if key != "teammate_availability"})
+    assert with_injury["reason_codes"] == ["role_change_recent", "injury_replacement"]
+    assert durable["reason_codes"] == ["role_change_recent"]
+    assert 0 < with_injury["capped_modifiers"]["context"] < durable["capped_modifiers"]["context"]
+    assert REASON_CODES["injury_replacement"]["computability_tier"] == "partial"
+
+
+def test_missing_teammate_availability_is_explicit() -> None:
+    result = league_build(injury_repo(availability=None), "backup", 5)
+    assert "role_change_recent" in result["reason_codes"]
+    assert "not_evaluable_missing_teammate_availability" in result["reason_codes"]
+    assert "injury_replacement" not in result["reason_codes"]
+    assert result["modifiers"]["context"] == 4.0
+    assert result["injury_replacement"]["missing_weeks"] == [4, 5]
+    # Availability for only one of the trend weeks is still not evaluable.
+    partial = league_build(injury_repo(availability={(4, "DEN"): [availability_row("starter", 4, "Inactive", "Out")]}), "backup", 5)
+    assert "not_evaluable_missing_teammate_availability" in partial["reason_codes"]
+    assert partial["injury_replacement"]["missing_weeks"] == [5]
+
+
+def test_injury_replacement_requires_relevant_same_position_teammate_every_week() -> None:
+    absent_both = {(week, "DEN"): [availability_row("starter", week, "Inactive", "IR")] for week in (4, 5)}
+    # Teammate without pre-change usage (e.g. a buried IR player) does not qualify.
+    low_usage = league_build(injury_repo(availability=absent_both, teammate_baseline=1.0), "backup", 5)
+    assert "injury_replacement" not in low_usage["reason_codes"]
+    assert "not_evaluable_missing_teammate_availability" not in low_usage["reason_codes"]
+    assert low_usage["injury_replacement"]["status"] == "no_teammate_absence"
+    # A different-position teammate does not qualify.
+    other_position = league_build(injury_repo(availability=absent_both, teammate_position="WR"), "backup", 5)
+    assert "injury_replacement" not in other_position["reason_codes"]
+    # Absent in week 4 but back in week 5: no coincidence for the whole window.
+    returned = {(4, "DEN"): [availability_row("starter", 4, "Inactive", "Out")], (5, "DEN"): [availability_row("starter", 5, "Active")]}
+    back = league_build(injury_repo(availability=returned), "backup", 5)
+    assert "injury_replacement" not in back["reason_codes"]
+    assert back["modifiers"]["context"] == 4.0
+
+
+def test_injury_replacement_needs_teammate_availability_input_in_pure_rules() -> None:
+    rows = rb_rows([6, 7, 6, 17, 17])
+    result = evaluate_player_usage_context("RB", {"season_weeks": rows[:3], "recent_weeks": rows[3:]})
+    assert result["reason_codes"] == ["role_change_recent"]
+    assert result["injury_replacement"] is None
+    missing = evaluate_player_usage_context("RB", {"season_weeks": rows[:3], "recent_weeks": rows[3:], "teammate_availability": None})
+    assert missing["reason_codes"] == ["role_change_recent", "not_evaluable_missing_teammate_availability"]
+    assert missing["capped_modifiers"] == {"context": 4.0}
+
+
+# --- v3: red-zone share and production repository wiring --------------------------
+
+
+def test_red_zone_share_replaces_red_zone_use() -> None:
+    for position, stats in (("RB", {"rush_att": 10, "rush_rz_att": 3, "rec_rz_tgt": 1}), ("TE", {"rec_tgt": 5, "rec_rz_tgt": 2})):
+        result = build(position, {1: stats})
+        assert "red_zone_share" in result["missing_inputs"]
+        assert "red_zone_use" not in result["missing_inputs"]
+        assert "not_evaluable_missing_red_zone_share" in result["reason_codes"]
+        assert "not_evaluable_missing_red_zone_use" not in result["reason_codes"]
+        assert metric(result, "red_zone_targets")["value"] == stats["rec_rz_tgt"]
+    assert "not_evaluable_missing_red_zone_share" in REASON_CODES
+    assert "not_evaluable_missing_red_zone_use" not in REASON_CODES
+
+
+def test_service_resolves_methods_on_production_adapter_and_inner_store() -> None:
+    inner = LeagueRepository({"wr": {"player_id": "wr", "team": "DEN", "position": "WR"}}, {("stats", "wr"): {1: {"rec_tgt": 5}}}, points={("stats", "wr", 1): 9.0}, scoring={("wr", 1): {"rec_yd": 9.0}})
+
+    class Adapter:
+        """Mirrors SQLiteNormalizedRepositoryAdapter: query on the adapter, list_* on .repository."""
+
+        def __init__(self, repository):
+            self.repository = repository
+
+        def query_numeric_stat_rows(self, **kwargs):
+            return self.repository.query_numeric_stat_rows(**kwargs)
+
+    inner_query = inner.query_numeric_stat_rows
+    inner.query_numeric_stat_rows = None  # type: ignore[assignment]
+    adapter = Adapter(inner)
+    adapter.query_numeric_stat_rows = lambda **kwargs: inner_query(**kwargs)  # type: ignore[method-assign]
+    result = PlayerUsageContextService(adapter).build(player_id="wr", season=2026, week=1)
+    assert result["evidence"]["season_actual_weeks"] == [1]
+    assert result["td_dependency"]["value"] == 0.0
