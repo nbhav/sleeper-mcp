@@ -4,6 +4,45 @@ import json
 
 from sleeper_tooling.mcp_server import McpServer
 
+# Tools served only by the Python stdio runtime. Keep in sync with
+# PYTHON_ONLY_TOOLS in infra/cloudflare-worker/test/index.test.ts.
+PYTHON_ONLY_TOOLS = frozenset(
+    {
+        "decision_data_status",
+        "sync_decision_data",
+        "player_stat_trends",
+        "compare_player_usage_context",
+        "position_stat_leaders",
+        "player_values",
+        "roster_analysis",
+        "league_roster_analysis",
+    }
+)
+
+# Tools served by the Cloudflare Worker. Keep in sync with WORKER_TOOLS in
+# infra/cloudflare-worker/test/index.test.ts.
+WORKER_TOOLS = frozenset(
+    {
+        "resolve_league_context",
+        "player_matchup_context",
+        "weekly_briefing",
+        "weekly_performance_backtest",
+        "waiver_watch",
+        "my_lineup",
+        "lineup_recommendations",
+        "waiver_wire_watch",
+        "waiver_wire_by_position",
+        "trade_opportunities",
+        "decision_smoke_report",
+        "free_agent_watch",
+        "injury_watch",
+        "opponent_watch",
+        "league_team_watch",
+        "player_card",
+        "player_usage_context",
+    }
+)
+
 
 def test_mcp_initialize_returns_server_capabilities() -> None:
     response = McpServer().handle({"jsonrpc": "2.0", "id": 1, "method": "initialize"})
@@ -140,6 +179,16 @@ def test_mcp_tools_list_exposes_curated_decision_tools() -> None:
         ]
         == "markdown"
     )
+
+
+def test_python_tools_minus_python_only_tools_match_worker_tools() -> None:
+    response = McpServer().handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+    python_tools = {tool["name"] for tool in response["result"]["tools"]}
+
+    assert len(WORKER_TOOLS) == 17
+    assert PYTHON_ONLY_TOOLS <= python_tools
+    assert not PYTHON_ONLY_TOOLS & WORKER_TOOLS
+    assert python_tools - PYTHON_ONLY_TOOLS == WORKER_TOOLS
 
 
 def test_mcp_tool_call_returns_json_text_content() -> None:

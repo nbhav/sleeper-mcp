@@ -310,11 +310,19 @@ The Worker package lives at:
 infra/cloudflare-worker/
 ```
 
-It exposes the same curated MCP tools over HTTP at:
+It exposes the curated MCP tools over HTTP at:
 
 ```text
 https://sleeper-mcp.neilbhavsar.com/mcp
 ```
+
+The Worker serves 17 of the 25 Python tools. These normalized-data tools are
+Python-only until Worker D1 parity lands: `decision_data_status`,
+`sync_decision_data`, `player_stat_trends`, `compare_player_usage_context`,
+`position_stat_leaders`, `player_values`, `roster_analysis`, and
+`league_roster_analysis`. `python/tests/test_mcp_server.py` and
+`infra/cloudflare-worker/test/index.test.ts` pin both lists, so adding a tool to
+either runtime fails a test until the lists are updated.
 
 Deploy requirements:
 
