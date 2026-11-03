@@ -44,6 +44,7 @@ make sleeper ARGS="state"
 make mcp
 make worker-install
 make worker-typecheck
+make worker-test
 make worker-dev
 make worker-deploy
 make local-up
@@ -89,4 +90,4 @@ SLEEPER_DEFAULT_ROSTER_ID
 - Keep remote HTTP MCP behavior in `infra/cloudflare-worker/src/index.ts`.
 - Add mocked tests under `python/tests/`.
 - Add live API checks under `python/tests/integration/` and mark them with `pytest.mark.integration`.
-- Run `make test`; also run `make integration-test` when live API behavior changes and `make worker-typecheck` when Worker code changes.
+- Run `make test`; also run `make integration-test` when live API behavior changes and `make worker-typecheck` plus `make worker-test` when Worker code changes.

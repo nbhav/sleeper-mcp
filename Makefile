@@ -1,7 +1,7 @@
 COMPOSE := docker compose -f infra/docker/docker-compose.yml
 WORKER_DEPLOY_ARGS ?=
 
-.PHONY: build test integration-test decision-smoke context-backtest shell sleeper sync-data sync-status mcp worker-build worker-install worker-typecheck worker-dev worker-deploy local-up local-down docker-prune teardown ci-teardown clean
+.PHONY: build test integration-test decision-smoke context-backtest shell sleeper sync-data sync-status mcp worker-build worker-install worker-typecheck worker-test worker-dev worker-deploy local-up local-down docker-prune teardown ci-teardown clean
 
 build:
 	$(COMPOSE) build sleeper sleeper-mcp
@@ -41,6 +41,9 @@ worker-build:
 
 worker-typecheck:
 	$(COMPOSE) run --rm cloudflare-worker run typecheck
+
+worker-test:
+	$(COMPOSE) run --rm cloudflare-worker run test
 
 worker-dev:
 	$(COMPOSE) run --rm --service-ports cloudflare-worker run dev

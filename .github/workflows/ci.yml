@@ -66,6 +66,9 @@ jobs:
       - name: Typecheck Cloudflare Worker
         run: make worker-typecheck
 
+      - name: Run Cloudflare Worker tests
+        run: make worker-test
+
       - name: Clean up Docker resources
         if: always()
         run: make ci-teardown

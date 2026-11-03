@@ -16,4 +16,4 @@ Follow `ai/AGENTS.md` for contributor rules. The short version:
 - Use `--league-id` when rankings should reflect a league's custom scoring settings.
 - Keep Python cache behavior on SQLite and Worker cache behavior on D1.
 - Verify Python changes with `make test`; add `make integration-test` for Sleeper API assumptions.
-- Verify Worker changes with `make worker-typecheck`.
+- Verify Worker changes with `make worker-typecheck` and `make worker-test`.
