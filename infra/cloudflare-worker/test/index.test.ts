@@ -41,6 +41,54 @@ function message(method: string, params?: Record<string, unknown>): Request {
   });
 }
 
+// Tools served by the Worker. Keep in sync with WORKER_TOOLS in python/tests/test_mcp_server.py.
+const WORKER_TOOLS = [
+  "resolve_league_context",
+  "player_matchup_context",
+  "weekly_briefing",
+  "weekly_performance_backtest",
+  "waiver_watch",
+  "my_lineup",
+  "lineup_recommendations",
+  "waiver_wire_watch",
+  "waiver_wire_by_position",
+  "trade_opportunities",
+  "decision_smoke_report",
+  "free_agent_watch",
+  "injury_watch",
+  "opponent_watch",
+  "league_team_watch",
+  "player_card",
+  "player_usage_context"
+];
+
+// Tools served only by the Python stdio runtime (normalized-DB tools without Worker D1 parity).
+// Keep in sync with PYTHON_ONLY_TOOLS in python/tests/test_mcp_server.py.
+const PYTHON_ONLY_TOOLS = [
+  "decision_data_status",
+  "sync_decision_data",
+  "player_stat_trends",
+  "compare_player_usage_context",
+  "position_stat_leaders",
+  "player_values",
+  "roster_analysis",
+  "league_roster_analysis"
+];
+
+test("worker tools list matches the exact Worker tool set and excludes Python-only tools", async () => {
+  const listed = await envelope(message("tools/list"));
+  assert.equal(listed.response.status, 200);
+
+  const tools = (listed.body.result as Record<string, unknown>).tools as Record<string, unknown>[];
+  const names = tools.map((tool) => String(tool.name));
+  assert.equal(names.length, 17);
+  assert.equal(new Set(names).size, names.length);
+  assert.deepEqual([...names].sort(), [...WORKER_TOOLS].sort());
+  assert.deepEqual(PYTHON_ONLY_TOOLS.filter((name) => names.includes(name)), []);
+  assert.deepEqual(PYTHON_ONLY_TOOLS.filter((name) => WORKER_TOOLS.includes(name)), []);
+  assert.equal(WORKER_TOOLS.length + PYTHON_ONLY_TOOLS.length, 25);
+});
+
 test("worker tools list exposes enhanced decision tool contracts", async () => {
   const listed = await envelope(message("tools/list"));
   assert.equal(listed.response.status, 200);
