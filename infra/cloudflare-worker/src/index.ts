@@ -1505,11 +1505,11 @@ export function workerTdDependency(position: string, rows: JsonMap[], window: st
     }
     const denominator = rows.reduce((sum, row) => sum + (numberValue(row.league_points) || 0), 0);
     const value = denominator > 0 ? round(tdPoints / denominator, 4) : null;
-    return { method: "league_scoring_contributions", source: "worker calculateFantasyPoints(league scoring_settings)", window, weeks: rows.map((row) => Number(row.week)), td_scoring_keys_used: [...keys].sort(), td_points: round(tdPoints, 4), fantasy_points: round(denominator, 4), value, reason: value === null ? "denominator_non_positive" : null };
+    return { method: "league_scoring_contributions", source: "worker calculateFantasyPoints(league scoring_settings)", classification: "actual", window, weeks: rows.map((row) => Number(row.week)), td_scoring_keys_used: [...keys].sort(), td_points: round(tdPoints, 4), fantasy_points: round(denominator, 4), value, reason: value === null ? "denominator_non_positive" : null };
   }
   const points = averageUsage(rows, "points") || 0;
   const td = rows.reduce((sum, row) => sum + (numberValue(row.pass_tds) || 0) + (numberValue(row.rush_tds) || 0) + (numberValue(row.rec_tds) || 0) + (numberValue(row.def_tds) || 0), 0) / Math.max(rows.length, 1);
-  return { method: "heuristic", source: "touchdown counts", formula: "min(100, td_count_per_game * 20 / max(points_per_game, 1))", window, weeks: rows.map((row) => Number(row.week)), value: null, heuristic_score: round(Math.min(100, td * 20 / Math.max(points, 1)), 2), reason: "league_scoring_settings_unavailable" };
+  return { method: "heuristic", source: "touchdown counts", classification: "actual", formula: "min(100, td_count_per_game * 20 / max(points_per_game, 1))", window, weeks: rows.map((row) => Number(row.week)), value: null, heuristic_score: round(Math.min(100, td * 20 / Math.max(points, 1)), 2), reason: "league_scoring_settings_unavailable" };
 }
 
 // long_kick_point_share = long-FG league points / league points for one row.
@@ -1539,6 +1539,9 @@ export function workerProjectionComparison(position: string, actualRows: JsonMap
     const actualPoints = numberValue(actual.points);
     return {
       week: Number(actual.week),
+      classification: "same_week_delta",
+      actual_source: "stats",
+      projection_source: "projections",
       projection_row_present: projection !== undefined,
       projection_key_present: keyPresent,
       actual_points: actualPoints ?? null,

@@ -323,6 +323,9 @@ The series uses active, non-bye actual weeks that have the metric. The rule:
 ### Projection presence (Python and Worker)
 
 - `projection_comparison` has one entry per actual week with:
+  - `classification: "same_week_delta"`, `actual_source: "stats"`, and
+    `projection_source: "projections"`. `td_dependency` is likewise labeled
+    `classification: "actual"`.
   - `projection_row_present`.
   - `projection_key_present`, a map of `points` and the exact opportunity keys.
   - `projected_points` and `projected_values`, which are null when absent.

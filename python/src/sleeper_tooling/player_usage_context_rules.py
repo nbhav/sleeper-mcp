@@ -842,6 +842,7 @@ def compute_td_dependency(position: str, rows: Sequence[Mapping[str, Any]], *, w
     record: dict[str, Any] = {
         "method": TD_DEPENDENCY_METHOD,
         "source": TD_DEPENDENCY_SOURCE,
+        "classification": "actual",
         "score_formula": TD_DEPENDENCY_SCORE_FORMULA,
         "window": window,
         "weeks": weeks,

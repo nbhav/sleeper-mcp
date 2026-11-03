@@ -136,6 +136,9 @@ test("projection presence flags separate missing rows and keys from projected ze
     buildUsageRow({ player_id: "wr", stats: { rec_tgt: 0, pts_ppr: 0 } }, "wr", "WR", "projections", 3, {})
   ];
   const [missingRow, missingKey, projectedZero] = workerProjectionComparison("WR", actual, projections);
+  assert.equal(missingRow.classification, "same_week_delta");
+  assert.equal(missingRow.actual_source, "stats");
+  assert.equal(missingRow.projection_source, "projections");
   assert.equal(missingRow.projection_row_present, false);
   assert.deepEqual(missingRow.projection_key_present, { points: false, rec_tgt: false });
   assert.equal(missingRow.projection_delta, null);

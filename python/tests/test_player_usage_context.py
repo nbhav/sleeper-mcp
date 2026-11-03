@@ -467,9 +467,10 @@ class LeagueRepository:
     availability: {(week, team): [availability rows]}
     """
 
-    def __init__(self, players, stats, *, points=None, scoring=None, availability=None, scoring_method=True):
+    def __init__(self, players, stats, *, points=None, scoring=None, availability=None, scoring_method=True, raw=None):
         self.players = players
         self.stats = stats
+        self.raw = raw or {}
         self.points = points or {}
         self.scoring = scoring or {}
         self.availability = availability
@@ -492,7 +493,7 @@ class LeagueRepository:
         key = (source, player_id, week)
         if key not in self.points:
             return []
-        return [{"source": source, "week": week, "player_id": player_id, "fantasy_points": self.points[key], "sleeper_points": 99.0, "raw_json": {}}]
+        return [{"source": source, "week": week, "player_id": player_id, "fantasy_points": self.points[key], "sleeper_points": 99.0, "raw_json": self.raw.get(key, {})}]
 
     def list_player_week_scoring_values(self, *, source, season, week, player_id=None):
         return [{"stat_key": key, "points": value} for key, value in self.scoring.get((player_id, week), {}).items()]
@@ -691,6 +692,29 @@ def test_projection_row_and_key_presence_flags() -> None:
     assert by_week[3]["projected_values"] == {"rec_tgt": 0}
     assert by_week[3]["projected_points"] == 0.0
     assert by_week[3]["projection_delta"] == -8.0
+
+
+def test_projection_comparison_and_td_dependency_label_source_and_classification() -> None:
+    players = {"wr": {"player_id": "wr", "team": "DEN", "position": "WR"}}
+    stats = {("stats", "wr"): {1: {"rec_tgt": 6}}, ("projections", "wr"): {1: {"rec_tgt": 5, "pts_ppr": 9}}}
+    result = league_build(LeagueRepository(players, stats, points={("stats", "wr", 1): 10.0}, scoring={("wr", 1): {"rec_yd": 10.0}}), "wr", 1)
+    entry = result["projection_comparison"][0]
+    assert (entry["classification"], entry["actual_source"], entry["projection_source"]) == ("same_week_delta", "stats", "projections")
+    assert result["td_dependency"]["classification"] == "actual"
+    assert result["td_dependency"]["source"] == "player_week_scoring_values"
+
+
+def test_raw_weekly_identity_fields_are_evidence_without_matchup_claims() -> None:
+    players = {"wr": {"player_id": "wr", "team": "DEN", "position": "WR"}}
+    stats = {("stats", "wr"): {1: {"rec_tgt": 6}}}
+    raw = {("stats", "wr", 1): {"opponent": "KC", "game_id": "202609101", "date": "2026-09-10"}}
+    result = league_build(LeagueRepository(players, stats, points={("stats", "wr", 1): 10.0}, raw=raw), "wr", 1)
+    row = result["evidence"]["actual_rows"][0]
+    assert row["raw"] == {"opponent": "KC", "game_id": "202609101", "date": "2026-09-10"}
+    assert result["scores"]["matchup_adjustment"] == 0.0
+    assert "matchup" not in result["modifiers"]
+    assert "not_evaluable_missing_nfl_schedule" in result["reason_codes"]
+    assert not any(code in result["reason_codes"] for code in ("matchup_opponent_label_present", "not_evaluable_missing_matchup_strength"))
 
 
 def test_projection_delta_uses_same_week_only() -> None:

@@ -394,6 +394,9 @@ class PlayerUsageContextService:
                 delta = round(float(projected_points) - float(actual["points"]), 4)
             output.append({
                 "week": int(actual["week"]),
+                "classification": "same_week_delta",
+                "actual_source": "stats",
+                "projection_source": "projections",
                 "projection_row_present": row_present,
                 "projection_key_present": key_present,
                 "actual_points": actual.get("points"),
