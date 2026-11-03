@@ -52,7 +52,7 @@ jobs:
         run: make ci-teardown
 
   worker-typecheck:
-    name: Cloudflare Worker typecheck and tests
+    name: Cloudflare Worker typecheck
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
