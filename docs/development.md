@@ -16,8 +16,14 @@ All development commands run through Docker or Docker Compose. Do not install Py
 | `make worker-install` | Install Worker dependencies inside Docker with `npm ci`. |
 | `make worker-typecheck` | Typecheck the Cloudflare Worker inside Docker. |
 | `make worker-test` | Run the Cloudflare Worker tests inside Docker. |
-| `make worker-dev` | Run Wrangler dev inside Docker. |
+| `make worker-dev` | Run Wrangler dev inside Docker, bound to `0.0.0.0` and published on `localhost:8787`. |
 | `make worker-deploy` | Deploy the Cloudflare Worker through Docker. |
+| `make lock` | Regenerate `python/uv.lock` inside the pinned uv container (`ARGS="--upgrade"` to bump). |
+| `make audit` | Run `pip-audit` against the locked Python deps and `npm audit --audit-level=high` for the Worker; fails if either reports issues. |
+| `make lint-workflows` | Lint `.github/workflows` with actionlint and zizmor (offline). |
+| `make secrets-scan` | Scan the working tree for secrets with gitleaks (redacted output, config in `.gitleaks.toml`). |
+| `make scan-images` | Build the Python and Worker images, then scan them with trivy for fixable HIGH/CRITICAL vulnerabilities. |
+| `make sbom` | Build the images and write SPDX JSON SBOMs with syft to `dist/sbom/` (git-ignored). |
 | `make local-up` | Prepare local Docker workflow dependencies by building Python images and installing Worker dependencies in Docker. |
 | `make local-down` | Stop Compose resources and remove orphans without deleting named volumes. |
 | `make docker-prune` | Prune stopped containers and dangling images. |
@@ -80,6 +86,25 @@ GitHub Actions runs these protected checks on pull requests and pushes to `main`
 - `Cloudflare Worker typecheck`
 
 `main` is protected with required checks, admin enforcement enabled, and force-pushes/deletions disabled.
+
+CI also runs a non-required `security` job that runs `make audit`,
+`make lint-workflows`, and `make secrets-scan`. Each step runs even if an
+earlier one fails, so one job shows all findings.
+
+## Supply Chain And Security Tooling
+
+- Python dependencies are locked in `python/uv.lock`. The image installs them
+  with `uv sync --locked`, so the build fails if `pyproject.toml` and the lock
+  drift apart. After editing dependencies, run `make lock` and commit the lock.
+- Base images in `infra/docker/Dockerfile` and `infra/cloudflare-worker/Dockerfile`,
+  and every tool image in `infra/docker/docker-compose.yml`, are pinned as
+  `image:tag@sha256:...`. Dependabot (`.github/dependabot.yml`) opens update PRs
+  for uv, npm, Dockerfiles, Compose images, and GitHub Actions.
+- The security tools are Compose services under the `security` profile (and
+  `uv` under the `tools` profile), so `make build`, `make local-down`, and
+  `docker compose up` ignore them. `scan-images` and `sbom` mount the Docker
+  socket read-only.
+- Report vulnerabilities as described in `SECURITY.md`.
 
 ## Cloudflare Deploy
 
