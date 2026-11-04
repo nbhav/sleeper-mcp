@@ -1,7 +1,10 @@
 COMPOSE := docker compose -f infra/docker/docker-compose.yml
+SECURITY_COMPOSE := $(COMPOSE) --profile security
+COMPOSE_PROJECT ?= $(or $(COMPOSE_PROJECT_NAME),sleeper-mcp)
+SCAN_IMAGES ?= $(COMPOSE_PROJECT)-sleeper $(COMPOSE_PROJECT)-cloudflare-worker
 WORKER_DEPLOY_ARGS ?=
 
-.PHONY: build test integration-test decision-smoke context-backtest shell sleeper sync-data sync-status mcp worker-build worker-install worker-typecheck worker-test worker-dev worker-deploy local-up local-down docker-prune teardown ci-teardown clean
+.PHONY: build test integration-test decision-smoke context-backtest shell sleeper sync-data sync-status mcp worker-build worker-install worker-typecheck worker-test worker-dev worker-deploy lock audit audit-python audit-worker lint-workflows secrets-scan scan-images sbom local-up local-down docker-prune teardown ci-teardown clean
 
 build:
 	$(COMPOSE) build sleeper sleeper-mcp
@@ -46,10 +49,47 @@ worker-test:
 	$(COMPOSE) run --rm cloudflare-worker run test
 
 worker-dev:
-	$(COMPOSE) run --rm --service-ports cloudflare-worker run dev
+	$(COMPOSE) run --rm --service-ports cloudflare-worker run dev -- --ip 0.0.0.0
 
 worker-deploy:
 	$(COMPOSE) run --rm cloudflare-worker run deploy $(if $(WORKER_DEPLOY_ARGS),-- $(WORKER_DEPLOY_ARGS),)
+
+lock:
+	$(COMPOSE) --profile tools run --rm uv lock $(ARGS)
+
+# audit runs both halves and fails if either one reports vulnerabilities.
+audit:
+	@status=0; \
+	$(MAKE) --no-print-directory audit-python || status=1; \
+	$(MAKE) --no-print-directory audit-worker || status=1; \
+	exit $$status
+
+audit-python:
+	$(SECURITY_COMPOSE) run --rm pip-audit
+
+audit-worker:
+	$(COMPOSE) run --rm cloudflare-worker audit --audit-level=high
+
+lint-workflows:
+	@status=0; \
+	$(SECURITY_COMPOSE) run --rm actionlint || status=1; \
+	$(SECURITY_COMPOSE) run --rm zizmor || status=1; \
+	exit $$status
+
+secrets-scan:
+	$(SECURITY_COMPOSE) run --rm gitleaks
+
+scan-images: build worker-build
+	@status=0; for image in $(SCAN_IMAGES); do \
+		$(SECURITY_COMPOSE) run --rm trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --table-mode detailed --exit-code 1 --no-progress $$image || status=1; \
+	done; exit $$status
+
+sbom: build worker-build
+	mkdir -p dist/sbom
+	for image in $(SCAN_IMAGES); do \
+		$(SECURITY_COMPOSE) run --rm syft scan docker:$$image --quiet --output spdx-json=/out/$$image.spdx.json || exit 1; \
+	done
+	@ls -1 dist/sbom
 
 local-up: build worker-build worker-install
 

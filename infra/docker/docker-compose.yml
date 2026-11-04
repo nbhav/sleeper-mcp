@@ -1,5 +1,7 @@
 name: sleeper-mcp
 
+x-uv-image: &uv-image ghcr.io/astral-sh/uv:0.9.30-python3.12-bookworm-slim@sha256:e5b65587bce7de595f299855d7385fe7fca39b8a74baa261ba1b7147afa78e58
+
 services:
   sleeper:
     build:
@@ -33,6 +35,8 @@ services:
       dockerfile: Dockerfile
     working_dir: /worker
     entrypoint: ["npm"]
+    ports:
+      - "8787:8787"
     volumes:
       - ../cloudflare-worker:/worker
       - worker_node_modules:/worker/node_modules
@@ -40,5 +44,72 @@ services:
       CLOUDFLARE_ACCOUNT_ID:
       CLOUDFLARE_API_TOKEN:
 
+  # Tooling services. Profiles keep them out of `build`, `up`, and `down` defaults.
+  uv:
+    profiles: ["tools"]
+    image: *uv-image
+    working_dir: /src/python
+    entrypoint: ["uv"]
+    volumes:
+      - ../../python:/src/python
+    environment:
+      UV_CACHE_DIR: /tmp/uv-cache
+
+  pip-audit:
+    profiles: ["security"]
+    image: *uv-image
+    working_dir: /src/python
+    entrypoint: ["sh", "-c"]
+    command:
+      - >-
+        uv export --quiet --frozen --all-extras --no-emit-project --format requirements-txt
+        --output-file /tmp/requirements.txt
+        && uvx pip-audit@2.10.1 --requirement /tmp/requirements.txt --disable-pip --progress-spinner off
+    volumes:
+      - ../../python:/src/python:ro
+    environment:
+      UV_CACHE_DIR: /tmp/uv-cache
+
+  actionlint:
+    profiles: ["security"]
+    image: rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+    working_dir: /repo
+    command: ["-color"]
+    volumes:
+      - ../..:/repo:ro
+
+  zizmor:
+    profiles: ["security"]
+    image: ghcr.io/zizmorcore/zizmor:1.32.0@sha256:3014cc8f68f663935f69b3c3e0e41f5ce102b268d97db13db0f62208747f860d
+    working_dir: /repo
+    command: ["--offline", ".github/workflows"]
+    volumes:
+      - ../..:/repo:ro
+
+  gitleaks:
+    profiles: ["security"]
+    image: ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+    working_dir: /repo
+    command: ["dir", "/repo", "--config", "/repo/.gitleaks.toml", "--redact", "--no-banner", "--verbose"]
+    volumes:
+      - ../..:/repo:ro
+
+  trivy:
+    profiles: ["security"]
+    image: aquasec/trivy:0.76.1@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c
+    environment:
+      TRIVY_CACHE_DIR: /cache
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - trivy_cache:/cache
+
+  syft:
+    profiles: ["security"]
+    image: anchore/syft:v1.56.0@sha256:697ae864af1299cfa43c54b161cea3dd65c6d54de82e3dba66ea3dccb3acc313
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ../../dist/sbom:/out
+
 volumes:
   worker_node_modules:
+  trivy_cache:

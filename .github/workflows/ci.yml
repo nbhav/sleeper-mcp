@@ -81,3 +81,32 @@ jobs:
       - name: Clean up Docker resources
         if: always()
         run: make ci-teardown
+
+  security:
+    name: security
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Audit locked dependencies
+        if: always()
+        run: make audit
+
+      - name: Lint GitHub Actions workflows
+        if: always()
+        run: make lint-workflows
+
+      - name: Scan for committed secrets
+        if: always()
+        run: make secrets-scan
+
+      - name: Clean up Docker resources
+        if: always()
+        run: make ci-teardown
