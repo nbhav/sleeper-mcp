@@ -55,19 +55,41 @@ Do not run `npm install` on the host.
 
 ## GitHub Actions Deploy
 
-If you want GitHub to deploy the Worker after CI passes on `main`, add these repository secrets:
+GitHub deploys the Worker after CI passes for a push to `main` in this
+repository (never for forks or pull requests), or manually through
+`workflow_dispatch`. All inputs live in the GitHub `production` environment,
+not repository-level secrets.
 
-- `CLOUDFLARE_ACCOUNT_ID`
+`production` environment secrets:
+
 - `CLOUDFLARE_API_TOKEN`
+- `CLOUDFLARE_ACCOUNT_ID`
+- `MCP_SMOKE_BEARER_TOKEN` (optional, for when `/mcp` requires OAuth)
 
-Add these GitHub `production` environment variables:
+`production` environment variables:
 
 - `CLOUDFLARE_D1_DATABASE_ID`
 - `SLEEPER_DEFAULT_LEAGUE_URL`
 - `SLEEPER_DEFAULT_USER_REF`
 
-The deploy workflow resolves the URL/user pair through the Python CLI, exports
-the resulting IDs, passes them to Wrangler as deploy-time vars, and patches the
-D1 `database_id` into `wrangler.toml` on the Actions runner.
+The deploy workflow resolves the URL/user pair through `make resolve-context`,
+passes the resulting IDs to Wrangler as deploy-time vars, patches the D1
+`database_id` into `wrangler.toml` on the Actions runner, deploys, and then
+runs `make worker-smoke` against `https://sleeper-mcp.neilbhavsar.com/mcp`.
+See `docs/development.md` for the full owner checklist.
 
-The deploy workflow runs after the `CI` workflow succeeds on `main`, or manually through `workflow_dispatch`.
+## Smoke Test And Rollback
+
+```bash
+make worker-smoke URL=https://sleeper-mcp.neilbhavsar.com/mcp
+make worker-rollback ARGS='<version-id> --message "reason" --yes'
+```
+
+`worker-smoke` runs `scripts/worker-smoke.mjs` in the Worker container. It
+POSTs JSON-RPC `initialize` and `tools/list` and fails unless both return HTTP
+200 with a valid JSON-RPC result. It does not follow redirects, so a
+Cloudflare Access login redirect fails the check. When `/mcp` moves to OAuth,
+set `MCP_SMOKE_BEARER_TOKEN` and it is sent as `Authorization: Bearer <token>`.
+
+`wrangler.toml` disables the `workers.dev` route and preview URLs, so the
+Worker is only served on the custom domain, and enables Workers observability.

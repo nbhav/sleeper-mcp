@@ -1,6 +1,8 @@
 name = "sleeper-mcp"
 main = "src/index.ts"
 compatibility_date = "2026-09-02"
+workers_dev = false
+preview_urls = false
 
 routes = [
   { pattern = "sleeper-mcp.neilbhavsar.com", custom_domain = true }
@@ -15,3 +17,6 @@ SLEEPER_DEFAULT_OWNER_ID = ""
 binding = "SLEEPER_CACHE_DB"
 database_name = "sleeper-mcp-cache"
 database_id = "replace-with-cloudflare-d1-database-id"
+
+[observability]
+enabled = true

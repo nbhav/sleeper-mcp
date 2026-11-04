@@ -162,12 +162,13 @@ make worker-dev
 make worker-deploy
 ```
 
-For GitHub Actions deploys, set these repository secrets:
+For GitHub Actions deploys, set these GitHub `production` environment secrets
+(not repository secrets):
 
 - `CLOUDFLARE_ACCOUNT_ID`
 - `CLOUDFLARE_API_TOKEN`
 
-Set these GitHub `production` environment variables so deploys can configure
+Set these `production` environment variables so deploys can configure
 the D1 binding and resolve the Worker's default league context:
 
 - `CLOUDFLARE_D1_DATABASE_ID`
