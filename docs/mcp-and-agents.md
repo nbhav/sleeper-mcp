@@ -108,6 +108,30 @@ screen, not the full answer. Cross-check both the add and drop with
 `source: "stats"` for production context. When projections and actuals disagree,
 say so directly and explain which signal drives the recommendation.
 
+### Usage context in decision output
+
+`player_card`, `my_lineup`, `lineup_recommendations`, `waiver_wire_watch`, and
+`waiver_wire_by_position` attach a compact `usage_context` block
+(`usage_context_summary.v1`) built from `player_usage_context` v3, through the
+last completed week (`evaluated_through_week = week - 1`). Read these fields
+when explaining a named claim:
+
+- `role_label`, `positive_signals`, `risk_signals`, `one_off_flags`
+- `td_dependency.excess_pct`: the league TD share above the position threshold.
+  A normal TD scorer has an excess of 0.
+- `missing_inputs` and `not_evaluable`: say what could not be checked. A
+  not-evaluable input is never a zero.
+- `status`: anything other than `evaluated` means no context was used.
+
+Waiver rows add `usage_context_adjustment`, a capped add-minus-drop delta of
++/-6 with per-component detail, and `move_score_before_context`. The delta
+applies only when both sides are evaluated. It never overrides drop protections
+or roster-damage gates, and usage spikes on low opportunity keep an add at
+`watch`. Start/sit stays projection-based, and context appears there only as
+evidence. Pass `include_usage_context: false` to skip the extra reads. The
+contract, caps, and calibrated TD weights are in
+`docs/player-context-decision-engine.md` under "Decision Integration".
+
 Use `my_lineup` when the user asks:
 
 - who is currently starting this week

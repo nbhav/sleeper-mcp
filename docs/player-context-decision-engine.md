@@ -1007,6 +1007,167 @@ must avoid double-counting points. Recommended v1 behavior:
 - never let context override no-drop, protected-player, or roster-damage rules
 - emit score components so every change is auditable
 
+## Decision Integration (issue #32, implemented)
+
+`python/src/sleeper_tooling/usage_context_integration.py` (Worker:
+`infra/cloudflare-worker/src/usage-context.ts`) turns a v3
+`player_usage_context` profile into decision evidence and a bounded score
+adjustment. Every addition is new fields; existing output fields are unchanged.
+
+### Where it appears
+
+| Tool | Addition |
+|---|---|
+| `player_card` | `usage_context` summary block |
+| `my_lineup` | `usage_context` on every lineup row |
+| `lineup_recommendations` | `usage_context` on lineup rows; `start_usage_context` / `sit_usage_context` plus a usage evidence line on start/sit rows (projected_gain unchanged); waiver rows carry `add_usage_context`, `drop_usage_context`, `usage_context_adjustment`, `move_score_before_context` |
+| `waiver_wire_by_position` | the same waiver-row fields, including diagnostics rows |
+| `waiver_wire_watch` | `usage_context` on each candidate (evidence only; order unchanged) |
+
+Each tool takes `include_usage_context` (default `true`) in both runtimes.
+
+### Summary block (`usage_context_summary.v1`)
+
+`status`, `decision_week`, `evaluated_through_week`, `role_label`,
+`context_confidence`, `trend_window` (name, weeks, baseline weeks, change
+point), `positive_signals`, `risk_signals`, `one_off_flags`, `reason_codes`,
+`not_evaluable`, `missing_inputs`, `provider_inputs_for_missing`,
+`injury_replacement`, `td_dependency` (status, method, score, threshold,
+excess), and `score_components`.
+
+- **Completed weeks only.** A decision for week W is evaluated through week
+  W - 1, so a partly synced in-progress week never counts as usage.
+- **Not evaluable is explicit.** A block that could not be built keeps the full
+  shape with a specific `status`: `not_evaluable_missing_actual_stats`,
+  `not_evaluable_no_completed_weeks`, `not_evaluable_unsupported_position`,
+  `not_evaluable_missing_player_id`, `not_evaluable_missing_normalized_repository`
+  (Worker: `not_evaluable_missing_sleeper_stats`), or
+  `not_evaluated_outside_context_budget`. None of these is a zero.
+- **Budget.** Building one profile costs a few SQLite reads per week (Worker:
+  one shared stats payload per week and position). Decision tools build context
+  for roster players and for the candidates the context-free ranking shows
+  (pass 1), then re-rank with the adjustment (pass 2). On the local 2026
+  week 1-4 data this adds about 7 s to `waiver_wire_by_position` and under 2 s
+  to `my_lineup`; set `include_usage_context: false` to skip it.
+
+### Scoring components (`usage_context_adjustment.v1`)
+
+Per player, in move-score points, decomposed by reason code with the existing
+`_REASON_MODIFIERS` amounts:
+
+| Component | Codes / rule | Cap |
+|---|---|---|
+| `opportunity_role` | `role_change_recent` +4, `role_loss_recent` -4, `injury_replacement` -2 | -4..+4 |
+| `trend_change` | `projection_lagging_role_change` +4 | -4..+4 |
+| `one_off_risk` | `low_touch_big_points`, `low_target_big_points`, `td_only_low_usage`, `def_td_spike`, `turnover_spike_without_pressure` -3; `long_kick_spike` -4.5 | -6..0 |
+| `role_uncertainty` | `uncertain_role` -1; fewer than 2 trend weeks -1 | -2..0 |
+| `td_dependency` | see TD weighting below | -3..0 |
+| `matchup` | always not evaluable (`not_evaluable_missing_nfl_schedule` or `not_evaluable_missing_matchup_strength`) until the matchup model is wired | -2..+2 |
+
+The per-player total is capped at -6..+6. The move adjustment is
+`add_total - drop_total`, capped at -6..+6, and applies only when both sides are
+evaluated; otherwise `status` is `not_applied_<side>_<reason>` and the delta is
+null (applied as 0).
+
+Excluded from scoring, and listed in `excluded_codes`:
+
+- `season_average_stale`: it compares recent and season fantasy points, which
+  `player_values` already prices.
+- `current_metadata_only_depth_chart`: it is current-only metadata present for
+  nearly every player, not week-specific evidence.
+- `production_quality_score` and any points or projection level.
+- `td_only_low_usage` when the league TD share is evaluable. The v3 rule fires
+  on multi-TD weeks whenever the opportunity field is present, so the TD share
+  prices those touchdowns instead.
+
+### Protections
+
+- Drop protections (reserve/IR, last playable depth, protected players) run
+  before scoring and are unchanged.
+- `waiver_recommendation` reads `move_score_before_context` for the roster
+  damage, streamer, stash, unknown-market, and missing-actuals gates, so context
+  cannot lift a move past them. No drop is still a reject.
+- Context can move a move across the `>= 6` recommend line only through an
+  applied (both sides evaluated) adjustment.
+- `low_touch_big_points` or `low_target_big_points` on the add side caps
+  `recommend` at `watch`.
+
+### TD weighting (calibrated)
+
+Only the league TD share above the position `dependency_threshold` (QB 45,
+RB 35, WR 40, TE 45, K 40, DEF 50, as 0-100) counts as risk, so ordinary TD
+scorers are not penalized. The quantity is the all-TD league share
+(`td_dependency_score`), the same one compare scoring used. The weight is stored
+once, as expected regression in league points per game for each point of excess
+share (`TD_DEPENDENCY_REGRESSION_PPG_PER_EXCESS_PCT`):
+
+| Position | ppg per excess point | Provenance |
+|---|---|---|
+| QB | 0.05 | calibrated preliminary prior |
+| RB | 0.15 | calibrated preliminary prior |
+| WR | 0.15 | calibrated preliminary prior |
+| TE | 0.15 | calibrated preliminary prior |
+| K | 0.10 | uncalibrated prior |
+| DEF | 0.10 | uncalibrated prior |
+
+Each consumer converts it to its own scale:
+
+- `score_waiver_move`: `-min(3, 2.6 * weight * excess)`. 2.6 is the
+  three-week (1.2) plus season (1.4) weight on actual points. It applies only
+  when the row's move value uses recent actual points; otherwise the component
+  is `not_applicable_actual_points_not_in_move_value`.
+- `compare_player_usage_context`: `4.0 * weight * excess`, since
+  `production_quality_score` is 4 points per ppg. This replaces the PR #58
+  placeholder of 1 point per excess point. For example, a QB at 61% loses 3.2
+  (was 16) and an RB at 44% loses 5.4 (was 9).
+- Worker: move values are projection-only, so the waiver TD component is never
+  applied, and the heuristic TD method (no league scoring) is not evaluable
+  against thresholds.
+
+Calibration method, on a copy of `data/sleeper.db` (2026 weeks 1-4, one
+league's scoring, players at 5+ league ppg in the trailing window): an OLS fit
+of `delta_ppg = a + b1 * trailing_ppg + b2 * excess_share`, where
+`delta_ppg` is the later-window ppg minus the trailing-window ppg. `b2` is the
+TD-specific regression beyond ordinary regression to the mean. Three window
+splits were used: weeks 1-2 to 3-4, 1-3 to 4, and 2-3 to 4.
+
+| Group | n | flagged | b2 (ppg per excess point) |
+|---|---|---|---|
+| QB | 24-29 | 11-13 | +0.00 to +0.29 |
+| RB | 35-44 | 10-12 | -0.21 to -0.57 |
+| WR | 49-58 | 2-7 | -0.14 to -0.51 |
+| TE | 21-26 | 1-8 | -0.23 to -0.30 |
+| pooled | 130-157 | 24-40 | -0.06 to -0.15 |
+
+These samples are small, the splits overlap, and some groups have one or two
+flagged players, so the weights are shrunk toward the low end and labeled as a
+preliminary prior. QB showed no extra regression, so its weight stays near 0.
+Re-run the fit with a full season before treating the weights as settled.
+
+`production_quality_score` inside the v3 profile still subtracts
+`0.25 * td_dependency_score` (the full share). That term is part of the v3
+profile contract and is not used by the waiver adjustment.
+
+### Provider input mapping
+
+`provider_inputs_for_missing` joins usage-context missing inputs to
+`context_providers.ContextInput` names: `red_zone_share` -> `red_zone_use`,
+`implied_total` -> `implied_totals`, and `routes`, `target_share`, `pressure`,
+`weather` map to themselves. `touch_share` (carry_share counts carries only),
+`air_yard_share` (provider `air_yards` is absolute), and `nfl_schedule` (a store,
+not a provider) are intentionally unmapped. The mapping is evidence only:
+provider metrics do not feed scoring.
+
+### Worker divergences
+
+- The Worker has no move matrix: the same capped delta is added to
+  `priority_score`, and `priority_score_before_context` is kept.
+- There is no severe one-off downgrade, because Worker rows have no
+  recommendation field. The flags are still reported in
+  `usage_context_adjustment.add.severe_one_off_flags`.
+- `injury_replacement` is Python-only (there is no availability history in the
+  Worker).
+
 ## Rollout Plan
 
 1. Stat-key audit

@@ -92,7 +92,7 @@ make sleeper ARGS="waiver-watch --help"
 | `my_lineup` | Current starters and bench for the configured roster, with a unified lineup table, actual points, status, injuries, and league-scored projections. |
 | `lineup_recommendations` | Start/sit changes plus available-player comparisons against protected drop candidates, acquisition action, and market-aware waiver hints. |
 | `waiver_wire_watch` | Actionable waiver shortlist with availability, projections, trends, status, and recent actuals. |
-| `waiver_wire_by_position` | Top waiver and free-agent options by position, with recommendation, move score, value deltas, protected drop reasoning, acquisition action, and FAAB guidance only for known waiver claims. |
+| `waiver_wire_by_position` | Top waiver and free-agent options by position, with recommendation, move score, value deltas, protected drop reasoning, acquisition action, and FAAB guidance only for known waiver claims. Rows carry add/drop `usage_context` and a bounded, auditable `usage_context_adjustment` (`move_score_before_context` is kept). |
 | `trade_opportunities` | Every opposing team with needs, surplus, targets, mutual-fit package matrices, trade score, recommendation, roster-balance risk, and reasoning summary. |
 | `player_values` | Deterministic player value rankings with week, three-week, season, decision, and replacement-aware scores. |
 | `roster_analysis` | One-roster strengths, weaknesses, protected players, movable players, balance score, trade posture, and waiver posture. |
@@ -102,7 +102,7 @@ make sleeper ARGS="waiver-watch --help"
 | `injury_watch` | Rostered players with injury/status risk. |
 | `opponent_watch` | Weekly opponent starters, projection, and injury flags. |
 | `league_team_watch` | Completed league transactions for a week. |
-| `player_card` | Player metadata and chart-ready actual vs projected points. |
+| `player_card` | Player metadata, chart-ready actual vs projected points, and a compact `usage_context` summary (role, one-off flags, TD dependency, missing inputs). |
 | `decision_data_status` | Planned: MCP freshness check for normalized decision data before lineup, waiver, trade, or trend reads. |
 | `sync_decision_data` | Planned: MCP-triggered normalized sync for missing or stale decision data. |
 | `player_stat_trends` | Planned: trendable player stat reads backed by normalized weekly stat rows. |
