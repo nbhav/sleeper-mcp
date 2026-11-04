@@ -1,0 +1,6 @@
+# Spike only: no routes, no production D1. Never deploy from here without the
+# DevOps guardrails in docs/python-worker-evaluation.md.
+name = "sleeper-mcp-python-spike"
+main = "src/entry.py"
+compatibility_date = "2026-11-01"
+compatibility_flags = ["python_workers"]

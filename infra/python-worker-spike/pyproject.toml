@@ -1,0 +1,8 @@
+[project]
+name = "sleeper-mcp-python-worker-spike"
+version = "0.0.0"
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+dev = ["workers-py==1.17.9", "workers-runtime-sdk==1.9.6"]

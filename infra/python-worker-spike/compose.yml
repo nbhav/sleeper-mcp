@@ -1,0 +1,14 @@
+# Throwaway spike for issue #40. Run with COMPOSE_PROJECT_NAME=sleeper-mcp-pyworker.
+services:
+  pyworker:
+    build: .
+    working_dir: /worker
+    volumes:
+      - ./:/worker
+      # Shared Python core, mounted read-only to probe importability under Pyodide.
+      - ../../python/src/sleeper_tooling:/worker/src/sleeper_tooling:ro
+      - pyworker_uv_cache:/root/.cache/uv
+    ports:
+      - "127.0.0.1:8789:8787"
+volumes:
+  pyworker_uv_cache:

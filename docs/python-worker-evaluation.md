@@ -24,7 +24,10 @@ Why not a full migration:
    Importing any submodule (even `sleeper_tooling.scoring`) therefore loads the whole
    local runtime stack. `python/pyproject.toml` also lists `nflreadpy==0.1.5`, `rich` and
    `typer` as hard dependencies. A path dependency would vendor polars, requests,
-   pydantic and more into the Worker bundle.
+   pydantic and more into the Worker bundle. The PoC below confirms both halves under
+   `pywrangler dev`. Through the real `__init__`, imports fail on `httpx`. With a stub
+   package, seven pure modules (including `decision_reports` and `player_usage_context`)
+   import cleanly on Python 3.14.2.
 2. **The tool orchestration layer has to be rewritten regardless.** `mcp_tools.py`
    (2,266 lines) is synchronous (17 `with self._client()` blocks over a sync
    `httpx.Client`). Python Workers do outbound I/O asynchronously through `fetch()` (FFI) or
@@ -34,7 +37,8 @@ Why not a full migration:
    2026-11-04. The Python version is selected by compatibility flags and dates
    (`python_workers_314` became the default on 2026-09-08), and
    `python_shared_standard_library` becomes the default on 2026-11-19, after this
-   evaluation date.
+   evaluation date. `workers-py` 1.17.9 also refuses to run with uv older than 0.13.4
+   (seen in the PoC).
 4. **Cold start and CPU cost more than the TS Worker's.** Cloudflare's own benchmark
    reports a 1.027 s mean cold start for a FastAPI+httpx+pydantic Python Worker, with
    memory snapshots. The startup limit is 1 s of CPU. The TS Worker has not been measured
@@ -75,7 +79,7 @@ why Phase 0 is worth doing even if the Worker never moves to Python.
 | `nflreadpy==0.1.5` | `nflverse.py` (imported lazily inside functions) | **Exclude.** Its pure wheel pulls in `polars`, `requests` (sync), `platformdirs`, `tqdm`, `pydantic` and `pydantic-settings`, plus filesystem caching. It is not needed by the TS Worker tools. |
 | `rich>=13.7` | `output.py` | **Exclude.** Terminal-only. (`workers-py` depends on rich at build time only.) |
 | `typer>=0.12` | `cli.py` | **Exclude.** CLI-only. |
-| `zoneinfo` (stdlib) | `market_state.py` | **Unverified.** Needs tzdata under Pyodide; check it in the spike. |
+| `zoneinfo` (stdlib) | `market_state.py` (`ZoneInfo(market_timezone)`) | **Fails without tzdata (verified in PoC).** The module imports, but `ZoneInfo("America/New_York")` raises `ZoneInfoNotFoundError` under Pyodide. Add the `tzdata` package as a Worker dependency. |
 | `decimal` (stdlib) | `player_usage_context_rules.py` | OK. The C implementation is available. |
 
 ## How much code could be shared
@@ -108,6 +112,47 @@ this evaluation):
 4. Add an import guard test (in the existing `python/tests`) asserting that the core
    modules import with `httpx`, `sqlite3`, `rich`, `typer` and `nflreadpy` blocked.
 
+## Proof of concept (`infra/python-worker-spike/`, Docker only)
+
+A throwaway probe, not the Phase 1 spike. It has no MCP envelope, no D1 and no deploy.
+It answers one question: can the shared modules run under the real Python Workers
+runtime? It uses its own `compose.yml` and does not touch the Makefile, the main Compose
+file or CI. `python/src/sleeper_tooling` is mounted read-only into `src/`.
+
+```sh
+cd infra/python-worker-spike
+export COMPOSE_PROJECT_NAME=sleeper-mcp-pyworker
+docker compose build
+docker compose run --rm --service-ports pyworker \
+  sh -c 'uv sync --locked && uv run pywrangler dev --ip 0.0.0.0 --port 8787'
+# in another shell (host port 8789):
+#   GET http://127.0.0.1:8789/                  -> {"name": "sleeper-mcp", "endpoint": "/mcp"}
+#   GET http://127.0.0.1:8789/probe             -> imports via the real package __init__
+#   GET http://127.0.0.1:8789/probe?bypass_init=1  -> imports with a stub package (simulates Phase 0)
+```
+
+Results (2026-11-04, Docker Desktop on Apple Silicon, linux/arm64, `workers-py` 1.17.9,
+`workers-runtime-sdk` 1.9.6, wrangler 4.157.0, `compatibility_date = "2026-11-01"`,
+runtime Python **3.14.2**):
+
+- `pywrangler dev` ran inside Docker without host installs. The `workers-py` 1.17.9 run failed
+  first with `uv version at least 0.13.4 required, have 0.9.5`. Pinning
+  `ghcr.io/astral-sh/uv:0.13.4` fixed it. This shows the version coupling is real.
+- The bundle with the whole `sleeper_tooling` directory was 801 KiB (57 modules, 111.75 KiB vendored),
+  well under the 64 MiB limit.
+- **Through the real `__init__.py`, every probe failed** with
+  `ModuleNotFoundError: No module named 'httpx'` (raised from `sleeper_tooling/__init__.py` →
+  `client.py`). This confirms the packaging blocker.
+- **With a stub package (simulated lazy `__init__`), all 7 probed modules imported**:
+  `scoring`, `reports`, `player_usage_context` (and its rules), `market_state`,
+  `decision_reports`, `roster_analysis` and `context_providers`. Reported import times were 0–36 ms
+  each. Worker timers are coarse, so treat these as indicative only.
+- `ZoneInfo("America/New_York")` raised `ZoneInfoNotFoundError` ("On Pyodide you must do
+  pyodide.loadPackage('tzdata')"), so `market_state` needs `tzdata` added as a dependency.
+
+The PoC does not show async fetch, D1, JSON-RPC parity, deployability or performance.
+Those remain Phase 1 scope.
+
 ## Effort estimate
 
 | Phase | Scope | Estimate |
@@ -126,8 +171,8 @@ this evaluation):
 | Tooling churn (`workers-py` releases weekly; flag defaults change) | High | Broken builds | Pin `workers-py`/`workers-runtime-sdk` in `uv.lock`, pin `compatibility_date`, upgrade on purpose. |
 | Sync-vs-async split creates two orchestration paths | Medium | Logic drift moves rather than disappears | Keep orchestration thin. Put all decisions in pure functions. Parity fixtures. |
 | JsProxy/`None`/`null` conversion bugs at FFI and D1 boundaries | Medium | Subtle output differences | Convert at one adapter boundary and normalize JSON in the parity test. |
-| `zoneinfo`/tzdata missing under Pyodide | Low–Medium | `market_state` failures | Verify in the spike. Add `tzdata` as a dependency if needed. |
-| Local dev parity (`pywrangler dev` in Docker, workerd on arm64) | Medium | Friction | Single Compose service; document the failure if it occurs. |
+| `zoneinfo`/tzdata missing under Pyodide | **Confirmed** | `market_state` fails at runtime | Add `tzdata` to the Worker deps and cover it with a test. |
+| Local dev parity (`pywrangler dev` in Docker) | Low (PoC worked on linux/arm64) | Friction | Single Compose service. Pin the uv image (`workers-py` 1.17.9 refuses uv < 0.13.4). |
 
 Open questions for the owner:
 
