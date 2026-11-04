@@ -1,7 +1,8 @@
 name: Deploy Cloudflare Worker
 
 on:
-  workflow_run:
+  # Guarded below: jobs run only for successful same-repo push runs and check out the CI-tested head_sha.
+  workflow_run: # zizmor: ignore[dangerous-triggers]
     workflows:
       - CI
     branches:
