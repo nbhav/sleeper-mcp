@@ -706,6 +706,7 @@ def test_lineup_recommendations_compares_lineup_and_available_players(tmp_path) 
         positions="RB,WR",
         min_delta=1,
         limit=3,
+        include_usage_context=False,
     )
 
     assert report["current_lineup"]["projected_starter_points"] == 24
@@ -2204,6 +2205,9 @@ def test_usage_decision_score_counts_only_td_share_above_position_threshold() ->
 
     assert _usage_decision_score(profile("QB", 30)) == 300
     assert _usage_decision_score(profile("QB", 45)) == 300
-    assert _usage_decision_score(profile("QB", 61)) == 284
-    assert _usage_decision_score(profile("RB", 44)) == 291
+    # Excess share is weighted by the calibrated ppg regression converted to the
+    # production_quality scale: 4.0 * weight * excess (QB 0.05, RB 0.15).
+    assert _usage_decision_score(profile("QB", 61)) == 296.8  # 16 * 4 * 0.05 = 3.2
+    assert _usage_decision_score(profile("RB", 44)) == 294.6  # 9 * 4 * 0.15 = 5.4
+    assert _usage_decision_score(profile("RB", 35)) == 300
     assert _usage_decision_score(profile("WR", None)) == 300

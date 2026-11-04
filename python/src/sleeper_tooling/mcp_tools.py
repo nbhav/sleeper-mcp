@@ -29,7 +29,11 @@ from sleeper_tooling.league_context import (
 from sleeper_tooling.matchup_model import build_repository_matchup_profile
 from sleeper_tooling.player_values import build_player_values
 from sleeper_tooling.player_usage_context import PlayerUsageContextService
-from sleeper_tooling.player_usage_context_rules import TD_DEPENDENCY_FORMULAS
+from sleeper_tooling.usage_context_integration import (
+    UsageContextProvider,
+    attach_usage_contexts,
+    compare_td_dependency_penalty,
+)
 from sleeper_tooling.roster_analysis import (
     build_league_roster_analysis,
     build_roster_analysis,
@@ -53,6 +57,10 @@ from sleeper_tooling.trend_queries import (
 
 StatSource = Literal["stats", "projections", "canonical_stats"]
 DEFAULT_POSITIONS = "QB,RB,WR,TE,K,DEF"
+WAIVER_USAGE_EVIDENCE = (
+    "usage context is evaluated for roster players and for candidates the context-free ranking shows; other candidates report not_evaluated_outside_context_budget",
+    "move_score adds a bounded usage_context_adjustment (add minus drop, capped at +/-6) only when both sides are evaluated; move_score_before_context is the context-free score and roster-protection gates read it",
+)
 
 
 class FantasyToolRunner:
@@ -526,6 +534,30 @@ class FantasyToolRunner:
         season: int | None = None,
         week: int | None = None,
         positions: str = DEFAULT_POSITIONS,
+        include_usage_context: bool = True,
+    ) -> dict[str, Any]:
+        report = self._my_lineup_report(
+            league_id=league_id,
+            roster_id=roster_id,
+            season=season,
+            week=week,
+            positions=positions,
+        )
+        provider = self._usage_context_provider(
+            season=report.get("season"),
+            week=report.get("week"),
+            include_usage_context=include_usage_context,
+        )
+        return self._annotate_lineup_usage(report, provider)
+
+    def _my_lineup_report(
+        self,
+        *,
+        league_id: str | None = None,
+        roster_id: int | None = None,
+        season: int | None = None,
+        week: int | None = None,
+        positions: str = DEFAULT_POSITIONS,
     ) -> dict[str, Any]:
         resolved_league_id = self._require_league_id(league_id)
         resolved_roster_id = self._require_roster_id(roster_id)
@@ -625,6 +657,7 @@ class FantasyToolRunner:
         lookback_hours: int = 24,
         min_delta: float = 1.0,
         limit: int = 10,
+        include_usage_context: bool = True,
     ) -> dict[str, Any]:
         if limit < 1:
             raise ValueError("limit must be at least 1")
@@ -654,6 +687,7 @@ class FantasyToolRunner:
                     min_delta=min_delta,
                     limit=limit,
                     fallback_used=False,
+                    include_usage_context=include_usage_context,
                 )
         else:
             normalized = None
@@ -679,6 +713,7 @@ class FantasyToolRunner:
                         min_delta=min_delta,
                         limit=limit,
                         fallback_used=False,
+                        include_usage_context=include_usage_context,
                     )
             league = client.get_league(resolved_league_id)
             scoring_settings = league.get("scoring_settings") or {}
@@ -706,7 +741,12 @@ class FantasyToolRunner:
                 projection_rows=projection_rows,
             )
             return self._with_decision_metadata(
-                build_lineup_recommendations(
+                self._lineup_recommendations_with_usage(
+                    provider=self._usage_context_provider(
+                        season=resolved_season,
+                        week=resolved_week,
+                        include_usage_context=include_usage_context,
+                    ),
                     lineup=lineup,
                     rosters=rosters,
                     players=players,
@@ -730,6 +770,31 @@ class FantasyToolRunner:
             )
 
     def waiver_wire_watch(
+        self,
+        *,
+        league_id: str | None = None,
+        season: int | None = None,
+        week: int | None = None,
+        positions: str = DEFAULT_POSITIONS,
+        lookback_hours: int = 24,
+        trend_limit: int = 100,
+        limit: int = 25,
+        recent_weeks: int = 3,
+        include_usage_context: bool = True,
+    ) -> dict[str, Any]:
+        report = self._waiver_wire_watch_report(
+            league_id=league_id,
+            season=season,
+            week=week,
+            positions=positions,
+            lookback_hours=lookback_hours,
+            trend_limit=trend_limit,
+            limit=limit,
+            recent_weeks=recent_weeks,
+        )
+        return self._with_waiver_watch_usage(report, include_usage_context)
+
+    def _waiver_wire_watch_report(
         self,
         *,
         league_id: str | None = None,
@@ -923,6 +988,7 @@ class FantasyToolRunner:
         lookback_hours: int = 24,
         trend_limit: int = 100,
         per_position_limit: int = 10,
+        include_usage_context: bool = True,
     ) -> dict[str, Any]:
         if per_position_limit < 1:
             raise ValueError("per_position_limit must be at least 1")
@@ -950,6 +1016,7 @@ class FantasyToolRunner:
                     positions=position_list,
                     per_position_limit=per_position_limit,
                     fallback_used=False,
+                    include_usage_context=include_usage_context,
                 )
         else:
             normalized = None
@@ -975,6 +1042,7 @@ class FantasyToolRunner:
                         positions=position_list,
                         per_position_limit=per_position_limit,
                         fallback_used=False,
+                        include_usage_context=include_usage_context,
                     )
             league = client.get_league(resolved_league_id)
             scoring_settings = league.get("scoring_settings") or {}
@@ -1039,12 +1107,12 @@ class FantasyToolRunner:
                 for row in lineup["lineup_table"]
                 if row.get("player_id") != "0"
             ]
-            evaluated_by_position = evaluate_waiver_options_by_position(
-                candidates=available_candidates,
-                roster_players=roster_players,
-                positions=position_list,
-            )
-            by_position = group_waiver_options_by_position(
+            evaluated_by_position, by_position = self._waiver_options_with_usage(
+                provider=self._usage_context_provider(
+                    season=resolved_season,
+                    week=resolved_week,
+                    include_usage_context=include_usage_context,
+                ),
                 candidates=available_candidates,
                 roster_players=roster_players,
                 positions=position_list,
@@ -1069,6 +1137,7 @@ class FantasyToolRunner:
                         "projected_gain_over_drop compares against an unprotected active roster drop candidate",
                         "diagnostics_by_position includes top scored candidates that were not recommended",
                         "FAAB hints are included only when the acquisition market is known to be waiver",
+                        *(WAIVER_USAGE_EVIDENCE if include_usage_context else ()),
                     ],
                 },
                 normalized,
@@ -1519,6 +1588,7 @@ class FantasyToolRunner:
         season: int | None = None,
         week: int | None = None,
         weeks_back: int = 6,
+        include_usage_context: bool = True,
     ) -> dict[str, Any]:
         resolved_league_id = self._resolve_optional_league_id(league_id)
         with self._client() as client:
@@ -1526,6 +1596,18 @@ class FantasyToolRunner:
             players = load_or_fetch_players(client, cache_path=self.players_cache)
             player = players.get(str(player_id), {})
             position = str(player.get("position") or "RB")
+            provider = self._usage_context_provider(
+                season=resolved_season,
+                week=resolved_week,
+                include_usage_context=include_usage_context,
+            )
+            usage_fields = (
+                # The real metadata position (not the RB chart fallback); an
+                # unknown position is reported as not evaluable.
+                {"usage_context": provider.get(player_id, player.get("position"))}
+                if provider is not None
+                else {}
+            )
             scoring_settings = get_league_scoring_settings(client, resolved_league_id)
             weekly_points = []
             start_week = max(1, resolved_week - weeks_back + 1)
@@ -1569,9 +1651,15 @@ class FantasyToolRunner:
                 "week": resolved_week,
                 "scoring_source": resolved_league_id or "sleeper_default_points",
                 "chart_data": {"weekly_points": weekly_points},
+                **usage_fields,
                 "evidence": [
                     "actual_points and projected_points are calculated with league scoring when league_id is provided",
                     "missing stat keys are treated as zero",
+                    *(
+                        ["usage_context summarizes normalized Sleeper usage through the last completed week; missing inputs are reported as not_evaluable, never zero"]
+                        if usage_fields
+                        else []
+                    ),
                 ],
             }
 
@@ -1588,6 +1676,7 @@ class FantasyToolRunner:
         min_delta: float,
         limit: int,
         fallback_used: bool,
+        include_usage_context: bool = True,
     ) -> dict[str, Any]:
         lineup = build_my_lineup(
             league_id=league_id,
@@ -1598,12 +1687,17 @@ class FantasyToolRunner:
             users=inputs.users,
             rosters=inputs.rosters,
             matchups=inputs.matchups,
-                    players=inputs.players,
-                    projection_rows=inputs.projection_rows,
-                    recent_actuals=inputs.recent_actuals,
+            players=inputs.players,
+            projection_rows=inputs.projection_rows,
+            recent_actuals=inputs.recent_actuals,
         )
         return self._with_decision_metadata(
-            build_lineup_recommendations(
+            self._lineup_recommendations_with_usage(
+                provider=self._usage_context_provider(
+                    season=season,
+                    week=week,
+                    include_usage_context=include_usage_context,
+                ),
                 lineup=lineup,
                 rosters=inputs.rosters,
                 players=inputs.players,
@@ -1631,6 +1725,7 @@ class FantasyToolRunner:
         positions: list[str],
         per_position_limit: int,
         fallback_used: bool,
+        include_usage_context: bool = True,
     ) -> dict[str, Any]:
         projection_candidates = build_free_agent_watch(
             projection_rows=inputs.projection_rows,
@@ -1673,12 +1768,12 @@ class FantasyToolRunner:
         ]
         for row in roster_players:
             row.update(actual_context_fields(row, inputs.recent_actuals.get(str(row.get("player_id")), [])))
-        evaluated_by_position = evaluate_waiver_options_by_position(
-            candidates=available_candidates,
-            roster_players=roster_players,
-            positions=positions,
-        )
-        by_position = group_waiver_options_by_position(
+        evaluated_by_position, by_position = self._waiver_options_with_usage(
+            provider=self._usage_context_provider(
+                season=season,
+                week=week,
+                include_usage_context=include_usage_context,
+            ),
             candidates=available_candidates,
             roster_players=roster_players,
             positions=positions,
@@ -1703,6 +1798,7 @@ class FantasyToolRunner:
                     "projected_gain_over_drop compares against an unprotected active roster drop candidate",
                     "diagnostics_by_position includes top scored candidates that were not recommended",
                     "FAAB hints are included only when the acquisition market is known to be waiver",
+                    *(WAIVER_USAGE_EVIDENCE if include_usage_context else ()),
                 ],
             },
             normalized,
@@ -1755,6 +1851,128 @@ class FantasyToolRunner:
             normalized,
             fallback_used=fallback_used,
         )
+
+    # --- usage context integration (issue #32) ---------------------------------
+    #
+    # Context is built from the normalized store for completed weeks before the
+    # decision week. Building one profile costs a few SQLite queries per week,
+    # so decision tools evaluate context only for roster players and for the
+    # candidates the context-free ranking would show; every other candidate
+    # carries an explicit not_evaluated_outside_context_budget status.
+
+    def _usage_context_provider(
+        self,
+        *,
+        season: Any,
+        week: Any,
+        include_usage_context: bool,
+    ) -> UsageContextProvider | None:
+        if not include_usage_context or season is None or week is None:
+            return None
+        return UsageContextProvider(
+            self._require_decision_repository,
+            season=int(season),
+            decision_week=int(week),
+        )
+
+    def _annotate_lineup_usage(
+        self,
+        lineup: dict[str, Any],
+        provider: UsageContextProvider | None,
+    ) -> dict[str, Any]:
+        if provider is None:
+            return lineup
+        rows = [
+            *lineup.get("lineup_table", []),
+            *lineup.get("starters", []),
+            *lineup.get("bench", []),
+            *lineup.get("reserve", []),
+        ]
+        for row in rows:
+            if str(row.get("player_id") or "0") == "0":
+                continue
+            row["usage_context"] = provider.get(row.get("player_id"), row.get("position"))
+        return lineup
+
+    def _lineup_recommendations_with_usage(
+        self,
+        *,
+        provider: UsageContextProvider | None,
+        lineup: dict[str, Any],
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        if provider is None:
+            return build_lineup_recommendations(lineup=lineup, **kwargs)
+        self._annotate_lineup_usage(lineup, provider)
+        # Pass 1: context-free ranking (candidates get not_evaluated status, so
+        # no move adjustment applies). Pass 2: evaluate context for the shown
+        # candidates and re-rank with the bounded adjustment.
+        base = build_lineup_recommendations(lineup=lineup, usage_contexts={}, **kwargs)
+        shown = [*base.get("waiver_comparisons", []), *base.get("waiver_watch_items", [])]
+        contexts = {
+            str(row.get("add_player_id")): provider.get(row.get("add_player_id"), row.get("add_position"))
+            for row in shown
+            if row.get("add_player_id")
+        }
+        return build_lineup_recommendations(lineup=lineup, usage_contexts=contexts, **kwargs)
+
+    def _waiver_options_with_usage(
+        self,
+        *,
+        provider: UsageContextProvider | None,
+        candidates: list[dict[str, Any]],
+        roster_players: list[dict[str, Any]],
+        positions: list[str],
+        per_position_limit: int,
+    ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, list[dict[str, Any]]]]:
+        if provider is not None:
+            for row in roster_players:
+                row["usage_context"] = provider.get(row.get("player_id"), row.get("position"))
+            base = group_waiver_options_by_position(
+                candidates=attach_usage_contexts(candidates, {}, decision_week=provider.decision_week),
+                roster_players=roster_players,
+                positions=positions,
+                per_position_limit=per_position_limit,
+            )
+            contexts = {
+                str(row.get("add_player_id")): provider.get(row.get("add_player_id"), row.get("add_position"))
+                for rows in base.values()
+                for row in rows
+                if row.get("add_player_id")
+            }
+            candidates = attach_usage_contexts(candidates, contexts, decision_week=provider.decision_week)
+        evaluated = evaluate_waiver_options_by_position(
+            candidates=candidates,
+            roster_players=roster_players,
+            positions=positions,
+        )
+        grouped = group_waiver_options_by_position(
+            candidates=candidates,
+            roster_players=roster_players,
+            positions=positions,
+            per_position_limit=per_position_limit,
+        )
+        return evaluated, grouped
+
+    def _with_waiver_watch_usage(
+        self,
+        report: dict[str, Any],
+        include_usage_context: bool,
+    ) -> dict[str, Any]:
+        provider = self._usage_context_provider(
+            season=report.get("season"),
+            week=report.get("week"),
+            include_usage_context=include_usage_context,
+        )
+        if provider is None:
+            return report
+        for row in report.get("candidates", []):
+            row["usage_context"] = provider.get(row.get("player_id"), row.get("position"))
+        report["evidence"] = [
+            *report.get("evidence", []),
+            "usage_context summarizes Sleeper usage (role, one-off flags, TD dependency, missing inputs) through the last completed week; it does not change candidate order",
+        ]
+        return report
 
     def _normalized_decision_read(
         self,
@@ -2116,14 +2334,10 @@ def _usage_decision_score(profile: dict[str, Any]) -> float:
 def _td_dependency_risk(profile: dict[str, Any]) -> float:
     # td_dependency_score is a 0-100 league TD share. Only the share above the
     # position's dependency_threshold counts as risk, so ordinary TD scorers
-    # are not penalized for scoring touchdowns.
-    score = profile.get("scores", {}).get("td_dependency_score")
-    if score is None:
-        return 0.0
-    position = str(profile.get("position") or "").upper()
-    formula = TD_DEPENDENCY_FORMULAS.get(position)
-    threshold = float(formula["dependency_threshold"]) * 100 if formula else 0.0
-    return max(0.0, float(score) - threshold)
+    # are not penalized for scoring touchdowns. The excess is weighted by the
+    # calibrated ppg regression (TD_DEPENDENCY_REGRESSION_PPG_PER_EXCESS_PCT)
+    # converted to the production_quality scale (4 points per ppg).
+    return compare_td_dependency_penalty(profile)
 
 
 def _usage_context_disagreement(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
