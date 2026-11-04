@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import worker from "../src/index.ts";
+import * as mainModule from "../src/index.ts";
+
+test("worker entry module exports only default (wrangler treats named exports as entrypoints)", () => {
+  assert.deepEqual(Object.keys(mainModule), ["default"]);
+  assert.equal(typeof mainModule.default.fetch, "function");
+});
 
 function request(args: Record<string, unknown>): Request {
   return new Request("https://worker.test/mcp", {

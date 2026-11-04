@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { PLAYER_USAGE_CONTEXT_SCHEMA_VERSION, buildUsageRow, detectWorkerChangePoint, evaluateWorkerUsageContext, isTdScoringKey, normalizeUsageStats, workerProjectionComparison, workerTdDependency } from "../src/index.ts";
+import { PLAYER_USAGE_CONTEXT_SCHEMA_VERSION, buildUsageRow, detectWorkerChangePoint, evaluateWorkerUsageContext, isTdScoringKey, normalizeUsageStats, workerProjectionComparison, workerTdDependency } from "../src/usage-context.ts";
 
 test("usage context preserves actual-first windows and reports unsupported sources", () => {
   const result = evaluateWorkerUsageContext(
