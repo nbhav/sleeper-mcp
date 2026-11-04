@@ -56,7 +56,7 @@ why Phase 0 is worth doing even if the Worker never moves to Python.
 
 | Topic | Finding | Source |
 |---|---|---|
-| Status | Documented as "a first-class Python experience". The overview page no longer carries a beta label. Requires `compatibility_flags = ["python_workers"]`. | [Python Workers overview][cf-py] |
+| Status | Documented as "a first-class Python experience". The overview page does not state beta or GA status. Issue #40 still treats it as open beta. Requires `compatibility_flags = ["python_workers"]`. | [Python Workers overview][cf-py] |
 | Runtime | Pyodide (CPython compiled to WebAssembly) inside V8 isolates. The Pyodide/Python version is chosen by the compatibility date. New versions sit behind a flag until their default date. | [How Python Workers work][cf-how] |
 | Python version | `python_workers_314` (Python 3.14) is the default for compatibility dates on or after 2026-09-08. The TS Worker's date is `2026-09-02`, so a spike must set a current date. | [Compatibility flags][cf-flags] |
 | Other flags | `python_no_global_handlers` (default from 2025-08-14, requires `class Default(WorkerEntrypoint)`); `python_process_pth_files` (default from 2026-05-26, requires `workers-py >= 1.1.3`); `python_shared_standard_library` (default from **2026-11-19**). | [Compatibility flags][cf-flags] |
@@ -95,15 +95,21 @@ Line counts are from `python/src/sleeper_tooling/` at `ad0a093`.
 
 The TS Worker (`infra/cloudflare-worker/src/index.ts`, 3,596 lines, 163 functions, 17
 tools) is a self-contained port. In a Python Worker, most of its decision logic would be
-replaced by imports from the ~9,000 shareable lines. What would remain is roughly
-800–1,500 lines of Worker-specific Python: HTTP/JSON-RPC envelope, tool schemas, async
-Sleeper client, D1 cache, and an async rewrite of the `mcp_tools` orchestration.
+replaced by imports from the ~9,000 shareable lines. What remains to write is
+Worker-specific Python: HTTP/JSON-RPC envelope, tool schemas, async Sleeper client, D1
+cache, and the async tool orchestration. That would be roughly 800–1,500 lines **if**
+Phase 0 step 3 first moves the pure compute out of `mcp_tools.py`, leaving thin "fetch
+inputs" functions to port. Without that step, porting the orchestration means rewriting
+most of the ~2,700 lines in the "must be rewritten" row, so plan for 2,000–3,000 lines.
 
 Prerequisites for any sharing (Phase 0; these are source changes and are **not** made in
 this evaluation):
 
-1. Make `sleeper_tooling/__init__.py` lazy or empty, so importing a pure submodule does
-   not import `client` → `httpx`/`db` → `sqlite3`.
+1. Make `sleeper_tooling/__init__.py` lazy, so importing a pure submodule does not import
+   `client` → `httpx`/`db` → `sqlite3`. Use a module-level `__getattr__` that imports
+   `SleeperClient`/`SleeperApiError` on first access. That keeps the public
+   `from sleeper_tooling import SleeperClient` API working; no in-repo code currently uses
+   it, but outside callers might.
 2. Move `nflreadpy`, `rich` and `typer` to optional extras (for example `cli`, `nflverse`),
    or split out a dependency-free core distribution (for example
    `sleeper_tooling_core`) that both the local package and the Worker depend on.
