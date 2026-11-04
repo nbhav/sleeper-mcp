@@ -10,16 +10,28 @@ on:
       - completed
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: deploy-cloudflare-${{ github.ref }}
   cancel-in-progress: false
+
+# Both jobs run inside the `production` environment, so both are gated the
+# same way: manual dispatch, or a successful CI run triggered by a push to this
+# repository (never a fork or pull_request run). The checkout below pins the
+# exact commit CI tested; that pin is only safe together with this guard.
 
 jobs:
   resolve_sleeper_context:
     name: Resolve Sleeper context
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.conclusion == 'success')
     environment: production
     outputs:
       league_id: ${{ steps.context.outputs.league_id }}
@@ -32,7 +44,10 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
 
       - name: Validate Sleeper deploy context inputs
         run: |
@@ -51,25 +66,23 @@ jobs:
       - name: Resolve Sleeper deploy context
         id: context
         run: |
-          docker compose -f infra/docker/docker-compose.yml run --rm sleeper configure-context "$SLEEPER_DEFAULT_LEAGUE_URL" --user-ref "$SLEEPER_DEFAULT_USER_REF" --output env > /tmp/sleeper-context.env
-          league_id="$(grep '^SLEEPER_DEFAULT_LEAGUE_ID=' /tmp/sleeper-context.env | cut -d= -f2-)"
-          roster_id="$(grep '^SLEEPER_DEFAULT_ROSTER_ID=' /tmp/sleeper-context.env | cut -d= -f2-)"
-          owner_id="$(grep '^SLEEPER_DEFAULT_OWNER_ID=' /tmp/sleeper-context.env | cut -d= -f2-)"
-          test -n "$league_id" || {
-            echo "Failed to resolve SLEEPER_DEFAULT_LEAGUE_ID"
-            exit 1
-          }
-          test -n "$roster_id" || {
-            echo "Failed to resolve SLEEPER_DEFAULT_ROSTER_ID"
-            exit 1
-          }
-          test -n "$owner_id" || {
-            echo "Failed to resolve SLEEPER_DEFAULT_OWNER_ID"
-            exit 1
-          }
-          echo "league_id=$league_id" >> "$GITHUB_OUTPUT"
-          echo "roster_id=$roster_id" >> "$GITHUB_OUTPUT"
-          echo "owner_id=$owner_id" >> "$GITHUB_OUTPUT"
+          make -s --no-print-directory resolve-context > "$RUNNER_TEMP/sleeper-context.env"
+          league_id="$(grep '^SLEEPER_DEFAULT_LEAGUE_ID=' "$RUNNER_TEMP/sleeper-context.env" | cut -d= -f2- | tr -d '\r')"
+          roster_id="$(grep '^SLEEPER_DEFAULT_ROSTER_ID=' "$RUNNER_TEMP/sleeper-context.env" | cut -d= -f2- | tr -d '\r')"
+          owner_id="$(grep '^SLEEPER_DEFAULT_OWNER_ID=' "$RUNNER_TEMP/sleeper-context.env" | cut -d= -f2- | tr -d '\r')"
+          for pair in "SLEEPER_DEFAULT_LEAGUE_ID:$league_id" "SLEEPER_DEFAULT_ROSTER_ID:$roster_id" "SLEEPER_DEFAULT_OWNER_ID:$owner_id"; do
+            name="${pair%%:*}"
+            value="${pair#*:}"
+            [[ "$value" =~ ^[0-9]+$ ]] || {
+              echo "Failed to resolve a numeric $name"
+              exit 1
+            }
+          done
+          {
+            echo "league_id=$league_id"
+            echo "roster_id=$roster_id"
+            echo "owner_id=$owner_id"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Clean up Docker resources
         if: always()
@@ -79,48 +92,77 @@ jobs:
     name: Deploy Worker
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.conclusion == 'success')
     needs:
       - resolve_sleeper_context
     environment: production
 
     env:
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_D1_DATABASE_ID: ${{ vars.CLOUDFLARE_D1_DATABASE_ID }}
+      WORKER_SMOKE_URL: https://sleeper-mcp.neilbhavsar.com/mcp
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
 
-      - name: Validate Cloudflare deploy inputs
+      - name: Configure D1 database binding
+        env:
+          CLOUDFLARE_D1_DATABASE_ID: ${{ vars.CLOUDFLARE_D1_DATABASE_ID }}
         run: |
-          test -n "$CLOUDFLARE_ACCOUNT_ID" || {
-            echo "CLOUDFLARE_ACCOUNT_ID secret is required"
-            exit 1
-          }
-          test -n "$CLOUDFLARE_API_TOKEN" || {
-            echo "CLOUDFLARE_API_TOKEN secret is required"
-            exit 1
-          }
           test -n "$CLOUDFLARE_D1_DATABASE_ID" || {
             echo "CLOUDFLARE_D1_DATABASE_ID production environment variable is required"
             exit 1
           }
-
-      - name: Configure D1 database binding
-        run: |
+          [[ "$CLOUDFLARE_D1_DATABASE_ID" =~ ^[0-9A-Fa-f-]+$ ]] || {
+            echo "CLOUDFLARE_D1_DATABASE_ID must be a D1 database UUID"
+            exit 1
+          }
           sed -i -E "s/database_id = \".*\"/database_id = \"$CLOUDFLARE_D1_DATABASE_ID\"/" infra/cloudflare-worker/wrangler.toml
           grep -q "database_id = \"$CLOUDFLARE_D1_DATABASE_ID\"" infra/cloudflare-worker/wrangler.toml || {
             echo "Failed to configure D1 database_id in wrangler.toml"
             exit 1
           }
 
+      # No Cloudflare credentials in this step: npm install scripts must not see them.
       - name: Install Cloudflare Worker dependencies
         run: make worker-install
 
       - name: Deploy Cloudflare Worker
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          LEAGUE_ID: ${{ needs.resolve_sleeper_context.outputs.league_id }}
+          ROSTER_ID: ${{ needs.resolve_sleeper_context.outputs.roster_id }}
+          OWNER_ID: ${{ needs.resolve_sleeper_context.outputs.owner_id }}
         run: |
-          make worker-deploy WORKER_DEPLOY_ARGS="--keep-vars --var SLEEPER_DEFAULT_LEAGUE_ID:${{ needs.resolve_sleeper_context.outputs.league_id }} --var SLEEPER_DEFAULT_ROSTER_ID:${{ needs.resolve_sleeper_context.outputs.roster_id }} --var SLEEPER_DEFAULT_OWNER_ID:${{ needs.resolve_sleeper_context.outputs.owner_id }}"
+          test -n "$CLOUDFLARE_ACCOUNT_ID" || {
+            echo "CLOUDFLARE_ACCOUNT_ID production environment secret is required"
+            exit 1
+          }
+          test -n "$CLOUDFLARE_API_TOKEN" || {
+            echo "CLOUDFLARE_API_TOKEN production environment secret is required"
+            exit 1
+          }
+          for value in "$LEAGUE_ID" "$ROSTER_ID" "$OWNER_ID"; do
+            [[ "$value" =~ ^[0-9]+$ ]] || {
+              echo "Resolved Sleeper context ids must be numeric"
+              exit 1
+            }
+          done
+          make worker-deploy WORKER_DEPLOY_ARGS="--keep-vars --var SLEEPER_DEFAULT_LEAGUE_ID:${LEAGUE_ID} --var SLEEPER_DEFAULT_ROSTER_ID:${ROSTER_ID} --var SLEEPER_DEFAULT_OWNER_ID:${OWNER_ID}"
+
+      # Optional: once /mcp requires OAuth, add a MCP_SMOKE_BEARER_TOKEN
+      # production secret; it is sent as `Authorization: Bearer <token>`.
+      - name: Smoke test deployed Worker
+        env:
+          MCP_SMOKE_BEARER_TOKEN: ${{ secrets.MCP_SMOKE_BEARER_TOKEN }}
+        run: make worker-smoke URL="$WORKER_SMOKE_URL"
 
       - name: Clean up Docker resources
         if: always()
