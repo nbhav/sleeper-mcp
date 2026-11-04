@@ -279,4 +279,90 @@ def test_sync_nflverse_records_zero_row_requested_week_metadata(tmp_path) -> Non
     assert metadata[0]["fetched_at"] == 3000
     assert metadata[0]["metadata"]["row_count"] == 0
     assert metadata[0]["metadata"]["coverage"] == {"season": 2026, "weeks": [5]}
+    assert metadata[0]["metadata"]["team_column_counts"] == {}
+    repository.close()
+
+
+def test_sync_nflverse_attributes_traded_player_weeks_to_per_game_team(tmp_path) -> None:
+    class FakeLoader:
+        def load_ff_playerids(self):
+            return [{"gsis_id": "g-1", "sleeper_id": "s-1"}]
+
+        def load_player_stats(self, seasons):
+            return [
+                {
+                    "player_id": "g-1", "season": 2026, "week": 3,
+                    "season_type": "REG", "receptions": 4,
+                    "team": "LV", "recent_team": "NYJ", "position": "WR",
+                },
+                {
+                    "player_id": "g-1", "season": 2026, "week": 7,
+                    "season_type": "REG", "receptions": 6,
+                    "team": "NYJ", "recent_team": "NYJ", "position": "WR",
+                },
+            ]
+
+    repository = SleeperNormalizedRepository(tmp_path / "sleeper.db")
+    sync_nflverse_stats(repository, [2026], loader=FakeLoader(), fetched_at=1)
+
+    for week, expected_team in ((3, "LV"), (7, "NYJ")):
+        rows = repository.list_player_week_rows(
+            season=2026, week=week, source="nflverse_stats", player_id="s-1"
+        )
+        assert len(rows) == 1
+        assert rows[0]["team"] == expected_team
+        assert rows[0]["player"]["team"] == expected_team
+    metadata = {
+        row["week"]: row["metadata"]
+        for row in repository.list_provider_sync_metadata(
+            provider="nflverse", dataset="player_stats", season=2026
+        )
+    }
+    assert metadata[3]["team_column_counts"] == {"team": 1}
+    assert metadata[7]["team_column_counts"] == {"team": 1}
+    repository.close()
+
+
+def test_sync_nflverse_falls_back_to_recent_team_only_when_team_absent(tmp_path) -> None:
+    class FakeLoader:
+        def load_ff_playerids(self):
+            return [
+                {"gsis_id": "g-1", "sleeper_id": "s-1"},
+                {"gsis_id": "g-2", "sleeper_id": "s-2"},
+                {"gsis_id": "g-3", "sleeper_id": "s-3"},
+            ]
+
+        def load_player_stats(self, seasons):
+            return [
+                {
+                    "player_id": "g-1", "season": 2026, "week": 4,
+                    "season_type": "REG", "receptions": 2,
+                    "recent_team": "DEN", "position": "WR",
+                },
+                {
+                    "player_id": "g-2", "season": 2026, "week": 4,
+                    "season_type": "REG", "receptions": 3,
+                    "team": None, "recent_team": "KC", "position": "WR",
+                },
+                {
+                    "player_id": "g-3", "season": 2026, "week": 4,
+                    "season_type": "REG", "receptions": 1,
+                    "team": "BUF", "position": "TE",
+                },
+            ]
+
+    repository = SleeperNormalizedRepository(tmp_path / "sleeper.db")
+    sync_nflverse_stats(repository, [2026], weeks=[4], loader=FakeLoader(), fetched_at=1)
+
+    teams = {
+        row["player_id"]: row["team"]
+        for row in repository.list_player_week_rows(
+            season=2026, week=4, source="nflverse_stats"
+        )
+    }
+    assert teams == {"s-1": "DEN", "s-2": "KC", "s-3": "BUF"}
+    metadata = repository.list_provider_sync_metadata(
+        provider="nflverse", dataset="player_stats", season=2026
+    )
+    assert metadata[0]["metadata"]["team_column_counts"] == {"recent_team": 2, "team": 1}
     repository.close()
