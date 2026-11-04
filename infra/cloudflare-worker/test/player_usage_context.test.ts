@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { PLAYER_USAGE_CONTEXT_SCHEMA_VERSION, buildUsageRow, detectWorkerChangePoint, evaluateWorkerUsageContext, isTdScoringKey, normalizeUsageStats, workerProjectionComparison, workerTdDependency } from "../src/usage-context.ts";
+import { PLAYER_USAGE_CONTEXT_SCHEMA_VERSION, buildUsageRow, detectWorkerChangePoint, evaluateWorkerUsageContext, isTdScoringKey, normalizeUsageStats, workerProjectionComparison, workerTdDependency, workerUsageContextSummary, workerUsageMoveAdjustment, workerPlayerUsageAdjustment, unavailableUsageContext, USAGE_INPUT_PROVIDER_INPUTS, TD_DEPENDENCY_REGRESSION_PPG_PER_EXCESS_PCT } from "../src/usage-context.ts";
 
 test("usage context preserves actual-first windows and reports unsupported sources", () => {
   const result = evaluateWorkerUsageContext(
@@ -192,6 +192,59 @@ test("normalizer reads exact keys and sums only distinct canonical stats", () =>
   assert.equal(normalizeUsageStats("K", { fga: 3, xpa: 4 }).total_kick_attempts, 7);
   const receiver = normalizeUsageStats("WR", { targets: 9, rec_tgt: 4 });
   assert.equal(receiver.targets, 4);
+});
+
+function summaryFor(position: string, rows: JsonRows, metadata: Record<string, unknown> = {}, contextWeek = 4) {
+  const evaluated = evaluateWorkerUsageContext(position, rows, [], metadata);
+  return workerUsageContextSummary(evaluated, { playerId: "p1", position, contextWeek, decisionWeek: contextWeek + 1, actualFirst: rows.length > 0 });
+}
+type JsonRows = Record<string, unknown>[];
+const rising: JsonRows = [6, 6, 18, 18].map((value, index) => ({ week: index + 1, weighted_touches: value, points: 8, active: true, bye: false }));
+const falling: JsonRows = [18, 18, 5, 5].map((value, index) => ({ week: index + 1, weighted_touches: value, points: 8, active: true, bye: false }));
+
+test("usage summary mirrors the Python contract and maps provider inputs", () => {
+  const summary = summaryFor("RB", rising);
+  assert.equal(summary.schema_version, "usage_context_summary.v1");
+  assert.equal(summary.status, "evaluated");
+  assert.equal(summary.evaluated_through_week, 4);
+  assert.deepEqual(summary.positive_signals, ["role_change_recent"]);
+  assert.equal((summary.provider_inputs_for_missing as Record<string, unknown>).red_zone_share, "red_zone_use");
+  assert.equal((summary.provider_inputs_for_missing as Record<string, unknown>).implied_total, "implied_totals");
+  assert.equal(USAGE_INPUT_PROVIDER_INPUTS.air_yard_share, null);
+});
+
+test("move adjustment is capped add-minus-drop and needs both sides evaluated", () => {
+  const add = summaryFor("RB", rising, { depth_chart_order: 2, depth_chart_role: 2 });
+  const drop = summaryFor("RB", falling);
+  const applied = workerUsageMoveAdjustment(add, drop, true);
+  assert.equal(applied.status, "applied");
+  assert.equal(applied.delta, 6);
+  // current_metadata_only_depth_chart is excluded from scoring.
+  assert.ok("current_metadata_only_depth_chart" in ((applied.add as Record<string, any>).excluded_codes));
+  const missing = workerUsageMoveAdjustment(add, summaryFor("RB", []), true);
+  assert.equal(missing.status, "not_applied_drop_not_evaluable_missing_actual_stats");
+  assert.equal(missing.applied_delta, 0);
+  assert.equal(missing.delta, null);
+});
+
+test("worker TD component is never applied to projection-only move values", () => {
+  const leagueRows = rising.map((row) => ({ ...row, league_points: 10, scoring_breakdown: { rush_td: 6, rush_yd: 4 } }));
+  const summary = summaryFor("RB", leagueRows);
+  const td = summary.td_dependency as Record<string, unknown>;
+  assert.equal(td.status, "evaluated");
+  assert.equal(td.excess_pct, 25);
+  const adjustment = workerPlayerUsageAdjustment(summary, false);
+  assert.equal((adjustment.components as Record<string, any>).td_dependency.status, "not_applicable_actual_points_not_in_move_value");
+  const withActuals = workerPlayerUsageAdjustment(summary, true);
+  assert.equal((withActuals.components as Record<string, any>).td_dependency.value, -3);
+  assert.equal(TD_DEPENDENCY_REGRESSION_PPG_PER_EXCESS_PCT.RB, 0.15);
+});
+
+test("unavailable usage context keeps the full shape with an explicit status", () => {
+  const context = unavailableUsageContext("not_evaluable_unsupported_position", "p1", "LB", 5);
+  assert.deepEqual(context.not_evaluable, ["not_evaluable_unsupported_position"]);
+  assert.equal(context.td_dependency, null);
+  assert.equal(workerPlayerUsageAdjustment(context, true).total, null);
 });
 
 test("WR missing inputs flag air-yard share, not absolute air yards", () => {

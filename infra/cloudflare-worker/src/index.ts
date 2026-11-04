@@ -2,7 +2,26 @@
 // every named export of the main module as an entrypoint. Shared helpers and
 // the usage-context evaluator live in sibling modules.
 import { type JsonMap, arrayValue, calculateFantasyPoints, numberValue, objectValue, round } from "./shared.ts";
-import { PLAYER_USAGE_CONTEXT_SCHEMA_VERSION, appendUsageRow, evaluateWorkerUsageContext, metadataContext, usageWindows, workerProjectionComparison } from "./usage-context.ts";
+import {
+  PLAYER_USAGE_CONTEXT_SCHEMA_VERSION,
+  USAGE_SUPPORTED_POSITIONS,
+  appendUsageRow,
+  evaluateWorkerUsageContext,
+  metadataContext,
+  notEvaluatedOutsideBudget,
+  startSitUsageEvidence,
+  unavailableUsageContext,
+  usageWindows,
+  workerProjectionComparison,
+  workerUsageContextSummary,
+  workerUsageMoveAdjustment
+} from "./usage-context.ts";
+
+const USAGE_CONTEXT_ARG = {
+  type: "boolean",
+  default: true,
+  description: "Attach a compact player_usage_context summary (completed weeks only); waiver rows also get a bounded, auditable usage_context_adjustment. Set false to save Sleeper/D1 reads."
+};
 
 const PROTOCOL_VERSION = "2024-11-05";
 const APP_BASE_URL = "https://api.sleeper.app/v1";
@@ -120,7 +139,8 @@ const tools = [
         roster_id: { type: "integer" },
         season: { type: "integer" },
         week: { type: "integer" },
-        positions: { type: "string", default: DEFAULT_POSITIONS }
+        positions: { type: "string", default: DEFAULT_POSITIONS },
+        include_usage_context: USAGE_CONTEXT_ARG
       }
     }
   },
@@ -138,7 +158,8 @@ const tools = [
         trend_limit: { type: "integer", default: 100 },
         lookback_hours: { type: "integer", default: 24 },
         min_delta: { type: "number", default: 1.0 },
-        limit: { type: "integer", default: 10 }
+        limit: { type: "integer", default: 10 },
+        include_usage_context: USAGE_CONTEXT_ARG
       }
     }
   },
@@ -155,7 +176,8 @@ const tools = [
         lookback_hours: { type: "integer", default: 24 },
         trend_limit: { type: "integer", default: 100 },
         limit: { type: "integer", default: 25 },
-        recent_weeks: { type: "integer", default: 3 }
+        recent_weeks: { type: "integer", default: 3 },
+        include_usage_context: USAGE_CONTEXT_ARG
       }
     }
   },
@@ -172,7 +194,8 @@ const tools = [
         positions: { type: "string", default: DEFAULT_POSITIONS },
         lookback_hours: { type: "integer", default: 24 },
         trend_limit: { type: "integer", default: 100 },
-        per_position_limit: { type: "integer", default: 10 }
+        per_position_limit: { type: "integer", default: 10 },
+        include_usage_context: USAGE_CONTEXT_ARG
       }
     }
   },
@@ -267,7 +290,8 @@ const tools = [
         league_id: { type: "string" },
         season: { type: "integer" },
         week: { type: "integer" },
-        weeks_back: { type: "integer", default: 6 }
+        weeks_back: { type: "integer", default: 6 },
+        include_usage_context: USAGE_CONTEXT_ARG
       }
     }
   },
@@ -666,7 +690,7 @@ async function myLineup(args: JsonMap, env: Env): Promise<JsonMap> {
     getApp(`/league/${leagueId}/matchups/${week}`, env),
     getPlayers(env)
   ]);
-  return buildMyLineup({
+  const lineup = buildMyLineup({
     leagueId,
     rosterId,
     season,
@@ -678,6 +702,7 @@ async function myLineup(args: JsonMap, env: Env): Promise<JsonMap> {
     players,
     projectionRows
   });
+  return annotateLineupUsage(lineup, usageContextProvider(args, env, season, week, scoring, players));
 }
 
 async function lineupRecommendations(args: JsonMap, env: Env): Promise<JsonMap> {
@@ -718,7 +743,7 @@ async function lineupRecommendations(args: JsonMap, env: Env): Promise<JsonMap> 
     projectionRows
   });
 
-  return buildLineupRecommendations({
+  const recommendationInput = {
     lineup,
     rosters: rosterRows,
     players: playerMap,
@@ -728,7 +753,14 @@ async function lineupRecommendations(args: JsonMap, env: Env): Promise<JsonMap> 
     positions,
     minDelta,
     limit
-  });
+  };
+  const provider = usageContextProvider(args, env, season, week, scoring, playerMap);
+  if (!provider) return buildLineupRecommendations(recommendationInput);
+  await annotateLineupUsage(lineup, provider);
+  // Pass 1: context-free ranking; pass 2: context for the shown candidates.
+  const base = buildLineupRecommendations({ ...recommendationInput, usageContexts: {} });
+  const usageContexts = await usageContextsFor(provider, arrayValue(base.waiver_comparisons));
+  return buildLineupRecommendations({ ...recommendationInput, usageContexts });
 }
 
 async function waiverWireWatch(args: JsonMap, env: Env): Promise<JsonMap> {
@@ -750,6 +782,16 @@ async function waiverWireWatch(args: JsonMap, env: Env): Promise<JsonMap> {
   ]);
   const candidates = buildWaiverWatch(addTrends, players, projectionRows, arrayValue(rosters), positions, "add");
   const recentRows = await fetchRecentActuals(season, week, positions, scoring, recentWeeks, env);
+  const shortlist = withContext(
+    enrichWaiverCandidates(candidates, dropTrends, recentRows).slice(0, limit),
+    { league_id: leagueId, season, week }
+  );
+  const provider = usageContextProvider(args, env, season, week, scoring, players);
+  if (provider) {
+    await Promise.all(shortlist.map(async (row) => {
+      row.usage_context = await provider.get(row.player_id, row.position);
+    }));
+  }
   return {
     season,
     week,
@@ -757,15 +799,13 @@ async function waiverWireWatch(args: JsonMap, env: Env): Promise<JsonMap> {
     positions,
     lookback_hours: numberArg(args, "lookback_hours", 24),
     scoring_source: leagueId,
-    candidates: withContext(
-      enrichWaiverCandidates(candidates, dropTrends, recentRows).slice(0, limit),
-      { league_id: leagueId, season, week }
-    ),
+    candidates: shortlist,
     evidence: [
       "candidates are unrostered in the league",
       "projected_points use league scoring",
       "recent_actual_points uses completed stats for prior weeks",
-      "drop_trend_count is included to down-rank noisy add trends"
+      "drop_trend_count is included to down-rank noisy add trends",
+      ...(provider ? ["usage_context summarizes Sleeper usage (role, one-off flags, TD dependency, missing inputs) through the last completed week; it does not change candidate order"] : [])
     ]
   };
 }
@@ -815,6 +855,17 @@ async function waiverWireByPosition(args: JsonMap, env: Env): Promise<JsonMap> {
     projectionRows
   });
   const rosterPlayers = arrayValue(lineup.lineup_table).filter((row) => row.player_id !== "0");
+  const provider = usageContextProvider(args, env, season, week, scoring, playerMap);
+  let byPosition: JsonMap;
+  if (provider) {
+    await annotateLineupUsage(lineup, provider);
+    // Pass 1: context-free ranking; pass 2: context for the accepted rows.
+    const base = groupWaiverOptionsByPosition(availableCandidates, rosterPlayers, positions, perPositionLimit, {});
+    const usageContexts = await usageContextsFor(provider, Object.values(base).flatMap((rows) => arrayValue(rows)));
+    byPosition = groupWaiverOptionsByPosition(availableCandidates, rosterPlayers, positions, perPositionLimit, usageContexts);
+  } else {
+    byPosition = groupWaiverOptionsByPosition(availableCandidates, rosterPlayers, positions, perPositionLimit);
+  }
   return {
     season,
     week,
@@ -822,14 +873,20 @@ async function waiverWireByPosition(args: JsonMap, env: Env): Promise<JsonMap> {
     roster_id: rosterId,
     positions,
     per_position_limit: perPositionLimit,
-    by_position: groupWaiverOptionsByPosition(availableCandidates, rosterPlayers, positions, perPositionLimit),
+    by_position: byPosition,
     evidence: [
       "options are grouped by position and exclude rostered players",
       "projected_gain_over_drop compares against an unprotected active roster drop candidate",
-      "FAAB hints are included only when the acquisition market is known to be waiver"
+      "FAAB hints are included only when the acquisition market is known to be waiver",
+      ...(provider ? WORKER_WAIVER_USAGE_EVIDENCE : [])
     ]
   };
 }
+
+const WORKER_WAIVER_USAGE_EVIDENCE = [
+  "usage context is evaluated for roster players and the candidates the context-free ranking shows; other candidates report not_evaluated_outside_context_budget",
+  "priority_score adds a bounded usage_context_adjustment (add minus drop, capped at +/-6) only when both sides are evaluated; priority_score_before_context is the context-free score (the Worker has no move matrix)"
+];
 
 async function tradeOpportunities(args: JsonMap, env: Env): Promise<JsonMap> {
   const leagueId = requireLeagueId(args, env);
@@ -1245,6 +1302,9 @@ async function playerCard(args: JsonMap, env: Env): Promise<JsonMap> {
     });
   }
 
+  const provider = usageContextProvider(args, env, season, week, scoring, players);
+  const usageFields: JsonMap = provider ? { usage_context: await provider.get(playerId, player.position) } : {};
+
   return {
     player_id: playerId,
     league_id: leagueId,
@@ -1257,11 +1317,102 @@ async function playerCard(args: JsonMap, env: Env): Promise<JsonMap> {
     week,
     scoring_source: leagueId || "sleeper_default_points",
     chart_data: { weekly_points: weeklyPoints },
+    ...usageFields,
     evidence: [
       "actual_points and projected_points are calculated with league scoring when league_id is provided",
-      "missing stat keys are treated as zero"
+      "missing stat keys are treated as zero",
+      ...(provider ? ["usage_context summarizes Sleeper usage through the last completed week; missing inputs are reported as not_evaluable, never zero"] : [])
     ]
   };
+}
+
+// --- usage context integration (issue #32) ------------------------------------
+// Mirrors Python UsageContextProvider: summaries are memoized per call, built
+// from completed weeks before the decision week, and each (week, position)
+// stats payload is fetched once and shared across players to bound Sleeper/D1
+// reads. Decision tools build context only for roster players and the rows the
+// context-free ranking shows; other candidates report not_evaluated.
+type UsageProvider = { decisionWeek: number; get(playerId: unknown, position: unknown): Promise<JsonMap> };
+
+function usageContextProvider(
+  args: JsonMap,
+  env: Env,
+  season: number,
+  decisionWeek: number,
+  scoring: JsonMap | undefined,
+  players: Record<string, unknown>
+): UsageProvider | undefined {
+  if (args.include_usage_context === false) return undefined;
+  const contextWeek = decisionWeek - 1;
+  const statRows = new Map<string, Promise<JsonMap[]>>();
+  const memo = new Map<string, Promise<JsonMap>>();
+  const rowsFor = (week: number, position: string): Promise<JsonMap[]> => {
+    const key = `${week}:${position}`;
+    if (!statRows.has(key)) {
+      statRows.set(key, getData(`/stats/nfl/${season}/${week}`, env, { "season_type": "regular", "position[]": position }).then(arrayValue));
+    }
+    return statRows.get(key) as Promise<JsonMap[]>;
+  };
+  const build = async (playerId: string, positionHint: string): Promise<JsonMap> => {
+    const player = objectValue(players[playerId]);
+    const position = (positionHint || String(player.position || "")).toUpperCase();
+    if (!playerId || playerId === "0") return unavailableUsageContext("not_evaluable_missing_player_id", playerId, position, decisionWeek);
+    if (!USAGE_SUPPORTED_POSITIONS.includes(position)) return unavailableUsageContext("not_evaluable_unsupported_position", playerId, position, decisionWeek);
+    if (contextWeek < 1) return unavailableUsageContext("not_evaluable_no_completed_weeks", playerId, position, decisionWeek);
+    try {
+      const weeks = Array.from({ length: contextWeek }, (_, index) => index + 1);
+      const payloads = await Promise.all(weeks.map((week) => rowsFor(week, position)));
+      const actualRows: JsonMap[] = [];
+      payloads.forEach((rows, index) => appendUsageRow(actualRows, rows, playerId, position, "stats", weeks[index], player, scoring));
+      const evaluated = evaluateWorkerUsageContext(position, actualRows, [], metadataContext(player));
+      return workerUsageContextSummary(evaluated, { playerId, position, contextWeek, decisionWeek, actualFirst: actualRows.length > 0 });
+    } catch (error) {
+      return unavailableUsageContext("not_evaluable_missing_sleeper_stats", playerId, position, decisionWeek, error instanceof Error ? error.message : String(error));
+    }
+  };
+  return {
+    decisionWeek,
+    get(playerIdValue: unknown, positionValue: unknown): Promise<JsonMap> {
+      const playerId = String(playerIdValue || "");
+      const position = String(positionValue || "").toUpperCase();
+      const key = `${playerId}:${position}`;
+      if (!memo.has(key)) memo.set(key, build(playerId, position));
+      return memo.get(key) as Promise<JsonMap>;
+    }
+  };
+}
+
+async function annotateLineupUsage(lineup: JsonMap, provider: UsageProvider | undefined): Promise<JsonMap> {
+  if (!provider) return lineup;
+  const rows = [...arrayValue(lineup.lineup_table), ...arrayValue(lineup.starters), ...arrayValue(lineup.bench), ...arrayValue(lineup.reserve)];
+  await Promise.all(rows.map(async (row) => {
+    if (String(row.player_id || "0") === "0") return;
+    row.usage_context = await provider.get(row.player_id, row.position);
+  }));
+  return lineup;
+}
+
+async function usageContextsFor(provider: UsageProvider, rows: JsonMap[]): Promise<Record<string, JsonMap>> {
+  const entries = await Promise.all(rows
+    .filter((row) => row.add_player_id)
+    .map(async (row) => [String(row.add_player_id), await provider.get(row.add_player_id, row.add_position)] as const));
+  return Object.fromEntries(entries);
+}
+
+function usageDecisionWeek(rows: JsonMap[]): number | null {
+  for (const row of rows) {
+    const week = numberValue(objectValue(row.usage_context).decision_week);
+    if (week !== undefined) return week;
+  }
+  return null;
+}
+
+function attachUsageContexts(candidates: JsonMap[], usageContexts: Record<string, JsonMap> | undefined, decisionWeek: number | null): JsonMap[] {
+  if (!usageContexts) return candidates;
+  return candidates.map((row) => ({
+    ...row,
+    usage_context: usageContexts[String(row.player_id || "")] || notEvaluatedOutsideBudget(row.player_id, row.position, decisionWeek)
+  }));
 }
 
 async function playerUsageContext(args: JsonMap, env: Env): Promise<JsonMap> {
@@ -1589,6 +1740,7 @@ function buildLineupRecommendations(input: {
   positions: string[];
   minDelta: number;
   limit: number;
+  usageContexts?: Record<string, JsonMap>;
 }): JsonMap {
   const starters = arrayValue(input.lineup.starters).filter((row) => row.player_id !== "0");
   const bench = arrayValue(input.lineup.bench).filter((row) => row.player_id !== "0" && row.active_roster_spot !== false);
@@ -1596,13 +1748,13 @@ function buildLineupRecommendations(input: {
   const rosterPlayers = [...starters, ...bench, ...reserve];
   const projectionCandidates = buildFreeAgentWatch(input.projectionRows, input.rosters, input.players, input.positions);
   const trendCandidates = buildWaiverWatch(input.addTrends, input.players, input.projectionRows, input.rosters, input.positions, "add");
-  const availableCandidates = mergeAvailableCandidates({
+  const availableCandidates = attachUsageContexts(mergeAvailableCandidates({
     projectionCandidates,
     trendCandidates,
     players: input.players,
     addTrends: input.addTrends,
     dropTrends: input.dropTrends
-  });
+  }), input.usageContexts, numberValue(input.lineup.week) ?? null);
   const startSit = starters
     .flatMap((starter) => eligibleRosterRecommendations(starter, bench, input.minDelta))
     .sort((a, b) => sortNumber(b.projected_gain, a.projected_gain))
@@ -1635,6 +1787,7 @@ function buildLineupRecommendations(input: {
       "starter and bench comparisons use projected_points under league scoring",
       "waiver comparisons exclude players already rostered in the league",
       "priority_score combines projection, projected roster gain, normalized add/drop momentum, and rostered percentage when present",
+      ...(input.usageContexts ? [...WORKER_WAIVER_USAGE_EVIDENCE, "start_sit stays projection-based; usage context is attached as evidence only"] : []),
       "Sleeper player metadata does not always expose global rostered percentage"
     ]
   };
@@ -2077,6 +2230,14 @@ function eligibleRosterRecommendations(starter: JsonMap, bench: JsonMap[], minDe
     if (projectedGain < minDelta) {
       continue;
     }
+    // Context is evidence only for start/sit; projected_gain is unchanged.
+    const usageFields: JsonMap = {};
+    const usageEvidence: string[] = [];
+    for (const [side, player] of [["start", candidate], ["sit", starter]] as const) {
+      if (player.usage_context === undefined) continue;
+      usageFields[`${side}_usage_context`] = player.usage_context;
+      usageEvidence.push(startSitUsageEvidence(side, player.name, objectValue(player.usage_context)));
+    }
     rows.push({
       action: "start",
       slot,
@@ -2091,9 +2252,11 @@ function eligibleRosterRecommendations(starter: JsonMap, bench: JsonMap[], minDe
       sit_team: starter.team,
       sit_projected_points: starterPoints,
       projected_gain: projectedGain,
+      ...usageFields,
       evidence: [
         `${String(candidate.name || "")} is eligible for ${slot}`,
-        "recommendation is based on projected point delta"
+        "recommendation is based on projected point delta",
+        ...usageEvidence
       ]
     });
   }
@@ -2149,7 +2312,14 @@ function compareAvailablePlayer(candidate: JsonMap, rosterPlayers: JsonMap[]): J
   const marketType = normalizeMarketType(candidate.market_type);
   const action = acquisitionAction(marketType, projectedGain);
   const byeWarnings = moveByeWarnings(candidate, dropCandidate, rosterPlayers);
-  const priorityScore = round((numberValue(candidate.priority_score) || 0) + Math.max(projectedGain, 0) * 1.5 - (2 * byeWarnings.length), 2);
+  const basePriorityScore = round((numberValue(candidate.priority_score) || 0) + Math.max(projectedGain, 0) * 1.5 - (2 * byeWarnings.length), 2);
+  // Bounded usage-context delta (add minus drop, capped at +/-6), only when both
+  // sides are evaluated. Mirrors Python score_waiver_move; the Worker adds it to
+  // priority_score because it has no move matrix.
+  const usageAdjustment = candidate.usage_context !== undefined || dropCandidate.usage_context !== undefined
+    ? workerUsageMoveAdjustment(candidate.usage_context === undefined ? undefined : objectValue(candidate.usage_context), dropCandidate.usage_context === undefined ? undefined : objectValue(dropCandidate.usage_context), Boolean(dropCandidate.player_id))
+    : undefined;
+  const priorityScore = round(basePriorityScore + (numberValue(usageAdjustment?.applied_delta) || 0), 2);
   const row: JsonMap = {
     action,
     acquisition_action: action,
@@ -2185,6 +2355,12 @@ function compareAvailablePlayer(candidate: JsonMap, rosterPlayers: JsonMap[]): J
     source_metadata: candidate.source_metadata || {},
     priority_score: priorityScore
   };
+  if (usageAdjustment) {
+    row.priority_score_before_context = basePriorityScore;
+    row.usage_context_adjustment = usageAdjustment;
+    if (candidate.usage_context !== undefined) row.add_usage_context = candidate.usage_context;
+    if (dropCandidate.usage_context !== undefined) row.drop_usage_context = dropCandidate.usage_context;
+  }
   if (marketType === "waiver") {
     const faabHint = buildFaabHint(projectedGain, candidate);
     row.faab_bid_pct = faabHint.bid_pct;
@@ -2367,10 +2543,11 @@ function groupWaiverOptionsByPosition(
   candidates: JsonMap[],
   rosterPlayers: JsonMap[],
   positions: string[],
-  perPositionLimit: number
+  perPositionLimit: number,
+  usageContexts?: Record<string, JsonMap>
 ): JsonMap {
   const grouped: Record<string, JsonMap[]> = Object.fromEntries(positions.map((position) => [position, []]));
-  for (const candidate of candidates) {
+  for (const candidate of attachUsageContexts(candidates, usageContexts, usageDecisionWeek(rosterPlayers))) {
     const position = String(candidate.position || "").toUpperCase();
     if (!Object.hasOwn(grouped, position)) {
       continue;

@@ -297,3 +297,205 @@ export function averageUsage(rows: JsonMap[], key: string): number | undefined {
   const values = rows.map((row) => numberValue(row[key])).filter((value): value is number => value !== undefined);
   return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : undefined;
 }
+
+// --- Usage context integration (issue #32) -----------------------------------
+// Mirrors python/src/sleeper_tooling/usage_context_integration.py: a compact
+// summary block, per-player bounded components decomposed by reason code, and a
+// capped add-minus-drop move delta. Worker divergences: there is no
+// score_waiver_move matrix, so the delta is added to priority_score; move values
+// are projection-only, so the TD-dependency component is never applied; and the
+// heuristic TD method (no league scoring) is not evaluable against thresholds.
+
+export const USAGE_CONTEXT_SUMMARY_SCHEMA_VERSION = "usage_context_summary.v1";
+export const USAGE_CONTEXT_ADJUSTMENT_VERSION = "usage_context_adjustment.v1";
+export const USAGE_SUPPORTED_POSITIONS = ["QB", "RB", "WR", "TE", "K", "DEF"];
+const USAGE_WINDOW_RULE = "completed weeks before the decision week (evaluated_through_week = decision_week - 1)";
+const MOVE_SCORE_ACTUAL_PPG_WEIGHT = 2.6;
+// Mirrors Python TD_DEPENDENCY_FORMULAS dependency_threshold (as 0-100) and
+// TD_DEPENDENCY_REGRESSION_PPG_PER_EXCESS_PCT / TD_DEPENDENCY_WEIGHT_PROVENANCE.
+const TD_THRESHOLD_PCT: Record<string, number> = { QB: 45, RB: 35, WR: 40, TE: 45, K: 40, DEF: 50 };
+export const TD_DEPENDENCY_REGRESSION_PPG_PER_EXCESS_PCT: Record<string, number> = { QB: 0.05, RB: 0.15, WR: 0.15, TE: 0.15, K: 0.1, DEF: 0.1 };
+const TD_WEIGHT_PROVENANCE: Record<string, string> = { QB: "calibrated_preliminary_prior", RB: "calibrated_preliminary_prior", WR: "calibrated_preliminary_prior", TE: "calibrated_preliminary_prior", K: "uncalibrated_prior", DEF: "uncalibrated_prior" };
+// Mirrors Python _REASON_MODIFIERS amounts for the scored codes.
+const USAGE_REASON_MODIFIERS: Record<string, number> = { role_change_recent: 4, role_loss_recent: -4, injury_replacement: -2, projection_lagging_role_change: 4, low_touch_big_points: -3, low_target_big_points: -3, td_only_low_usage: -3, def_td_spike: -3, turnover_spike_without_pressure: -3, long_kick_spike: -4.5 };
+const COMPONENT_CAPS: Record<string, [number, number]> = { opportunity_role: [-4, 4], trend_change: [-4, 4], one_off_risk: [-6, 0], role_uncertainty: [-2, 0], td_dependency: [-3, 0], matchup: [-2, 2] };
+const CONTEXT_CAP: [number, number] = [-6, 6];
+const OPPORTUNITY_ROLE_CODES = ["role_change_recent", "role_loss_recent", "injury_replacement"];
+const TREND_CHANGE_CODES = ["projection_lagging_role_change"];
+const ONE_OFF_CODES = ["low_touch_big_points", "low_target_big_points", "td_only_low_usage", "def_td_spike", "turnover_spike_without_pressure", "long_kick_spike"];
+const SEVERE_ONE_OFF_CODES = ["low_touch_big_points", "low_target_big_points"];
+const POSITIVE_SIGNAL_CODES = ["role_change_recent", "projection_lagging_role_change"];
+const RISK_SIGNAL_CODES = ["role_loss_recent", "injury_replacement", "season_average_stale"];
+const EXCLUDED_SCORING_CODES: Record<string, string> = {
+  season_average_stale: "points-based (recent vs season fantasy points); recent scoring is already priced by player_values",
+  current_metadata_only_depth_chart: "current-only metadata present for nearly every player; not week-specific evidence"
+};
+// Usage-context missing inputs -> context provider inputs. null = intentionally
+// unmapped because the provider metric is a different quantity.
+export const USAGE_INPUT_PROVIDER_INPUTS: Record<string, string | null> = {
+  red_zone_share: "red_zone_use",
+  routes: "routes",
+  target_share: "target_share",
+  pressure: "pressure",
+  implied_total: "implied_totals",
+  weather: "weather",
+  touch_share: null,
+  air_yard_share: null,
+  nfl_schedule: null,
+  actual_stats: null
+};
+const SUMMARY_SCORE_KEYS = ["opportunity_score", "role_stability_score", "trend_change_score", "small_sample_risk", "one_off_risk", "td_dependency_score", "context_confidence"];
+
+function clampValue(value: number, bounds: [number, number]): number {
+  return round(Math.max(bounds[0], Math.min(bounds[1], value)), 2);
+}
+
+export function tdExcessPct(position: string, score: number | null | undefined): number | null {
+  if (score === null || score === undefined) return null;
+  return round(Math.max(0, score - (TD_THRESHOLD_PCT[position] ?? 0)), 2);
+}
+
+export function workerUsageContextSummary(evaluated: JsonMap, identity: { playerId: string; position: string; contextWeek: number; decisionWeek: number; actualFirst: boolean }): JsonMap {
+  const scores = objectValue(evaluated.scores);
+  const codes = (evaluated.reason_codes as string[] | undefined) || [];
+  const trend = objectValue(evaluated.trend_window);
+  const changePoint = objectValue(trend.change_point);
+  const td = objectValue(evaluated.td_dependency);
+  const method = String(evaluated.td_dependency_method || td.method || "");
+  const tdScore = scores.td_dependency_score === null || scores.td_dependency_score === undefined ? null : numberValue(scores.td_dependency_score) ?? null;
+  let tdStatus = "evaluated";
+  let tdForExcess: number | null = tdScore;
+  if (method !== "league_scoring_contributions") {
+    tdStatus = "not_evaluable_missing_league_scoring_contributions";
+    tdForExcess = null;
+  } else if (tdScore === null) {
+    tdStatus = String(td.reason || "not_evaluable_missing_scoring_contributions");
+  }
+  const missing = (evaluated.missing_inputs as string[] | undefined) || [];
+  return {
+    schema_version: USAGE_CONTEXT_SUMMARY_SCHEMA_VERSION,
+    source_schema_version: PLAYER_USAGE_CONTEXT_SCHEMA_VERSION,
+    status: identity.actualFirst ? "evaluated" : "not_evaluable_missing_actual_stats",
+    player_id: identity.playerId,
+    position: identity.position,
+    decision_week: identity.decisionWeek,
+    evaluated_through_week: identity.contextWeek,
+    window_rule: USAGE_WINDOW_RULE,
+    data_source: "sleeper_worker_raw_data",
+    role_label: evaluated.role_label ?? null,
+    context_confidence: scores.context_confidence ?? null,
+    trend_window: { name: trend.name ?? null, weeks: trend.weeks || [], baseline_weeks: trend.baseline_weeks || [], change_status: changePoint.status ?? null, change_week: changePoint.change_week ?? null, change_direction: changePoint.direction ?? null },
+    positive_signals: codes.filter((code) => POSITIVE_SIGNAL_CODES.includes(code)),
+    risk_signals: codes.filter((code) => RISK_SIGNAL_CODES.includes(code)),
+    one_off_flags: codes.filter((code) => ONE_OFF_CODES.includes(code)),
+    reason_codes: codes,
+    not_evaluable: codes.filter((code) => code.startsWith("not_evaluable_")),
+    missing_inputs: missing,
+    provider_inputs_for_missing: Object.fromEntries(missing.map((name) => [name, USAGE_INPUT_PROVIDER_INPUTS[name] ?? null])),
+    injury_replacement: null,
+    td_dependency: { status: tdStatus, method, window: td.window ?? null, score: tdScore, threshold_pct: TD_THRESHOLD_PCT[identity.position] ?? null, excess_pct: tdExcessPct(identity.position, tdForExcess) },
+    score_components: Object.fromEntries(SUMMARY_SCORE_KEYS.map((key) => [key, scores[key] ?? null]))
+  };
+}
+
+export function unavailableUsageContext(status: string, playerId: string, position: string | null, decisionWeek: number | null, detail?: string): JsonMap {
+  return {
+    schema_version: USAGE_CONTEXT_SUMMARY_SCHEMA_VERSION,
+    source_schema_version: null,
+    status,
+    player_id: playerId,
+    position: position || null,
+    decision_week: decisionWeek,
+    evaluated_through_week: decisionWeek ? decisionWeek - 1 : null,
+    window_rule: USAGE_WINDOW_RULE,
+    data_source: null,
+    role_label: null,
+    context_confidence: null,
+    trend_window: null,
+    positive_signals: [],
+    risk_signals: [],
+    one_off_flags: [],
+    reason_codes: [],
+    not_evaluable: status.startsWith("not_evaluable_") ? [status] : [],
+    missing_inputs: [],
+    provider_inputs_for_missing: {},
+    injury_replacement: null,
+    td_dependency: null,
+    score_components: null,
+    ...(detail ? { detail } : {})
+  };
+}
+
+export function notEvaluatedOutsideBudget(playerId: unknown, position: unknown, decisionWeek: number | null): JsonMap {
+  return unavailableUsageContext("not_evaluated_outside_context_budget", String(playerId || ""), position ? String(position).toUpperCase() : null, decisionWeek);
+}
+
+export function workerPlayerUsageAdjustment(summary: JsonMap | undefined, actualsInValue: boolean): JsonMap {
+  if (!summary || summary.status !== "evaluated") {
+    return { status: String(summary?.status || "not_evaluable_missing_usage_context"), total: null, components: {} };
+  }
+  const codes = (summary.reason_codes as string[] | undefined) || [];
+  const position = String(summary.position || "").toUpperCase();
+  const td = objectValue(summary.td_dependency);
+  const tdEvaluable = td.status === "evaluated" && numberValue(td.excess_pct) !== undefined;
+  const components: Record<string, JsonMap> = {};
+  const fromCodes = (name: string, allowed: string[], skip: string[] = []): void => {
+    const used = codes.filter((code) => allowed.includes(code) && !skip.includes(code));
+    const raw = used.reduce((sum, code) => sum + (USAGE_REASON_MODIFIERS[code] || 0), 0);
+    components[name] = { status: "evaluated", value: clampValue(raw, COMPONENT_CAPS[name]), raw: round(raw, 2), codes: used, cap: COMPONENT_CAPS[name] };
+  };
+  fromCodes("opportunity_role", OPPORTUNITY_ROLE_CODES);
+  fromCodes("trend_change", TREND_CHANGE_CODES);
+  fromCodes("one_off_risk", ONE_OFF_CODES, tdEvaluable ? ["td_only_low_usage"] : []);
+  const uncertaintyCodes: string[] = [];
+  let uncertainty = 0;
+  if (summary.role_label === "uncertain_role") { uncertainty -= 1; uncertaintyCodes.push("uncertain_role"); }
+  const trendWeeks = (objectValue(summary.trend_window).weeks as unknown[] | undefined) || [];
+  if (trendWeeks.length < 2) { uncertainty -= 1; uncertaintyCodes.push("small_trend_sample"); }
+  components.role_uncertainty = { status: "evaluated", value: clampValue(uncertainty, COMPONENT_CAPS.role_uncertainty), raw: uncertainty, codes: uncertaintyCodes, cap: COMPONENT_CAPS.role_uncertainty };
+  if (!tdEvaluable) {
+    components.td_dependency = { status: String(td.status || "not_evaluable_missing_scoring_contributions"), value: null };
+  } else if (!actualsInValue) {
+    components.td_dependency = { status: "not_applicable_actual_points_not_in_move_value", value: null, excess_pct: td.excess_pct };
+  } else {
+    const weight = TD_DEPENDENCY_REGRESSION_PPG_PER_EXCESS_PCT[position] || 0;
+    const raw = -(MOVE_SCORE_ACTUAL_PPG_WEIGHT * weight * Number(td.excess_pct));
+    components.td_dependency = { status: "evaluated", value: clampValue(raw, COMPONENT_CAPS.td_dependency), raw: round(raw, 2), excess_pct: td.excess_pct, ppg_regression_per_excess_pct: weight, move_score_per_ppg: MOVE_SCORE_ACTUAL_PPG_WEIGHT, weight_provenance: TD_WEIGHT_PROVENANCE[position] ?? null, cap: COMPONENT_CAPS.td_dependency };
+  }
+  components.matchup = { status: codes.includes("not_evaluable_missing_nfl_schedule") ? "not_evaluable_missing_nfl_schedule" : "not_evaluable_missing_matchup_strength", value: null };
+  const rawTotal = Object.values(components).reduce((sum, row) => sum + (numberValue(row.value) ?? 0), 0);
+  return {
+    status: "evaluated",
+    total: clampValue(rawTotal, CONTEXT_CAP),
+    raw_total: round(rawTotal, 2),
+    cap: CONTEXT_CAP,
+    components,
+    excluded_codes: Object.fromEntries(codes.filter((code) => code in EXCLUDED_SCORING_CODES).map((code) => [code, EXCLUDED_SCORING_CODES[code]])),
+    severe_one_off_flags: codes.filter((code) => SEVERE_ONE_OFF_CODES.includes(code))
+  };
+}
+
+export function workerUsageMoveAdjustment(addSummary: JsonMap | undefined, dropSummary: JsonMap | undefined, hasDrop: boolean): JsonMap {
+  if (!addSummary && !dropSummary) return { version: USAGE_CONTEXT_ADJUSTMENT_VERSION, status: "not_requested", applied_delta: 0, delta: null };
+  // Worker move values are projection-only, so actual points never feed them.
+  const add = workerPlayerUsageAdjustment(addSummary, false);
+  const drop = hasDrop ? workerPlayerUsageAdjustment(dropSummary, false) : { status: "no_drop_candidate", total: null, components: {} };
+  const base = { version: USAGE_CONTEXT_ADJUSTMENT_VERSION, add, drop, cap: CONTEXT_CAP };
+  if (add.total === null || drop.total === null) {
+    const side = add.total === null ? "add" : "drop";
+    return { ...base, status: `not_applied_${side}_${side === "add" ? add.status : drop.status}`, applied_delta: 0, delta: null };
+  }
+  const rawDelta = Number(add.total) - Number(drop.total);
+  const delta = clampValue(rawDelta, CONTEXT_CAP);
+  return { ...base, status: "applied", raw_delta: round(rawDelta, 2), delta, applied_delta: delta };
+}
+
+export function startSitUsageEvidence(side: string, name: unknown, context: JsonMap): string {
+  if (context.status !== "evaluated") return `${side} ${String(name || "")}: usage context ${String(context.status)}`;
+  const parts = [`role ${String(context.role_label)}`];
+  const signals = [...((context.positive_signals as string[]) || []), ...((context.risk_signals as string[]) || []), ...((context.one_off_flags as string[]) || [])];
+  if (signals.length) parts.push(signals.join(", "));
+  const td = objectValue(context.td_dependency);
+  if (numberValue(td.excess_pct)) parts.push(`TD share ${String(td.score)} exceeds the ${String(td.threshold_pct)} threshold`);
+  return `${side} ${String(name || "")}: usage context ${parts.join("; ")}`;
+}
