@@ -111,3 +111,24 @@ clean:
 	$(COMPOSE) down -v
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	find . -name "*.pyc" -delete
+
+.PHONY: resolve-context worker-smoke worker-rollback
+
+# Print resolved Sleeper context as env lines on stdout. Reads
+# SLEEPER_DEFAULT_LEAGUE_URL and SLEEPER_DEFAULT_USER_REF from the environment.
+resolve-context:
+	@test -n "$$SLEEPER_DEFAULT_LEAGUE_URL" || { echo "SLEEPER_DEFAULT_LEAGUE_URL is required" >&2; exit 1; }
+	@test -n "$$SLEEPER_DEFAULT_USER_REF" || { echo "SLEEPER_DEFAULT_USER_REF is required" >&2; exit 1; }
+	@$(COMPOSE) run --rm -T sleeper configure-context "$$SLEEPER_DEFAULT_LEAGUE_URL" --user-ref "$$SLEEPER_DEFAULT_USER_REF" --output env
+
+# POST JSON-RPC initialize + tools/list to URL (the /mcp endpoint) and fail
+# unless both return HTTP 200 with a valid result. Set MCP_SMOKE_BEARER_TOKEN
+# in the environment to send `Authorization: Bearer <token>` (for OAuth).
+worker-smoke:
+	@test -n "$(URL)" || { echo "Usage: make worker-smoke URL=https://<host>/mcp" >&2; exit 1; }
+	$(COMPOSE) run --rm -T --no-deps -e MCP_SMOKE_BEARER_TOKEN -e WORKER_SMOKE_ATTEMPTS -e WORKER_SMOKE_DELAY_MS --entrypoint node cloudflare-worker scripts/worker-smoke.mjs "$(URL)"
+
+# Roll back to a previous Worker version. Pass wrangler flags via ARGS, e.g.
+# ARGS='<version-id> --message "reason"'. Needs CLOUDFLARE_API_TOKEN/ACCOUNT_ID.
+worker-rollback:
+	$(COMPOSE) run --rm -i cloudflare-worker exec -- wrangler rollback $(ARGS)

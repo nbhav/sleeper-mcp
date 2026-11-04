@@ -154,6 +154,7 @@ def sync_nflverse_stats(
     raw_rows = _to_records(loader.load_player_stats(list(seasons)))
     allowed_weeks = {int(week) for week in weeks} if weeks is not None else None
     rows_by_week: dict[tuple[int, int], list[dict[str, Any]]] = {}
+    team_columns_by_week: dict[tuple[int, int], dict[str, int]] = {}
     unresolved = 0
     skipped = 0
     for raw in raw_rows:
@@ -174,15 +175,18 @@ def sync_nflverse_stats(
             for stat_key, column in STAT_KEY_MAP.items()
             if raw.get(column) is not None
         }
+        team, team_column = _row_team(raw)
+        week_team_columns = team_columns_by_week.setdefault((season, week), {})
+        week_team_columns[team_column] = week_team_columns.get(team_column, 0) + 1
         rows_by_week.setdefault((season, week), []).append(
             {
                 "player_id": sleeper_id,
                 "player": {
                     "full_name": raw.get("player_display_name") or raw.get("player_name"),
-                    "team": raw.get("recent_team") or raw.get("team"),
+                    "team": team,
                     "position": raw.get("position"),
                 },
-                "team": raw.get("recent_team") or raw.get("team"),
+                "team": team,
                 "position": raw.get("position"),
                 "stats": stats,
                 "raw_nflverse": raw,
@@ -234,6 +238,7 @@ def sync_nflverse_stats(
             "source": NFLVERSE_SOURCE,
             "coverage": {"season": season, "weeks": [week]},
             "row_count": len(rows),
+            "team_column_counts": dict(sorted(team_columns_by_week.get((season, week), {}).items())),
             "unresolved_identity_count": unresolved,
             "skipped_row_count": skipped,
             "fetched_at": fetched,
@@ -301,6 +306,23 @@ def compare_stat_values(
         unresolved_identity=int(unresolved_identity),
         provider_metadata=provider_metadata,
     )
+
+
+def _row_team(raw: Mapping[str, Any]) -> tuple[Any, str]:
+    """Return the team for this game row and the column it came from.
+
+    nflverse ``team`` is the team the player played for in that game.
+    ``recent_team`` (older schemas) is the player's latest team, so using it
+    first would move a traded player's earlier weeks to the new team. Fall
+    back to it only when the per-game column is missing or empty.
+    """
+    team = raw.get("team")
+    if team:
+        return team, "team"
+    recent_team = raw.get("recent_team")
+    if recent_team:
+        return recent_team, "recent_team"
+    return None, "none"
 
 
 def _identity_map(rows: Iterable[Mapping[str, Any]]) -> dict[str, str]:
