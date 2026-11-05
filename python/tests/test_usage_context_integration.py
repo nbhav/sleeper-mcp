@@ -395,3 +395,19 @@ def test_waiver_wire_watch_candidates_carry_usage_context(tmp_path) -> None:
     by_id = {row["player_id"]: row for row in report["candidates"]}
     assert by_id["free-rb"]["usage_context"]["role_label"] == "emerging_rotation"
     repo.close()
+
+
+def test_lineup_recommendations_normalized_path_runs_with_recent_actuals(tmp_path) -> None:
+    """Regression: the fresh normalized path passed recent_actuals to a builder
+    that did not accept it, so every normalized call raised TypeError."""
+    from test_mcp_tools import FailingMcpClient, build_normalized_decision_fixture
+
+    repo = build_normalized_decision_fixture(tmp_path)
+    runner = FantasyToolRunner(client_factory=lambda: FailingMcpClient(), decision_repository=repo)
+
+    report = runner.lineup_recommendations(league_id="league-1", roster_id=1, season=2026, week=1, positions="RB,WR", limit=3)
+
+    assert report["data_source"] == "normalized_db"
+    assert report["fallback_used"] is False
+    assert report["waiver_comparisons"] or report["waiver_watch_items"] or report["watchlist"]
+    repo.close()

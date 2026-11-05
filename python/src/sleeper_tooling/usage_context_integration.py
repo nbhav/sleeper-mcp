@@ -112,7 +112,6 @@ SUMMARY_SCORE_KEYS = (
     "context_confidence",
 )
 
-WINDOW_RULE = "completed weeks before the decision week (evaluated_through_week = decision_week - 1)"
 
 
 def _clamp(value: float, bounds: tuple[float, float]) -> float:
@@ -146,14 +145,11 @@ def summarize_usage_context(profile: Mapping[str, Any], *, decision_week: int | 
     status = "evaluated" if profile.get("actual_first") else "not_evaluable_missing_actual_stats"
     return {
         "schema_version": USAGE_CONTEXT_SUMMARY_SCHEMA_VERSION,
-        "source_schema_version": profile.get("schema_version"),
         "status": status,
         "player_id": str(profile.get("player_id") or ""),
         "position": position,
         "decision_week": decision_week,
         "evaluated_through_week": profile.get("week"),
-        "window_rule": WINDOW_RULE,
-        "data_source": profile.get("data_source"),
         "role_label": profile.get("role_label"),
         "context_confidence": scores.get("context_confidence"),
         "trend_window": {
@@ -167,10 +163,12 @@ def summarize_usage_context(profile: Mapping[str, Any], *, decision_week: int | 
         "positive_signals": [code for code in codes if code in POSITIVE_SIGNAL_CODES],
         "risk_signals": [code for code in codes if code in RISK_SIGNAL_CODES],
         "one_off_flags": [code for code in codes if code in ONE_OFF_CODES],
-        "reason_codes": codes,
+        # Compact: not_evaluable_* codes live only in not_evaluable, and the
+        # provider map lists only missing inputs a provider could supply.
+        "reason_codes": [code for code in codes if not code.startswith("not_evaluable_")],
         "not_evaluable": [code for code in codes if code.startswith("not_evaluable_")],
         "missing_inputs": missing,
-        "provider_inputs_for_missing": {name: USAGE_INPUT_PROVIDER_INPUTS.get(name) for name in missing},
+        "provider_inputs_for_missing": {name: USAGE_INPUT_PROVIDER_INPUTS[name] for name in missing if USAGE_INPUT_PROVIDER_INPUTS.get(name)},
         "injury_replacement": injury.get("status") if isinstance(injury, Mapping) else None,
         "td_dependency": {
             "status": td_status,
@@ -189,14 +187,11 @@ def unavailable_usage_context(status: str, *, player_id: str = "", position: str
 
     return {
         "schema_version": USAGE_CONTEXT_SUMMARY_SCHEMA_VERSION,
-        "source_schema_version": None,
         "status": status,
         "player_id": str(player_id or ""),
         "position": str(position or "").upper() or None,
         "decision_week": decision_week,
         "evaluated_through_week": (decision_week - 1) if decision_week else None,
-        "window_rule": WINDOW_RULE,
-        "data_source": None,
         "role_label": None,
         "context_confidence": None,
         "trend_window": None,
@@ -237,7 +232,7 @@ def player_usage_adjustment(summary: Mapping[str, Any] | None, *, actuals_in_val
     def from_codes(name: str, allowed: Iterable[str], *, skip: Iterable[str] = ()) -> None:
         used = [code for code in codes if code in allowed and code not in set(skip)]
         raw = sum(REASON_MODIFIERS[code][1] for code in used if code in REASON_MODIFIERS)
-        components[name] = {"status": "evaluated", "value": _clamp(raw, COMPONENT_CAPS[name]), "raw": round(raw, 2), "codes": used, "cap": list(COMPONENT_CAPS[name])}
+        components[name] = {"status": "evaluated", "value": _clamp(raw, COMPONENT_CAPS[name]), "raw": round(raw, 2), "codes": used}
 
     td = summary.get("td_dependency") or {}
     td_evaluable = td.get("status") == "evaluated" and td.get("excess_pct") is not None
@@ -256,7 +251,7 @@ def player_usage_adjustment(summary: Mapping[str, Any] | None, *, actuals_in_val
     if len(trend_weeks) < MINIMUM_TREND_WEEKS:
         uncertainty += SMALL_TREND_SAMPLE_PENALTY
         uncertainty_codes.append("small_trend_sample")
-    components["role_uncertainty"] = {"status": "evaluated", "value": _clamp(uncertainty, COMPONENT_CAPS["role_uncertainty"]), "raw": uncertainty, "codes": uncertainty_codes, "cap": list(COMPONENT_CAPS["role_uncertainty"])}
+    components["role_uncertainty"] = {"status": "evaluated", "value": _clamp(uncertainty, COMPONENT_CAPS["role_uncertainty"]), "raw": uncertainty, "codes": uncertainty_codes}
 
     weight = TD_DEPENDENCY_REGRESSION_PPG_PER_EXCESS_PCT.get(position)
     if not td_evaluable:
@@ -274,10 +269,10 @@ def player_usage_adjustment(summary: Mapping[str, Any] | None, *, actuals_in_val
             "ppg_regression_per_excess_pct": weight,
             "move_score_per_ppg": MOVE_SCORE_ACTUAL_PPG_WEIGHT,
             "weight_provenance": TD_DEPENDENCY_WEIGHT_PROVENANCE.get(position),
-            "cap": list(COMPONENT_CAPS["td_dependency"]),
         }
 
-    matchup_code = "not_evaluable_missing_nfl_schedule" if "not_evaluable_missing_nfl_schedule" in codes else "not_evaluable_missing_matchup_strength"
+    not_evaluable = set(summary.get("not_evaluable") or []) | {code for code in codes if code.startswith("not_evaluable_")}
+    matchup_code = "not_evaluable_missing_nfl_schedule" if "not_evaluable_missing_nfl_schedule" in not_evaluable else "not_evaluable_missing_matchup_strength"
     components["matchup"] = {"status": matchup_code, "value": None}
 
     evaluated_values = [float(row["value"]) for row in components.values() if row.get("value") is not None]

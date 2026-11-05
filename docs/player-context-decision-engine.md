@@ -1030,8 +1030,9 @@ Each tool takes `include_usage_context` (default `true`) in both runtimes.
 
 `status`, `decision_week`, `evaluated_through_week`, `role_label`,
 `context_confidence`, `trend_window` (name, weeks, baseline weeks, change
-point), `positive_signals`, `risk_signals`, `one_off_flags`, `reason_codes`,
-`not_evaluable`, `missing_inputs`, `provider_inputs_for_missing`,
+point), `positive_signals`, `risk_signals`, `one_off_flags`, `reason_codes`
+(without `not_evaluable_*` codes), `not_evaluable`, `missing_inputs`,
+`provider_inputs_for_missing` (only inputs a provider could supply),
 `injury_replacement`, `td_dependency` (status, method, score, threshold,
 excess), and `score_components`.
 

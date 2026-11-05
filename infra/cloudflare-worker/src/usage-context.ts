@@ -309,7 +309,6 @@ export function averageUsage(rows: JsonMap[], key: string): number | undefined {
 export const USAGE_CONTEXT_SUMMARY_SCHEMA_VERSION = "usage_context_summary.v1";
 export const USAGE_CONTEXT_ADJUSTMENT_VERSION = "usage_context_adjustment.v1";
 export const USAGE_SUPPORTED_POSITIONS = ["QB", "RB", "WR", "TE", "K", "DEF"];
-const USAGE_WINDOW_RULE = "completed weeks before the decision week (evaluated_through_week = decision_week - 1)";
 const MOVE_SCORE_ACTUAL_PPG_WEIGHT = 2.6;
 // Mirrors Python TD_DEPENDENCY_FORMULAS dependency_threshold (as 0-100) and
 // TD_DEPENDENCY_REGRESSION_PPG_PER_EXCESS_PCT / TD_DEPENDENCY_WEIGHT_PROVENANCE.
@@ -374,24 +373,21 @@ export function workerUsageContextSummary(evaluated: JsonMap, identity: { player
   const missing = (evaluated.missing_inputs as string[] | undefined) || [];
   return {
     schema_version: USAGE_CONTEXT_SUMMARY_SCHEMA_VERSION,
-    source_schema_version: PLAYER_USAGE_CONTEXT_SCHEMA_VERSION,
     status: identity.actualFirst ? "evaluated" : "not_evaluable_missing_actual_stats",
     player_id: identity.playerId,
     position: identity.position,
     decision_week: identity.decisionWeek,
     evaluated_through_week: identity.contextWeek,
-    window_rule: USAGE_WINDOW_RULE,
-    data_source: "sleeper_worker_raw_data",
     role_label: evaluated.role_label ?? null,
     context_confidence: scores.context_confidence ?? null,
     trend_window: { name: trend.name ?? null, weeks: trend.weeks || [], baseline_weeks: trend.baseline_weeks || [], change_status: changePoint.status ?? null, change_week: changePoint.change_week ?? null, change_direction: changePoint.direction ?? null },
     positive_signals: codes.filter((code) => POSITIVE_SIGNAL_CODES.includes(code)),
     risk_signals: codes.filter((code) => RISK_SIGNAL_CODES.includes(code)),
     one_off_flags: codes.filter((code) => ONE_OFF_CODES.includes(code)),
-    reason_codes: codes,
+    reason_codes: codes.filter((code) => !code.startsWith("not_evaluable_")),
     not_evaluable: codes.filter((code) => code.startsWith("not_evaluable_")),
     missing_inputs: missing,
-    provider_inputs_for_missing: Object.fromEntries(missing.map((name) => [name, USAGE_INPUT_PROVIDER_INPUTS[name] ?? null])),
+    provider_inputs_for_missing: Object.fromEntries(missing.filter((name) => USAGE_INPUT_PROVIDER_INPUTS[name]).map((name) => [name, USAGE_INPUT_PROVIDER_INPUTS[name]])),
     injury_replacement: null,
     td_dependency: { status: tdStatus, method, window: td.window ?? null, score: tdScore, threshold_pct: TD_THRESHOLD_PCT[identity.position] ?? null, excess_pct: tdExcessPct(identity.position, tdForExcess) },
     score_components: Object.fromEntries(SUMMARY_SCORE_KEYS.map((key) => [key, scores[key] ?? null]))
@@ -401,14 +397,11 @@ export function workerUsageContextSummary(evaluated: JsonMap, identity: { player
 export function unavailableUsageContext(status: string, playerId: string, position: string | null, decisionWeek: number | null, detail?: string): JsonMap {
   return {
     schema_version: USAGE_CONTEXT_SUMMARY_SCHEMA_VERSION,
-    source_schema_version: null,
     status,
     player_id: playerId,
     position: position || null,
     decision_week: decisionWeek,
     evaluated_through_week: decisionWeek ? decisionWeek - 1 : null,
-    window_rule: USAGE_WINDOW_RULE,
-    data_source: null,
     role_label: null,
     context_confidence: null,
     trend_window: null,
@@ -442,7 +435,7 @@ export function workerPlayerUsageAdjustment(summary: JsonMap | undefined, actual
   const fromCodes = (name: string, allowed: string[], skip: string[] = []): void => {
     const used = codes.filter((code) => allowed.includes(code) && !skip.includes(code));
     const raw = used.reduce((sum, code) => sum + (USAGE_REASON_MODIFIERS[code] || 0), 0);
-    components[name] = { status: "evaluated", value: clampValue(raw, COMPONENT_CAPS[name]), raw: round(raw, 2), codes: used, cap: COMPONENT_CAPS[name] };
+    components[name] = { status: "evaluated", value: clampValue(raw, COMPONENT_CAPS[name]), raw: round(raw, 2), codes: used };
   };
   fromCodes("opportunity_role", OPPORTUNITY_ROLE_CODES);
   fromCodes("trend_change", TREND_CHANGE_CODES);
@@ -452,7 +445,7 @@ export function workerPlayerUsageAdjustment(summary: JsonMap | undefined, actual
   if (summary.role_label === "uncertain_role") { uncertainty -= 1; uncertaintyCodes.push("uncertain_role"); }
   const trendWeeks = (objectValue(summary.trend_window).weeks as unknown[] | undefined) || [];
   if (trendWeeks.length < 2) { uncertainty -= 1; uncertaintyCodes.push("small_trend_sample"); }
-  components.role_uncertainty = { status: "evaluated", value: clampValue(uncertainty, COMPONENT_CAPS.role_uncertainty), raw: uncertainty, codes: uncertaintyCodes, cap: COMPONENT_CAPS.role_uncertainty };
+  components.role_uncertainty = { status: "evaluated", value: clampValue(uncertainty, COMPONENT_CAPS.role_uncertainty), raw: uncertainty, codes: uncertaintyCodes };
   if (!tdEvaluable) {
     components.td_dependency = { status: String(td.status || "not_evaluable_missing_scoring_contributions"), value: null };
   } else if (!actualsInValue) {
@@ -460,9 +453,10 @@ export function workerPlayerUsageAdjustment(summary: JsonMap | undefined, actual
   } else {
     const weight = TD_DEPENDENCY_REGRESSION_PPG_PER_EXCESS_PCT[position] || 0;
     const raw = -(MOVE_SCORE_ACTUAL_PPG_WEIGHT * weight * Number(td.excess_pct));
-    components.td_dependency = { status: "evaluated", value: clampValue(raw, COMPONENT_CAPS.td_dependency), raw: round(raw, 2), excess_pct: td.excess_pct, ppg_regression_per_excess_pct: weight, move_score_per_ppg: MOVE_SCORE_ACTUAL_PPG_WEIGHT, weight_provenance: TD_WEIGHT_PROVENANCE[position] ?? null, cap: COMPONENT_CAPS.td_dependency };
+    components.td_dependency = { status: "evaluated", value: clampValue(raw, COMPONENT_CAPS.td_dependency), raw: round(raw, 2), excess_pct: td.excess_pct, ppg_regression_per_excess_pct: weight, move_score_per_ppg: MOVE_SCORE_ACTUAL_PPG_WEIGHT, weight_provenance: TD_WEIGHT_PROVENANCE[position] ?? null };
   }
-  components.matchup = { status: codes.includes("not_evaluable_missing_nfl_schedule") ? "not_evaluable_missing_nfl_schedule" : "not_evaluable_missing_matchup_strength", value: null };
+  const notEvaluable = [...((summary.not_evaluable as string[] | undefined) || []), ...codes];
+  components.matchup = { status: notEvaluable.includes("not_evaluable_missing_nfl_schedule") ? "not_evaluable_missing_nfl_schedule" : "not_evaluable_missing_matchup_strength", value: null };
   const rawTotal = Object.values(components).reduce((sum, row) => sum + (numberValue(row.value) ?? 0), 0);
   return {
     status: "evaluated",

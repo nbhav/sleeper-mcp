@@ -128,7 +128,13 @@ Waiver rows add `usage_context_adjustment`, a capped add-minus-drop delta of
 applies only when both sides are evaluated. It never overrides drop protections
 or roster-damage gates, and usage spikes on low opportunity keep an add at
 `watch`. Start/sit stays projection-based, and context appears there only as
-evidence. Pass `include_usage_context: false` to skip the extra reads. The
+evidence. Pass `include_usage_context: false` to skip the extra reads and
+output. On the local 2026 data, context roughly doubles the JSON size of
+`waiver_wire_by_position` (381 KB to 741 KB) and `lineup_recommendations`
+(118 KB to 279 KB), and grows `my_lineup` from 35 KB to 94 KB. On the Worker it
+adds one Sleeper stats read per completed week and position per call; at week
+10 with all six positions that is 54 reads, or 54 shared across
+`decision_smoke_report`'s sub-calls. The
 contract, caps, and calibrated TD weights are in
 `docs/player-context-decision-engine.md` under "Decision Integration".
 

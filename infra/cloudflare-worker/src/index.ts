@@ -676,7 +676,7 @@ async function waiverWatch(args: JsonMap, env: Env): Promise<JsonMap[]> {
   );
 }
 
-async function myLineup(args: JsonMap, env: Env): Promise<JsonMap> {
+async function myLineup(args: JsonMap, env: Env, sharedStatRows?: Map<string, Promise<JsonMap[]>>): Promise<JsonMap> {
   const leagueId = requireLeagueId(args, env);
   const rosterId = requireRosterId(args, env);
   const [season, week] = await resolveSeasonWeek(args, env);
@@ -702,7 +702,7 @@ async function myLineup(args: JsonMap, env: Env): Promise<JsonMap> {
     players,
     projectionRows
   });
-  return annotateLineupUsage(lineup, usageContextProvider(args, env, season, week, scoring, players));
+  return annotateLineupUsage(lineup, usageContextProvider(args, env, season, week, scoring, players, sharedStatRows));
 }
 
 async function lineupRecommendations(args: JsonMap, env: Env): Promise<JsonMap> {
@@ -810,7 +810,7 @@ async function waiverWireWatch(args: JsonMap, env: Env): Promise<JsonMap> {
   };
 }
 
-async function waiverWireByPosition(args: JsonMap, env: Env): Promise<JsonMap> {
+async function waiverWireByPosition(args: JsonMap, env: Env, sharedStatRows?: Map<string, Promise<JsonMap[]>>): Promise<JsonMap> {
   const leagueId = requireLeagueId(args, env);
   const rosterId = requireRosterId(args, env);
   const [season, week] = await resolveSeasonWeek(args, env);
@@ -855,7 +855,7 @@ async function waiverWireByPosition(args: JsonMap, env: Env): Promise<JsonMap> {
     projectionRows
   });
   const rosterPlayers = arrayValue(lineup.lineup_table).filter((row) => row.player_id !== "0");
-  const provider = usageContextProvider(args, env, season, week, scoring, playerMap);
+  const provider = usageContextProvider(args, env, season, week, scoring, playerMap, sharedStatRows);
   let byPosition: JsonMap;
   if (provider) {
     await annotateLineupUsage(lineup, provider);
@@ -947,12 +947,13 @@ async function decisionSmokeReport(args: JsonMap, env: Env): Promise<JsonMap | s
     ...args,
     positions
   };
+  const sharedStatRows = new Map<string, Promise<JsonMap[]>>();
   const [lineup, waivers, trades] = await Promise.all([
-    myLineup(contextArgs, env),
+    myLineup(contextArgs, env, sharedStatRows),
     waiverWireByPosition({
       ...contextArgs,
       per_position_limit: numberArg(args, "per_position_limit", 3)
-    }, env),
+    }, env, sharedStatRows),
     tradeOpportunities({
       ...args,
       targets_per_team: numberArg(args, "targets_per_team", 2),
@@ -1340,14 +1341,17 @@ function usageContextProvider(
   season: number,
   decisionWeek: number,
   scoring: JsonMap | undefined,
-  players: Record<string, unknown>
+  players: Record<string, unknown>,
+  sharedStatRows?: Map<string, Promise<JsonMap[]>>
 ): UsageProvider | undefined {
   if (args.include_usage_context === false) return undefined;
   const contextWeek = decisionWeek - 1;
-  const statRows = new Map<string, Promise<JsonMap[]>>();
+  // decision_smoke_report passes one map to its sub-calls so each (season,
+  // week, position) stats payload is read once per invocation.
+  const statRows = sharedStatRows ?? new Map<string, Promise<JsonMap[]>>();
   const memo = new Map<string, Promise<JsonMap>>();
   const rowsFor = (week: number, position: string): Promise<JsonMap[]> => {
-    const key = `${week}:${position}`;
+    const key = `${season}:${week}:${position}`;
     if (!statRows.has(key)) {
       statRows.set(key, getData(`/stats/nfl/${season}/${week}`, env, { "season_type": "regular", "position[]": position }).then(arrayValue));
     }
