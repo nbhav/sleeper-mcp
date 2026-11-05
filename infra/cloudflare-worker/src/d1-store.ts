@@ -40,7 +40,7 @@ export const READ_MAX_AGE_SECONDS: Record<string, number> = {
   league_users: 36 * 3600,
   rosters: 3600,
   projections: 8 * 3600,
-  stats: 2 * 3600
+  stats: 3 * 3600
 };
 // A week's slice synced after the week ended only changes for stat corrections.
 export const COMPLETE_SLICE_MAX_AGE_SECONDS = 14 * 86400;
@@ -251,8 +251,8 @@ export function memoizedPlayers(env: object, load: () => Promise<Record<string, 
 
 export type PlayerStatRows = { fresh: Set<string>; rows: Map<string, JsonMap> };
 
-// Usage context needs only the evaluated players' own rows, so it reads them by
-// player_id (stats index) instead of loading whole (week, position) slices.
+// Usage context needs only the evaluated players' own rows, so it returns them
+// by player_id instead of shipping whole (week, position) slices.
 // load() calls made in the same tick are coalesced into one batched D1 query.
 // Keys are `${week}:${position}`; `fresh` lists the slices the ledger trusts
 // (a fresh slice without a row for the player means the player had no row).
@@ -278,7 +278,7 @@ export function createStatRowsLoader(env: StoreEnv, season: number, throughWeek:
     for (let index = 0; index < ids.length; index += MAX_IDS_PER_STATEMENT) {
       const chunk = ids.slice(index, index + MAX_IDS_PER_STATEMENT);
       statements.push(db.prepare(
-        `SELECT week, position, player_id, raw_json FROM player_week_rows WHERE source = 'stats' AND season = ? AND week BETWEEN 1 AND ? AND player_id IN (${placeholders(chunk.length)})`
+        `SELECT week, position, player_id, raw_json FROM player_week_rows WHERE source = 'stats' AND season = ? AND week >= 1 AND week <= ? AND player_id IN (${placeholders(chunk.length)})`
       ).bind(season, throughWeek, ...chunk));
     }
     try {

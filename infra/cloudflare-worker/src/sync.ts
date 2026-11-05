@@ -49,7 +49,7 @@ export const SYNC_REFRESH_AFTER_SECONDS = {
   league_settings: 24 * 3600,
   rosters: 30 * 60,
   projections: 4 * 3600,
-  stats: 3600,
+  stats: 2 * 3600,
   latest_completed_stats: 24 * 3600
 };
 

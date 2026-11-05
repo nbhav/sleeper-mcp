@@ -35,7 +35,7 @@ Schema lives in `migrations/` (`wrangler d1 migrations`):
 Cron Triggers (`wrangler.toml [triggers]`):
 
 - `*/15 * * * *`: rosters (30 min), league settings/users (daily), current-week
-  projections (4 h) and stats (1 h), the latest completed week's stats (daily,
+  projections (4 h) and stats (2 h), the latest completed week's stats (daily,
   for stat corrections), then backfill of completed weeks newest first. Each
   tick takes at most `SYNC_MAX_FETCHES_PER_TICK` Sleeper fetches (default 6,
   clamped to 20).
@@ -49,7 +49,7 @@ stops a tick at 45. Unchanged slices (same payload hash) only rewrite their
 ledger row, which keeps D1 Free's 100k rows-written/day budget.
 
 Reads. Tools read normalized rows when the ledger entry is fresh (projections
-8 h, stats 2 h, rosters 1 h, players 8 h, league settings/users 36 h, completed
+8 h, stats 3 h, rosters 1 h, players 8 h, league settings/users 36 h, completed
 weeks 14 days) and fall back to the raw cache and Sleeper otherwise, including
 when tables are missing. Usage context reads only the evaluated players' rows
 in one batched query per pass. Decision tools add `data_freshness`

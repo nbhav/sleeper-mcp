@@ -43,12 +43,10 @@ CREATE TABLE IF NOT EXISTS player_week_rows (
   PRIMARY KEY (source, season, week, position, player_id)
 );
 
--- Per-player lookups serve usage context, which reads completed-week stats
--- only. A partial index keeps projection writes (the largest writer) at one
--- row written per row.
-CREATE INDEX IF NOT EXISTS idx_player_week_rows_stats_player
-  ON player_week_rows (player_id, season, week)
-  WHERE source = 'stats';
+-- No secondary index on purpose: index rows count as rows written on D1, and
+-- writes (100k/day Free) are scarcer than reads (5M/day). Per-player usage
+-- reads scan the (source, season, week) primary-key prefix, ~700 stats rows per
+-- week.
 
 CREATE TABLE IF NOT EXISTS player_snapshot_chunks (
   snapshot_id TEXT NOT NULL,

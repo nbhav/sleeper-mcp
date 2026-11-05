@@ -274,6 +274,21 @@ test("stale normalized slices fall back to Sleeper", async () => {
   assert.equal(urls.filter((url) => /\/stats\/nfl\/2026\/\d+\?/.test(url) && !url.includes("order_by")).length, 54);
 });
 
+test("a failing D1 binding (for example an exhausted daily quota) degrades to live Sleeper", async () => {
+  const failing = {
+    prepare() {
+      throw new Error("D1_ERROR: daily limit exceeded");
+    },
+    async batch() {
+      throw new Error("D1_ERROR: daily limit exceeded");
+    }
+  };
+  const urls: string[] = [];
+  const result = await withFetch(fixtureFetch(urls), () => callTool("my_lineup", WEEK10, { SLEEPER_CACHE_DB: failing }));
+  assert.equal((result.data_freshness as Record<string, unknown>).read_model, "sleeper_fallback");
+  assert.ok(Array.isArray(result.lineup_table));
+});
+
 test("response cache creates its table once per binding and only caches bounded Sleeper URLs", async () => {
   const statements: string[] = [];
   const db = { prepare(sql: string) { statements.push(sql); return { async run() { return { success: true }; } }; } } as unknown as D1Database;

@@ -26,12 +26,14 @@ const CACHEABLE_POSITIONS = new Set(["QB", "RB", "WR", "TE", "K", "DEF", "DL", "
 export async function fetchSleeperJson(url: URL, env: CacheEnv): Promise<unknown> {
   const cacheKey = url.toString();
   noteSleeperRead(env);
-  const cached = await cacheGet(cacheKey, env);
+  // The cache is best effort: a D1 error (for example the Free plan's daily
+  // read/write quota) degrades to a live Sleeper fetch instead of failing.
+  const cached = await cacheGet(cacheKey, env).catch(() => undefined);
   if (cached !== undefined) {
     return cached;
   }
   const payload = await fetchUpstreamJson(url);
-  await cacheSet(cacheKey, payload, ttlForUrl(cacheKey), env);
+  await cacheSet(cacheKey, payload, ttlForUrl(cacheKey), env).catch(() => undefined);
   return payload;
 }
 
