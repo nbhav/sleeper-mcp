@@ -306,8 +306,19 @@ persistent local filesystem. D1 stores the `api_response_cache` table with
 
 Worker requests check D1 first and return a row only when `expires_at` is still
 in the future. Cache misses and expired rows hit Sleeper and write a replacement
-row. Very large responses, such as the full Sleeper player map, are served
-without D1 writes so they do not exceed D1 value limits.
+row. Very large responses, such as the full Sleeper player map, are never
+written to D1; the Worker keeps them in the Workers Cache API instead. Only
+known Sleeper URL shapes with bounded parameters are cached, and the scheduled
+handler evicts expired rows and caps the table at 2,000 rows.
+
+The Worker also keeps a normalized D1 read model that a cron-driven
+`scheduled()` handler fills: per-(week, position) stats and projections rows,
+a slim player snapshot, and the default league's settings, users, and rosters.
+Tools read these tables when the `sync_datasets` ledger says they are fresh and
+fall back to the raw cache and Sleeper otherwise. Decision tools report which
+path served them in a `data_freshness` field. See
+`infra/cloudflare-worker/README.md` for the schema, cron budget, and migration
+steps.
 
 ## Output Formats
 

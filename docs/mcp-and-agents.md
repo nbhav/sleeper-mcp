@@ -189,8 +189,10 @@ Use lower-level tools only when the user needs narrower context:
 - `league_team_watch`: completed adds, drops, trades, and other league movement
 - `player_card`: player metadata and chart-ready weekly actual/projection rows
 
-The normalized tools above are available in the Python stdio MCP runtime. Worker
-D1 parity is planned separately.
+The normalized tools above are available in the Python stdio MCP runtime. The
+Worker now keeps a cron-synced normalized D1 read model (weekly stats and
+projections, players, default league) that its decision tools read when fresh,
+but these normalized-only tools are still Python-only.
 
 ## Normalized Data Freshness
 

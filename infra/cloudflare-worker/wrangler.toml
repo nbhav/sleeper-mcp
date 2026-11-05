@@ -12,11 +12,20 @@ routes = [
 SLEEPER_DEFAULT_LEAGUE_ID = ""
 SLEEPER_DEFAULT_ROSTER_ID = ""
 SLEEPER_DEFAULT_OWNER_ID = ""
+# Sleeper fetches per main cron tick (clamped to 1..20). The default 6 keeps a
+# tick at <= 15 subrequests, well under the Free plan's 50.
+SYNC_MAX_FETCHES_PER_TICK = "6"
 
 [[d1_databases]]
 binding = "SLEEPER_CACHE_DB"
 database_name = "sleeper-mcp-cache"
 database_id = "replace-with-cloudflare-d1-database-id"
+migrations_dir = "migrations"
+
+# Scheduled D1 sync (src/sync.ts). Free accounts get 5 Cron Triggers in total.
+# Keep these strings in sync with MAIN_CRON / PLAYERS_CRON in src/sync.ts.
+[triggers]
+crons = ["*/15 * * * *", "23 */6 * * *"]
 
 [observability]
 enabled = true
