@@ -15,6 +15,7 @@ from sleeper_tooling.player_usage_context_rules import (
     PLAYER_USAGE_CONTEXT_SCHEMA_VERSION,
     POSITION_USAGE_THRESHOLDS,
     POST_CHANGE_WINDOW,
+    PRODUCTION_QUALITY_POINTS_PER_PPG,
     REASON_CODES,
     SCORE_COMPONENT_KEYS,
     TREND_WINDOWS,
@@ -472,7 +473,7 @@ class PlayerUsageContextService:
         return {
             "opportunity_score": round(opportunity, 2),
             "role_stability_score": round(stability, 2),
-            "production_quality_score": round(max(0.0, min(100.0, points * 4.0 - (td_dependency_value or 0) * 0.25)), 2),
+            "production_quality_score": round(max(0.0, min(100.0, points * PRODUCTION_QUALITY_POINTS_PER_PPG - (td_dependency_value or 0) * 0.25)), 2),
             "td_dependency_score": td_dependency_value,
             "depth_chart_confidence": 45.0 if any(reason["code"] == "current_metadata_only_depth_chart" for reason in reasons) else 60.0,
             "matchup_adjustment": float(rule_result.get("capped_modifiers", {}).get("matchup", 0)),

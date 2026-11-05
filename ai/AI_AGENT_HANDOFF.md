@@ -230,6 +230,13 @@ and drop with `player_card` recent actuals, or use
 When projections and actuals disagree, say so directly and explain which signal
 drives the recommendation.
 
+Lineup, waiver, and `player_card` output carries a `usage_context` block
+(role, one-off flags, TD share above threshold, missing inputs) through the
+last completed week. Waiver rows add a capped `usage_context_adjustment` next to
+`move_score_before_context`. Treat a `status` other than `evaluated`, and any
+`not_evaluable_*` entry, as "not checked", never as zero. See
+`docs/mcp-and-agents.md`.
+
 ## Remote MCP On Cloudflare
 
 The `infra/cloudflare-worker/` package exposes the same curated MCP tool names over HTTP at:

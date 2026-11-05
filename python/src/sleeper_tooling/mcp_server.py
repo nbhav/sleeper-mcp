@@ -8,6 +8,11 @@ from typing import Any
 from sleeper_tooling.mcp_tools import FantasyToolRunner
 
 PROTOCOL_VERSION = "2024-11-05"
+USAGE_CONTEXT_ARG = {
+    "type": "boolean",
+    "default": True,
+    "description": "Attach a compact player_usage_context summary (completed weeks only); waiver moves also get a bounded, auditable usage_context_adjustment. Set false to skip the extra reads.",
+}
 
 
 TOOLS = [
@@ -185,6 +190,7 @@ TOOLS = [
                 "season": {"type": "integer"},
                 "week": {"type": "integer"},
                 "positions": {"type": "string", "default": "QB,RB,WR,TE,K,DEF"},
+                "include_usage_context": USAGE_CONTEXT_ARG,
             },
         },
     },
@@ -203,6 +209,7 @@ TOOLS = [
                 "lookback_hours": {"type": "integer", "default": 24},
                 "min_delta": {"type": "number", "default": 1.0},
                 "limit": {"type": "integer", "default": 10},
+                "include_usage_context": USAGE_CONTEXT_ARG,
             },
         },
     },
@@ -220,6 +227,7 @@ TOOLS = [
                 "trend_limit": {"type": "integer", "default": 100},
                 "limit": {"type": "integer", "default": 25},
                 "recent_weeks": {"type": "integer", "default": 3},
+                "include_usage_context": USAGE_CONTEXT_ARG,
             },
         },
     },
@@ -237,6 +245,7 @@ TOOLS = [
                 "lookback_hours": {"type": "integer", "default": 24},
                 "trend_limit": {"type": "integer", "default": 100},
                 "per_position_limit": {"type": "integer", "default": 10},
+                "include_usage_context": USAGE_CONTEXT_ARG,
             },
         },
     },
@@ -373,6 +382,7 @@ TOOLS = [
                 "season": {"type": "integer"},
                 "week": {"type": "integer"},
                 "weeks_back": {"type": "integer", "default": 6},
+                "include_usage_context": USAGE_CONTEXT_ARG,
             },
         },
     },
