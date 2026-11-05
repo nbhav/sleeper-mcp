@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import worker from "../src/index.ts";
+import * as mainModule from "../src/index.ts";
+
+test("worker entry module exports only default (wrangler treats named exports as entrypoints)", () => {
+  assert.deepEqual(Object.keys(mainModule), ["default"]);
+  assert.equal(typeof mainModule.default.fetch, "function");
+});
 
 function request(args: Record<string, unknown>): Request {
   return new Request("https://worker.test/mcp", {
@@ -381,4 +387,147 @@ test("player matchup fallback has the complete unavailable contract when raw dat
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+async function callTool(name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const response = await worker.fetch(new Request("https://worker.test/mcp", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } })
+  }), {});
+  const body = (await response.json()) as { result: { content: [{ text: string }] } };
+  return JSON.parse(body.result.content[0].text) as Record<string, unknown>;
+}
+
+function usageFetch(urls: string[]): typeof fetch {
+  // rb-1: weighted touches 6, 6 then 18, 18 (role change from week 3).
+  const touches: Record<number, [number, number]> = { 1: [5, 1], 2: [5, 1], 3: [15, 3], 4: [15, 3], 5: [15, 3] };
+  return (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    urls.push(url);
+    let payload: unknown = [];
+    if (url.includes("/players/nfl")) {
+      payload = { "rb-1": { full_name: "Usage Back", team: "DEN", position: "RB", status: "Active" } };
+    } else {
+      const match = url.match(/\/(stats|projections)\/nfl\/2026\/(\d+)/);
+      if (match) {
+        const [rushAtt, recTgt] = touches[Number(match[2])] || [0, 0];
+        payload = [{ player_id: "rb-1", player: { team: "DEN", position: "RB" }, stats: { rush_att: rushAtt, rec_tgt: recTgt, rec: recTgt, pts_ppr: rushAtt * 0.5 } }];
+      }
+    }
+    return new Response(JSON.stringify(payload), { headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+}
+
+test("player_card adds a usage_context summary through the last completed week", async () => {
+  const originalFetch = globalThis.fetch;
+  const urls: string[] = [];
+  globalThis.fetch = usageFetch(urls);
+  try {
+    const card = await callTool("player_card", { player_id: "rb-1", season: 2026, week: 5, weeks_back: 2 });
+    const context = card.usage_context as Record<string, any>;
+    assert.equal(context.schema_version, "usage_context_summary.v1");
+    assert.equal(context.status, "evaluated");
+    assert.equal(context.evaluated_through_week, 4);
+    assert.equal(context.decision_week, 5);
+    assert.equal(context.role_label, "emerging_rotation");
+    assert.ok(context.positive_signals.includes("role_change_recent"));
+    // No league scoring: the heuristic TD method is not a league share.
+    assert.equal(context.td_dependency.status, "not_evaluable_missing_league_scoring_contributions");
+    assert.equal(context.td_dependency.excess_pct, null);
+    assert.equal(context.provider_inputs_for_missing.red_zone_share, "red_zone_use");
+    // Only provider-suppliable inputs are listed; touch_share is intentionally unmapped.
+    assert.equal("touch_share" in context.provider_inputs_for_missing, false);
+    assert.ok(context.missing_inputs.includes("touch_share"));
+    assert.ok(Array.isArray((card.chart_data as Record<string, unknown>).weekly_points));
+    // Context reads (no order_by) stop at the last completed week; the chart
+    // still reads week 5 with order_by.
+    assert.ok(urls.some((url) => url.includes("/stats/nfl/2026/4") && !url.includes("order_by")));
+    assert.ok(!urls.some((url) => url.includes("/stats/nfl/2026/5") && !url.includes("order_by")));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("player_card can skip usage_context", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = usageFetch([]);
+  try {
+    const card = await callTool("player_card", { player_id: "rb-1", season: 2026, week: 5, include_usage_context: false });
+    assert.equal(card.usage_context, undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("player_card reports no completed weeks in week 1", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = usageFetch([]);
+  try {
+    const card = await callTool("player_card", { player_id: "rb-1", season: 2026, week: 1 });
+    assert.equal((card.usage_context as Record<string, unknown>).status, "not_evaluable_no_completed_weeks");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("usage-context tools expose include_usage_context in both runtimes' schemas", async () => {
+  const listed = await envelope(message("tools/list"));
+  const tools = ((listed.body.result as Record<string, unknown>).tools as Record<string, unknown>[]);
+  for (const name of ["player_card", "my_lineup", "lineup_recommendations", "waiver_wire_watch", "waiver_wire_by_position"]) {
+    const schema = tools.find((tool) => tool.name === name)?.inputSchema as Record<string, any>;
+    assert.equal(schema.properties.include_usage_context.type, "boolean", name);
+    assert.equal(schema.properties.include_usage_context.default, true, name);
+  }
+});
+
+function budgetFetch(urls: string[]): typeof fetch {
+  const positions = ["QB", "RB", "WR", "TE", "K", "DEF"];
+  const players: Record<string, Record<string, unknown>> = {};
+  for (const position of positions) {
+    players[`r-${position}`] = { full_name: `Roster ${position}`, team: "DEN", position, fantasy_positions: [position], status: "Active" };
+    players[`f-${position}`] = { full_name: `Free ${position}`, team: "KC", position, fantasy_positions: [position], status: "Active" };
+  }
+  return (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    urls.push(url);
+    let payload: unknown = [];
+    if (url.includes("/players/nfl")) payload = players;
+    else if (/\/league\/L1\/rosters/.test(url)) payload = [{ roster_id: 1, owner_id: "u1", players: positions.map((p) => `r-${p}`) }];
+    else if (/\/league\/L1\/users/.test(url)) payload = [{ user_id: "u1", display_name: "Me" }];
+    else if (/\/league\/L1\/matchups\//.test(url)) payload = [{ roster_id: 1, matchup_id: 1, starters: positions.map((p) => `r-${p}`), players: positions.map((p) => `r-${p}`) }];
+    else if (/\/league\/L1$/.test(url.split("?")[0])) payload = { roster_positions: positions, scoring_settings: { rush_att: 0.1, rec: 1 } };
+    else {
+      const match = url.match(/\/(stats|projections)\/nfl\/2026\/(\d+)\?.*position%5B%5D=([A-Z]+)/);
+      if (match) {
+        payload = ["r", "f"].map((prefix) => ({ player_id: `${prefix}-${match[3]}`, player: { team: "DEN", position: match[3] }, stats: { rush_att: 10, rec_tgt: 5, rec: 3, pass_att: 30, fga: 2, xpa: 3, sack: 2, pts_ppr: prefix === "f" ? 12 : 8 } }));
+      }
+    }
+    return new Response(JSON.stringify(payload), { headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+}
+
+const isContextRead = (url: string) => /\/stats\/nfl\/2026\/\d+\?/.test(url) && !url.includes("order_by");
+
+test("usage context read budget at week 10 is one stats read per (completed week, position) per call", async () => {
+  const originalFetch = globalThis.fetch;
+  const counts: Record<string, { total: number; context: number }> = {};
+  try {
+    for (const [name, extra] of [["my_lineup", {}], ["waiver_wire_by_position", {}], ["decision_smoke_report", { format: "json" }]] as const) {
+      for (const include of [true, false]) {
+        const urls: string[] = [];
+        globalThis.fetch = budgetFetch(urls);
+        await callTool(name, { league_id: "L1", roster_id: 1, season: 2026, week: 10, include_usage_context: include, ...extra });
+        counts[`${name}:${include ? "on" : "off"}`] = { total: urls.length, context: urls.filter(isContextRead).length };
+      }
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  console.log("worker read budget (no D1):", JSON.stringify(counts));
+  // 6 positions x 9 completed weeks, fetched once even when sub-calls share them.
+  assert.equal(counts["my_lineup:on"].context, 54);
+  assert.equal(counts["waiver_wire_by_position:on"].context, 54);
+  assert.equal(counts["decision_smoke_report:on"].context, 54);
+  assert.equal(counts["my_lineup:off"].context, 0);
 });

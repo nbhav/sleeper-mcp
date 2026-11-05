@@ -7,6 +7,13 @@ from typing import Any
 
 from sleeper_tooling.player_values import build_player_value, build_player_values
 from sleeper_tooling.reports import owner_display_name, player_name
+from sleeper_tooling.usage_context_integration import (
+    MOVE_SCORE_SEASON_WEIGHT,
+    MOVE_SCORE_THREE_WEEK_WEIGHT,
+    attach_usage_contexts,
+    usage_context_move_adjustment,
+    usage_context_reasoning,
+)
 
 DEFAULT_STARTER_SLOTS = ["QB", "RB", "RB", "WR", "WR", "WR", "TE", "FLEX", "K", "DEF"]
 NON_STARTER_SLOTS = {"BN", "BE", "IR", "TAXI"}
@@ -212,7 +219,17 @@ def build_lineup_recommendations(
     positions: list[str],
     min_delta: float,
     limit: int,
+    recent_actuals: dict[str, list[dict[str, Any]]] | None = None,
+    usage_contexts: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    """Start/sit, waiver comparisons, and watchlist for one roster.
+
+    ``usage_contexts`` ({player_id: usage_context summary}) attaches usage
+    context to available candidates; candidates outside the mapping get an
+    explicit not_evaluated status. Roster rows carry their own usage_context.
+    Start/sit stays projection-based: context is evidence there, not score.
+    """
+    decision_week = lineup.get("week")
     starters = [row for row in lineup.get("starters", []) if row.get("player_id") != "0"]
     bench = [
         row
@@ -241,6 +258,12 @@ def build_lineup_recommendations(
         players=players,
         add_trends=add_trends,
         drop_trends=drop_trends,
+        recent_rows=recent_actuals,
+    )
+    available_candidates = attach_usage_contexts(
+        available_candidates,
+        usage_contexts,
+        decision_week=int(decision_week) if decision_week else None,
     )
 
     start_sit = sorted(
@@ -300,6 +323,15 @@ def build_lineup_recommendations(
             "starter and bench comparisons use projected_points under league scoring",
             "waiver comparisons exclude players already rostered in the league",
             "waiver comparisons are ranked by deterministic move_score from the roster-impact move matrix",
+            *(
+                (
+                    "move_score includes a bounded usage_context_adjustment (add minus drop, capped at +/-6) only when both sides have evaluated usage context; move_score_before_context is the context-free score",
+                    "usage context is evaluated for roster players and the candidates the context-free ranking shows; other candidates report not_evaluated_outside_context_budget",
+                    "start_sit stays projection-based; usage context is attached as evidence only",
+                )
+                if usage_contexts is not None
+                else ()
+            ),
             "reserve and last-playable backup protections are applied before choosing drop candidates",
             "unknown acquisition markets stay watch-level until verified in Sleeper",
             "Sleeper player metadata does not always expose global rostered percentage",
@@ -657,6 +689,14 @@ def eligible_roster_recommendations(
         projected_gain = round(candidate_points - starter_points, 2)
         if projected_gain < min_delta:
             continue
+        usage_fields: dict[str, Any] = {}
+        usage_evidence: list[str] = []
+        for side, row in (("start", candidate), ("sit", starter)):
+            if "usage_context" not in row:
+                continue
+            context = row["usage_context"] or {}
+            usage_fields[f"{side}_usage_context"] = context
+            usage_evidence.append(start_sit_usage_evidence(side, row.get("name"), context))
         rows.append(
             {
                 "action": "start",
@@ -672,13 +712,31 @@ def eligible_roster_recommendations(
                 "sit_team": starter.get("team"),
                 "sit_projected_points": starter_points,
                 "projected_gain": projected_gain,
+                **usage_fields,
                 "evidence": [
                     f"{candidate.get('name')} is eligible for {slot}",
                     "recommendation is based on projected point delta",
+                    *usage_evidence,
                 ],
             }
         )
     return rows
+
+
+def start_sit_usage_evidence(side: str, name: Any, context: dict[str, Any]) -> str:
+    """Context-aware reasoning line for a named start/sit claim (evidence only)."""
+
+    status = context.get("status")
+    if status != "evaluated":
+        return f"{side} {name}: usage context {status}"
+    parts = [f"role {context.get('role_label')}"]
+    signals = list(context.get("positive_signals") or []) + list(context.get("risk_signals") or []) + list(context.get("one_off_flags") or [])
+    if signals:
+        parts.append(", ".join(signals))
+    td = context.get("td_dependency") or {}
+    if td.get("excess_pct"):
+        parts.append(f"TD share {td.get('score')} exceeds the {td.get('threshold_pct')} threshold")
+    return f"{side} {name}: usage context " + "; ".join(parts)
 
 
 def merge_available_candidates(
@@ -800,6 +858,8 @@ def compare_available_player(
         "stash_penalty": selected.get("stash_penalty", 0),
         "drop_protection_reason": selected.get("drop_protection_reason", ""),
         "move_score": selected.get("move_score", 0),
+        "move_score_before_context": selected.get("move_score_before_context", selected.get("move_score", 0)),
+        "usage_context_adjustment": selected.get("usage_context_adjustment"),
         "recommendation": recommendation,
         "reasoning_summary": selected.get("reasoning_summary", ""),
         "market_type": market_type,
@@ -820,6 +880,10 @@ def compare_available_player(
             "waiver_matrix": selected.get("source_metadata", {}),
         },
     }
+    if "usage_context" in candidate:
+        row["add_usage_context"] = candidate["usage_context"]
+    if "usage_context" in drop_candidate:
+        row["drop_usage_context"] = drop_candidate["usage_context"]
     for key in ("week_value", "three_week_value", "season_value", "decision_value", "value_tier", "role_tag"):
         if key in selected.get("add_value", {}):
             row[f"add_{key}"] = selected["add_value"][key]
@@ -900,10 +964,10 @@ def score_waiver_move(
     stash_penalty = waiver_stash_penalty(candidate, roster_players)
     unknown_market_penalty = 2 if normalize_market_type(candidate.get("market_type")) == "unknown" else 0
     no_drop_penalty = 100 if not drop_candidate else 0
-    move_score = round(
+    base_move_score = round(
         week_delta * 0.8
-        + three_week_delta * 1.2
-        + season_delta * 1.4
+        + three_week_delta * MOVE_SCORE_THREE_WEEK_WEIGHT
+        + season_delta * MOVE_SCORE_SEASON_WEIGHT
         + starter_impact * 1.5
         + depth_impact
         + need_score
@@ -917,15 +981,28 @@ def score_waiver_move(
         - no_drop_penalty,
         2,
     )
+    # Bounded usage-context delta (add minus drop, capped at +/-6). It is built
+    # from opportunity/role reason codes, never from points or projections, and
+    # applies only when both sides have an evaluated context.
+    usage_adjustment = usage_context_move_adjustment(
+        candidate.get("usage_context"),
+        drop_candidate.get("usage_context") if drop_candidate else None,
+        add_actuals_in_value=actual_points_in_move_value(candidate),
+        drop_actuals_in_value=actual_points_in_move_value(drop_candidate),
+        has_drop=bool(drop_candidate),
+    )
+    move_score = round(base_move_score + float(usage_adjustment["applied_delta"]), 2)
     recommendation = waiver_recommendation(
         candidate=candidate,
         drop_candidate=drop_candidate,
         roster_players=roster_players,
         move_score=move_score,
+        base_move_score=base_move_score,
         projected_gain=week_delta,
         damage_score=damage_score,
         streamer_penalty=streamer_penalty,
         stash_penalty=stash_penalty,
+        usage_adjustment=usage_adjustment,
     )
     selected_reason = selected_drop_reason(candidate, drop_candidate)
     return {
@@ -957,6 +1034,8 @@ def score_waiver_move(
         "stash_penalty": stash_penalty,
         "drop_protection_reason": "",
         "move_score": move_score,
+        "move_score_before_context": base_move_score,
+        "usage_context_adjustment": usage_adjustment,
         "recommendation": recommendation,
         "drop_reasoning": selected_reason,
         "selected_drop_reasoning": selected_reason,
@@ -970,6 +1049,7 @@ def score_waiver_move(
             streamer_penalty=streamer_penalty,
             stash_penalty=stash_penalty,
             week_delta=week_delta,
+            usage_adjustment=usage_adjustment,
         ),
         "rejected_drop_reasoning": list(rejected_drops),
         "add_value": add_value,
@@ -980,6 +1060,14 @@ def score_waiver_move(
             "roster_analysis_compatible": True,
         },
     }
+
+
+def actual_points_in_move_value(row: dict[str, Any] | None) -> bool:
+    """True when waiver_player_value prices this row from recent actual points."""
+
+    if not row or any(key in row for key in ("week_value", "three_week_value", "season_value", "decision_value")):
+        return False
+    return row.get("actual_context_status") == "available" and number_or(row.get("recent_average_points"), 0.0) > 0
 
 
 def waiver_player_value(row: dict[str, Any]) -> dict[str, Any]:
@@ -1255,7 +1343,13 @@ def waiver_recommendation(
     damage_score: float,
     streamer_penalty: float,
     stash_penalty: float,
+    base_move_score: float | None = None,
+    usage_adjustment: dict[str, Any] | None = None,
 ) -> str:
+    # Roster-protection gates (no drop, backup QB, roster damage, streamer,
+    # stash, unknown market, missing actuals) read the context-free score, so
+    # usage context can never talk its way past them.
+    base = move_score if base_move_score is None else base_move_score
     if not drop_candidate:
         return "reject"
     if projected_gain <= 0:
@@ -1263,12 +1357,17 @@ def waiver_recommendation(
     if backup_qb_suppression_applies(candidate, roster_players):
         return "watch"
     if damage_score >= 20 or streamer_penalty >= 20 or stash_penalty >= 16:
-        return "watch" if move_score > 0 else "reject"
+        return "watch" if base > 0 else "reject"
     if normalize_market_type(candidate.get("market_type")) == "unknown":
-        return "watch" if move_score >= 6 else "reject"
+        return "watch" if base >= 6 else "reject"
     if candidate.get("actual_context_status") is not None and candidate.get("actual_context_status") == "missing":
         return "watch"
     if move_score >= 6:
+        severe = ((usage_adjustment or {}).get("add") or {}).get("severe_one_off_flags") or []
+        if severe:
+            # A usage-based scoring spike (big points on low opportunity) keeps
+            # the add at watch-level until the usage confirms.
+            return "watch"
         return "recommend"
     if move_score > 0:
         return "watch"
@@ -1286,6 +1385,7 @@ def waiver_reasoning_summary(
     streamer_penalty: float,
     stash_penalty: float,
     week_delta: float,
+    usage_adjustment: dict[str, Any] | None = None,
 ) -> str:
     reasons = [
         f"{candidate.get('name')} over {drop_candidate.get('name', 'no drop')} scores {move_score:.2f}",
@@ -1299,6 +1399,12 @@ def waiver_reasoning_summary(
         reasons.append(f"streamer penalty {streamer_penalty:.2f}")
     if stash_penalty:
         reasons.append(f"stash penalty {stash_penalty:.2f}")
+    usage_reason = usage_context_reasoning(usage_adjustment)
+    if usage_reason:
+        reasons.append(usage_reason)
+    severe = ((usage_adjustment or {}).get("add") or {}).get("severe_one_off_flags") or []
+    if severe:
+        reasons.append(f"one-off usage flags {', '.join(severe)} limit the add to watch at most")
     reasons.append(f"recommendation {recommendation}")
     return "; ".join(reasons)
 

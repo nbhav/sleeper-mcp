@@ -104,6 +104,56 @@ TD_DEPENDENCY_FORMULAS: dict[str, dict[str, Any]] = {
     "K": {"formula": "sum(long_field_goal_points) / sum(fantasy_points)", "numerator_families": ["long_field_goal"], "dependency_threshold": 0.40, "stability_counter_signal": "total_kick_attempts_last_3_increase_pct >= 0.25"},
     "DEF": {"formula": "sum(td_scoring_points + turnover_points) / sum(fantasy_points)", "numerator_families": ["passing_td", "rushing_td", "receiving_td", "defense_special_teams_td", "other_td", "turnover"], "dependency_threshold": 0.50, "stability_counter_signal": "sacks_increase_pct >= 0.30 or points_allowed_improvement_pct >= 0.20"},
 }
+# --- TD-dependency weighting (issue #32 calibration) --------------------------
+# Only the league TD share above the position dependency_threshold counts as
+# risk; ordinary TD scorers are not penalized.  The quantity is the all-TD
+# league share (td_dependency_score, 0-100) that compare scoring already used.
+#
+# The weight is expressed once, as expected regression in league fantasy points
+# per game for each percentage point of excess TD share, beyond ordinary
+# regression to the mean.  Each consumer converts it to its own units:
+#   compare_player_usage_context:  PRODUCTION_QUALITY_POINTS_PER_PPG (4.0) per ppg
+#   score_waiver_move:              MOVE_SCORE_ACTUAL_PPG_WEIGHT (1.2 + 1.4) per ppg,
+#                                   only when actual points feed the move value.
+# Calibration (preliminary prior, 2026 weeks 1-4, one league scoring):
+# OLS of delta_ppg (later window minus trailing window) on trailing ppg and
+# excess share, across three overlapping window splits.  RB/WR/TE excess
+# coefficients ranged -0.14 to -0.57 ppg per point, pooled skill -0.06 to
+# -0.15; QB showed no extra regression (-0.00 to +0.29).  Values are shrunk
+# toward the low end because samples are small (QB n=24-29, RB n=35-44,
+# WR n=49-58, TE n=21-26; 1-13 flagged players per group).  K and DEF were not
+# calibrated (their thresholds belong to different position formulas) and use
+# a labeled prior.  See docs/player-context-decision-engine.md.
+TD_DEPENDENCY_REGRESSION_PPG_PER_EXCESS_PCT: dict[str, float] = {
+    "QB": 0.05,
+    "RB": 0.15,
+    "WR": 0.15,
+    "TE": 0.15,
+    "K": 0.10,
+    "DEF": 0.10,
+}
+TD_DEPENDENCY_WEIGHT_PROVENANCE: dict[str, str] = {
+    "QB": "calibrated_preliminary_prior",
+    "RB": "calibrated_preliminary_prior",
+    "WR": "calibrated_preliminary_prior",
+    "TE": "calibrated_preliminary_prior",
+    "K": "uncalibrated_prior",
+    "DEF": "uncalibrated_prior",
+}
+# production_quality_score = recent points per game * 4.0 (player_usage_context).
+PRODUCTION_QUALITY_POINTS_PER_PPG = 4.0
+
+
+def td_dependency_excess_pct(position: str, td_dependency_score_value: float | None) -> float | None:
+    """TD share (0-100) above the position dependency_threshold; None when not evaluable."""
+
+    if td_dependency_score_value is None:
+        return None
+    formula = TD_DEPENDENCY_FORMULAS.get(str(position or "").upper())
+    threshold = float(formula["dependency_threshold"]) * 100 if formula else 0.0
+    return round(max(0.0, float(td_dependency_score_value) - threshold), 2)
+
+
 SPIKE_THRESHOLDS: dict[str, dict[str, Any]] = {
     "QB": {"passing_tds": {"min": 3}, "low_rushing_floor": {"rush_attempts_max": 3}},
     "RB": {"total_tds": {"min": 2}, "low_touch_floor": {"weighted_touches_max": 12}},
@@ -419,6 +469,9 @@ _REASON_MODIFIERS = {
     "long_kick_spike": ("context", -4.5),
     "current_metadata_only_depth_chart": ("context", 2.0),
 }
+# Public read-only view for consumers (usage_context_integration) that decompose
+# the context modifier by reason code.
+REASON_MODIFIERS: Mapping[str, tuple[str, float]] = _REASON_MODIFIERS
 
 
 def evaluate_player_usage_context(position: str, inputs: Mapping[str, Any]) -> dict[str, Any]:
