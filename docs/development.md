@@ -136,8 +136,13 @@ into `SLEEPER_DEFAULT_LEAGUE_ID`, `SLEEPER_DEFAULT_ROSTER_ID`, and
 `SLEEPER_DEFAULT_OWNER_ID`, then passes them to `wrangler deploy --var`. It
 also writes `CLOUDFLARE_D1_DATABASE_ID` into the checked-out `wrangler.toml` on
 the Actions runner before deployment, so the repository can keep a placeholder
-database id. The Cloudflare credentials are scoped to the deploy step only;
-dependency installation never sees them. After deploying, the workflow runs
+database id. The Cloudflare credentials are scoped to the migrate and deploy
+steps only; dependency installation never sees them. Before deploying code, the
+workflow runs `make worker-d1-migrate`, which prints the D1 Time Travel bookmark
+and then applies `infra/cloudflare-worker/migrations/` with
+`wrangler d1 migrations apply --remote`. Migrations are additive
+(expand/contract), so the previous Worker version keeps working against the new
+schema and `make worker-rollback` stays safe. After deploying, the workflow runs
 `make worker-smoke URL=https://sleeper-mcp.neilbhavsar.com/mcp`.
 
 Owner checklist for a working Actions deploy:
@@ -149,7 +154,9 @@ Owner checklist for a working Actions deploy:
 3. Restrict `production` deployment branches to `main`, so a manual dispatch
    from another branch cannot use the token.
 4. Remove stale repository-level copies of the Cloudflare secrets.
-5. Make sure the post-deploy smoke can reach `/mcp`. If Cloudflare Access
+5. Give `CLOUDFLARE_API_TOKEN` D1 edit permission (migrations and Time Travel
+   need it in addition to Workers deploy).
+6. Make sure the post-deploy smoke can reach `/mcp`. If Cloudflare Access
    protects the hostname, an unauthenticated POST from Actions is redirected
    and the smoke step fails. Exempt `/mcp` from Access, or add
    `MCP_SMOKE_BEARER_TOKEN` once OAuth lands.

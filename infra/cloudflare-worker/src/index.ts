@@ -16,6 +16,9 @@ import {
   workerUsageContextSummary,
   workerUsageMoveAdjustment
 } from "./usage-context.ts";
+import { createStatRowsLoader, freshnessSummary, memoizedPlayers, normalizedJson, prefetchSlices, withRequestScope } from "./d1-store.ts";
+import { APP_BASE_URL, DATA_BASE_URL, fetchSleeperJson } from "./response-cache.ts";
+import { runScheduledSync } from "./sync.ts";
 
 const USAGE_CONTEXT_ARG = {
   type: "boolean",
@@ -24,8 +27,6 @@ const USAGE_CONTEXT_ARG = {
 };
 
 const PROTOCOL_VERSION = "2024-11-05";
-const APP_BASE_URL = "https://api.sleeper.app/v1";
-const DATA_BASE_URL = "https://api.sleeper.com";
 const DEFAULT_POSITIONS = "QB,RB,WR,TE,K,DEF";
 const DEFAULT_STARTER_SLOTS = ["QB", "RB", "RB", "WR", "WR", "WR", "TE", "FLEX", "K", "DEF"];
 const NON_STARTER_SLOTS = new Set(["BN", "BE", "IR", "TAXI"]);
@@ -41,13 +42,27 @@ const FLEX_SLOT_POSITIONS: Record<string, string[]> = {
   SUPER_FLEX: ["QB", "RB", "WR", "TE"],
   OP: ["QB", "RB", "WR", "TE"]
 };
-const MAX_D1_RESPONSE_BYTES = 900_000;
+// Decision tools whose JSON results carry `data_freshness` (normalized D1 vs
+// Sleeper fallback provenance for that call).
+const FRESHNESS_TOOLS = new Set([
+  "weekly_briefing",
+  "weekly_performance_backtest",
+  "my_lineup",
+  "lineup_recommendations",
+  "waiver_wire_watch",
+  "waiver_wire_by_position",
+  "trade_opportunities",
+  "opponent_watch",
+  "player_card",
+  "player_usage_context"
+]);
 
 type Env = {
   SLEEPER_CACHE_DB?: D1Database;
   SLEEPER_DEFAULT_LEAGUE_ID?: string;
   SLEEPER_DEFAULT_ROSTER_ID?: string;
   SLEEPER_DEFAULT_OWNER_ID?: string;
+  SYNC_MAX_FETCHES_PER_TICK?: string;
 };
 
 const tools = [
@@ -351,6 +366,13 @@ export default {
         }
       });
     }
+  },
+
+  // Cron Triggers only (wrangler.toml [triggers]); fetch() has no route to it.
+  // Locally, `wrangler dev --test-scheduled` exposes /__scheduled for testing.
+  async scheduled(controller: ScheduledController, env: Env): Promise<void> {
+    const report = await runScheduledSync(env, { cron: controller.cron });
+    console.log(JSON.stringify({ event: "scheduled_sync", ...report }));
   }
 };
 
@@ -383,6 +405,17 @@ async function handleMcpMessage(message: JsonMap, env: Env): Promise<JsonMap | n
 }
 
 async function callTool(name: string, args: JsonMap, env: Env): Promise<unknown> {
+  // One request scope per tool call: the D1 freshness ledger, players map, and
+  // prefetched slices are read once and shared by sub-calls.
+  const scopedEnv = withRequestScope(env);
+  const result = await dispatchTool(name, args, scopedEnv);
+  if (FRESHNESS_TOOLS.has(name) && result && typeof result === "object" && !Array.isArray(result)) {
+    (result as JsonMap).data_freshness = freshnessSummary(scopedEnv);
+  }
+  return result;
+}
+
+async function dispatchTool(name: string, args: JsonMap, env: Env): Promise<unknown> {
   switch (name) {
     case "resolve_league_context":
       return resolveLeagueContext(args, env);
@@ -1288,6 +1321,11 @@ async function playerCard(args: JsonMap, env: Env): Promise<JsonMap> {
   const weeksBack = numberArg(args, "weeks_back", 6);
   const weeklyPoints: JsonMap[] = [];
   const startWeek = Math.max(1, week - weeksBack + 1);
+  const chartWeeks = Array.from({ length: Math.max(0, week - startWeek + 1) }, (_, index) => startWeek + index);
+  await Promise.all([
+    prefetchSlices(env, "stats", season, chartWeeks, [position]),
+    prefetchSlices(env, "projections", season, chartWeeks, [position])
+  ]);
 
   for (let targetWeek = startWeek; targetWeek <= week; targetWeek += 1) {
     const [statsRows, projectionRows] = await Promise.all([
@@ -1357,6 +1395,9 @@ function usageContextProvider(
     }
     return statRows.get(key) as Promise<JsonMap[]>;
   };
+  // Normalized D1 path: the evaluated players' own stats rows, one batched
+  // query per pass. Slices the sync ledger does not trust use rowsFor().
+  const loadStatRows = createStatRowsLoader(env, season, contextWeek);
   const build = async (playerId: string, positionHint: string): Promise<JsonMap> => {
     const player = objectValue(players[playerId]);
     const position = (positionHint || String(player.position || "")).toUpperCase();
@@ -1365,7 +1406,13 @@ function usageContextProvider(
     if (contextWeek < 1) return unavailableUsageContext("not_evaluable_no_completed_weeks", playerId, position, decisionWeek);
     try {
       const weeks = Array.from({ length: contextWeek }, (_, index) => index + 1);
-      const payloads = await Promise.all(weeks.map((week) => rowsFor(week, position)));
+      const local = await loadStatRows(playerId);
+      const payloads = await Promise.all(weeks.map((week) => {
+        const key = `${week}:${position}`;
+        if (!local?.fresh.has(key)) return rowsFor(week, position);
+        const row = local.rows.get(key);
+        return row ? [row] : [];
+      }));
       const actualRows: JsonMap[] = [];
       payloads.forEach((rows, index) => appendUsageRow(actualRows, rows, playerId, position, "stats", weeks[index], player, scoring));
       const evaluated = evaluateWorkerUsageContext(position, actualRows, [], metadataContext(player));
@@ -1439,6 +1486,11 @@ async function playerUsageContext(args: JsonMap, env: Env): Promise<JsonMap> {
   const scoring = await leagueScoringSettings(optionalLeagueId(args, env), env);
   const actualRows: JsonMap[] = [];
   const projectionRows: JsonMap[] = [];
+  const seasonWeeks = Array.from({ length: week }, (_, index) => index + 1);
+  await Promise.all([
+    prefetchSlices(env, "stats", season, seasonWeeks, [position]),
+    prefetchSlices(env, "projections", season, seasonWeeks, [position])
+  ]);
   for (let targetWeek = 1; targetWeek <= week; targetWeek += 1) {
     const [actual, projection] = await Promise.all([
       getData(`/stats/nfl/${season}/${targetWeek}`, env, { "season_type": "regular", "position[]": position }),
@@ -1527,6 +1579,8 @@ async function fetchRowsForPositions(
   env: Env
 ): Promise<JsonMap[]> {
   validateStatSource(source);
+  // One D1 read for every fresh normalized (week, position) slice.
+  await prefetchSlices(env, source, season, [week], positions);
   const rows: JsonMap[] = [];
   for (const position of positions) {
     const rawRows = arrayValue(await getData(`/${source}/nfl/${season}/${week}`, env, {
@@ -2050,6 +2104,8 @@ async function fetchRecentActuals(
     return {};
   }
   const recentRows: Record<string, JsonMap[]> = {};
+  const recentWeeks = Array.from({ length: Math.max(0, week - Math.max(1, week - weeksBack)) }, (_, index) => Math.max(1, week - weeksBack) + index);
+  await prefetchSlices(env, "stats", season, recentWeeks, positions);
   for (let targetWeek = Math.max(1, week - weeksBack); targetWeek < week; targetWeek += 1) {
     const rows = await fetchRowsForPositions(season, targetWeek, positions, "stats", scoring, env);
     for (const row of rows) {
@@ -3100,7 +3156,7 @@ function findPlayerRow(rows: JsonMap[], playerId: string): JsonMap | undefined {
 }
 
 async function getPlayers(env: Env): Promise<Record<string, JsonMap>> {
-  return recordValue(await getApp("/players/nfl", env));
+  return memoizedPlayers(env, async () => recordValue(await getApp("/players/nfl", env)));
 }
 
 async function getTrending(trendType: string, lookbackHours: number, limit: number, env: Env): Promise<JsonMap[]> {
@@ -3123,65 +3179,13 @@ async function getJson(rawUrl: string, params: Record<string, string>, env: Env)
   for (const [key, value] of Object.entries(params)) {
     url.searchParams.append(key, value);
   }
-  const cacheKey = url.toString();
-  const cached = await cacheGet(cacheKey, env);
-  if (cached !== undefined) {
-    return cached;
+  // Normalized D1 tables when the sync ledger says they are fresh; otherwise
+  // the raw response cache, then Sleeper.
+  const normalized = await normalizedJson(url, env);
+  if (normalized !== undefined) {
+    return normalized;
   }
-
-  const response = await fetch(url, {
-    headers: {
-      "Accept": "application/json",
-      "User-Agent": "sleeper-mcp-worker/0.1"
-    }
-  });
-  if (!response.ok) {
-    throw new Error(`Sleeper API request failed: ${response.status} ${url}`);
-  }
-  const payload = await response.json();
-  await cacheSet(cacheKey, payload, ttlForUrl(cacheKey), env);
-  return payload;
-}
-
-async function cacheGet(cacheKey: string, env: Env): Promise<unknown | undefined> {
-  if (!env.SLEEPER_CACHE_DB) {
-    return undefined;
-  }
-  await ensureCacheTable(env.SLEEPER_CACHE_DB);
-  const row = await env.SLEEPER_CACHE_DB.prepare(
-    "SELECT response_json FROM api_response_cache WHERE cache_key = ? AND expires_at > ?"
-  ).bind(cacheKey, nowSeconds()).first<{ response_json: string }>();
-  return row ? JSON.parse(row.response_json) : undefined;
-}
-
-async function cacheSet(cacheKey: string, payload: unknown, ttlSeconds: number, env: Env): Promise<void> {
-  if (!env.SLEEPER_CACHE_DB) {
-    return;
-  }
-  const responseJson = JSON.stringify(payload);
-  if (responseJson.length > MAX_D1_RESPONSE_BYTES) {
-    return;
-  }
-  await ensureCacheTable(env.SLEEPER_CACHE_DB);
-  const now = nowSeconds();
-  await env.SLEEPER_CACHE_DB.prepare(
-    "INSERT OR REPLACE INTO api_response_cache (cache_key, url, response_json, expires_at, created_at) VALUES (?, ?, ?, ?, ?)"
-  ).bind(cacheKey, cacheKey, responseJson, now + ttlSeconds, now).run();
-}
-
-async function ensureCacheTable(db: D1Database): Promise<void> {
-  await db.prepare(
-    "CREATE TABLE IF NOT EXISTS api_response_cache (cache_key TEXT PRIMARY KEY, url TEXT NOT NULL, response_json TEXT NOT NULL, expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL)"
-  ).run();
-}
-
-function ttlForUrl(url: string): number {
-  if (url.includes("/state/nfl")) return 300;
-  if (url.includes("/trending/")) return 300;
-  if (url.includes("/players/nfl")) return 21600;
-  if (url.includes("/stats/") || url.includes("/projections/")) return 900;
-  if (url.includes("/matchups/") || url.includes("/transactions/")) return 900;
-  return 3600;
+  return fetchSleeperJson(url, env);
 }
 
 function optionalLeagueId(args: JsonMap, env: Env): string | undefined {
@@ -3426,10 +3430,6 @@ function listValue(value: unknown): unknown[] {
 
 function sortNumber(left: unknown, right: unknown): number {
   return (numberValue(left) || 0) - (numberValue(right) || 0);
-}
-
-function nowSeconds(): number {
-  return Math.floor(Date.now() / 1000);
 }
 
 function currentSeasonYear(): number {

@@ -134,6 +134,25 @@ jobs:
       - name: Install Cloudflare Worker dependencies
         run: make worker-install
 
+      # Schema first: migrations are additive (expand/contract), so the
+      # still-live previous Worker version keeps working against the new
+      # schema, and a later `make worker-rollback` stays safe. The step prints
+      # a D1 Time Travel bookmark before applying anything.
+      - name: Apply D1 migrations
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          test -n "$CLOUDFLARE_ACCOUNT_ID" || {
+            echo "CLOUDFLARE_ACCOUNT_ID production environment secret is required"
+            exit 1
+          }
+          test -n "$CLOUDFLARE_API_TOKEN" || {
+            echo "CLOUDFLARE_API_TOKEN production environment secret is required"
+            exit 1
+          }
+          make worker-d1-migrate
+
       - name: Deploy Cloudflare Worker
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

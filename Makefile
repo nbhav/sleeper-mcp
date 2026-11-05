@@ -112,7 +112,23 @@ clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	find . -name "*.pyc" -delete
 
-.PHONY: resolve-context worker-smoke worker-rollback
+.PHONY: resolve-context worker-smoke worker-rollback worker-d1-migrate
+
+D1_DATABASE ?= sleeper-mcp-cache
+D1_MIGRATE_TARGET ?= --remote
+
+# Apply infra/cloudflare-worker/migrations to D1 before deploying Worker code.
+# Remote runs first print the D1 Time Travel bookmark so a bad migration can be
+# undone with `wrangler d1 time-travel restore $(D1_DATABASE) --bookmark=<id>`.
+# Needs CLOUDFLARE_API_TOKEN/ACCOUNT_ID and the real database_id in
+# wrangler.toml. Local dev: make worker-d1-migrate D1_MIGRATE_TARGET=--local
+worker-d1-migrate:
+	@if [ "$(D1_MIGRATE_TARGET)" = "--remote" ]; then \
+		echo "D1 Time Travel bookmark before migrating $(D1_DATABASE):"; \
+		$(COMPOSE) run --rm -T cloudflare-worker exec -- wrangler d1 time-travel info $(D1_DATABASE) || exit 1; \
+		echo "Restore if needed: wrangler d1 time-travel restore $(D1_DATABASE) --bookmark=<bookmark above>"; \
+	fi
+	$(COMPOSE) run --rm -T cloudflare-worker exec -- wrangler d1 migrations apply $(D1_DATABASE) $(D1_MIGRATE_TARGET)
 
 # Print resolved Sleeper context as env lines on stdout. Reads
 # SLEEPER_DEFAULT_LEAGUE_URL and SLEEPER_DEFAULT_USER_REF from the environment.
