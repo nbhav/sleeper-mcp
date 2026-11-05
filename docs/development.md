@@ -16,8 +16,17 @@ All development commands run through Docker or Docker Compose. Do not install Py
 | `make worker-install` | Install Worker dependencies inside Docker with `npm ci`. |
 | `make worker-typecheck` | Typecheck the Cloudflare Worker inside Docker. |
 | `make worker-test` | Run the Cloudflare Worker tests inside Docker. |
-| `make worker-dev` | Run Wrangler dev inside Docker. |
+| `make worker-dev` | Run Wrangler dev inside Docker, bound to `0.0.0.0` and published on `localhost:8787`. |
 | `make worker-deploy` | Deploy the Cloudflare Worker through Docker. |
+| `make lock` | Regenerate `python/uv.lock` inside the pinned uv container (`ARGS="--upgrade"` to bump). |
+| `make audit` | Run `pip-audit` against the locked Python deps and `npm audit --audit-level=high` for the Worker; fails if either reports issues. |
+| `make lint-workflows` | Lint `.github/workflows` with actionlint and zizmor (offline). |
+| `make secrets-scan` | Scan the working tree for secrets with gitleaks (redacted output, config in `.gitleaks.toml`). |
+| `make scan-images` | Build the Python and Worker images, then scan them with trivy for fixable HIGH/CRITICAL vulnerabilities. |
+| `make sbom` | Build the images and write SPDX JSON SBOMs with syft to `dist/sbom/` (git-ignored). |
+| `make worker-smoke URL=...` | POST JSON-RPC `initialize` and `tools/list` to an MCP URL from the Worker container; fails unless both return HTTP 200 with a valid result. Set `MCP_SMOKE_BEARER_TOKEN` to send a bearer token. |
+| `make worker-rollback ARGS="..."` | Run `wrangler rollback` inside Docker (needs Cloudflare credentials in the environment). |
+| `make resolve-context` | Print resolved `SLEEPER_DEFAULT_*` env lines for `SLEEPER_DEFAULT_LEAGUE_URL` and `SLEEPER_DEFAULT_USER_REF` from the environment (used by the deploy workflow). |
 | `make local-up` | Prepare local Docker workflow dependencies by building Python images and installing Worker dependencies in Docker. |
 | `make local-down` | Stop Compose resources and remove orphans without deleting named volumes. |
 | `make docker-prune` | Prune stopped containers and dangling images. |
@@ -81,31 +90,82 @@ GitHub Actions runs these protected checks on pull requests and pushes to `main`
 
 `main` is protected with required checks, admin enforcement enabled, and force-pushes/deletions disabled.
 
+CI also runs a non-required `security` job that runs `make audit`,
+`make lint-workflows`, and `make secrets-scan`. Each step runs even if an
+earlier one fails, so one job shows all findings.
+
+## Supply Chain And Security Tooling
+
+- Python dependencies are locked in `python/uv.lock`. The image installs them
+  with `uv sync --locked`, so the build fails if `pyproject.toml` and the lock
+  drift apart. After editing dependencies, run `make lock` and commit the lock.
+- Base images in `infra/docker/Dockerfile` and `infra/cloudflare-worker/Dockerfile`,
+  and every tool image in `infra/docker/docker-compose.yml`, are pinned as
+  `image:tag@sha256:...`. Dependabot (`.github/dependabot.yml`) opens update PRs
+  for uv, npm, Dockerfiles, Compose images, and GitHub Actions.
+- The security tools are Compose services under the `security` profile (and
+  `uv` under the `tools` profile), so `make build`, `make local-down`, and
+  `docker compose up` ignore them. `scan-images` and `sbom` mount the Docker
+  socket read-only.
+- Report vulnerabilities as described in `SECURITY.md`.
+
 ## Cloudflare Deploy
 
-The deploy workflow runs after the `CI` workflow succeeds on `main`, or manually through `workflow_dispatch`.
+The deploy workflow (`.github/workflows/deploy-cloudflare.yml`) runs manually
+through `workflow_dispatch`, or after the `CI` workflow succeeds for a `push` to
+`main` in this repository. CI runs from forks or pull requests never deploy. It
+checks out the exact commit CI tested (`workflow_run.head_sha`).
 
-Required repository secrets:
+All deploy inputs live in the GitHub `production` environment (Settings ->
+Environments -> `production`), not in repository-level secrets.
 
-- `CLOUDFLARE_ACCOUNT_ID`
+`production` environment secrets:
+
 - `CLOUDFLARE_API_TOKEN`
+- `CLOUDFLARE_ACCOUNT_ID`
+- `MCP_SMOKE_BEARER_TOKEN` (optional; only needed once `/mcp` requires OAuth)
 
-Required GitHub `production` environment variables:
+`production` environment variables:
 
 - `CLOUDFLARE_D1_DATABASE_ID`
 - `SLEEPER_DEFAULT_LEAGUE_URL`
 - `SLEEPER_DEFAULT_USER_REF`
 
-The deploy workflow resolves those values into `SLEEPER_DEFAULT_LEAGUE_ID`,
-`SLEEPER_DEFAULT_ROSTER_ID`, and `SLEEPER_DEFAULT_OWNER_ID`, then passes them to
-`wrangler deploy --var`. It also writes `CLOUDFLARE_D1_DATABASE_ID` into the
-checked-out `wrangler.toml` on the Actions runner before deployment, so the
-repository can keep a placeholder database id.
+The deploy workflow resolves the Sleeper values through `make resolve-context`
+into `SLEEPER_DEFAULT_LEAGUE_ID`, `SLEEPER_DEFAULT_ROSTER_ID`, and
+`SLEEPER_DEFAULT_OWNER_ID`, then passes them to `wrangler deploy --var`. It
+also writes `CLOUDFLARE_D1_DATABASE_ID` into the checked-out `wrangler.toml` on
+the Actions runner before deployment, so the repository can keep a placeholder
+database id. The Cloudflare credentials are scoped to the deploy step only;
+dependency installation never sees them. After deploying, the workflow runs
+`make worker-smoke URL=https://sleeper-mcp.neilbhavsar.com/mcp`.
 
-Deploy locally through Docker:
+Owner checklist for a working Actions deploy:
+
+1. In the `production` environment, add secrets `CLOUDFLARE_API_TOKEN` and
+   `CLOUDFLARE_ACCOUNT_ID`.
+2. In the `production` environment, add variables `CLOUDFLARE_D1_DATABASE_ID`,
+   `SLEEPER_DEFAULT_LEAGUE_URL`, and `SLEEPER_DEFAULT_USER_REF`.
+3. Restrict `production` deployment branches to `main`, so a manual dispatch
+   from another branch cannot use the token.
+4. Remove stale repository-level copies of the Cloudflare secrets.
+5. Make sure the post-deploy smoke can reach `/mcp`. If Cloudflare Access
+   protects the hostname, an unauthenticated POST from Actions is redirected
+   and the smoke step fails. Exempt `/mcp` from Access, or add
+   `MCP_SMOKE_BEARER_TOKEN` once OAuth lands.
+
+`wrangler.toml` sets `workers_dev = false` and `preview_urls = false`, so the
+Worker is only reachable on the custom domain, and enables Workers
+observability logs.
+
+Deploy, smoke test, or roll back locally through Docker:
 
 ```bash
 make worker-deploy
+make worker-smoke URL=https://sleeper-mcp.neilbhavsar.com/mcp
+MCP_SMOKE_BEARER_TOKEN=<token> make worker-smoke URL=https://sleeper-mcp.neilbhavsar.com/mcp
+make worker-rollback
+make worker-rollback ARGS='<version-id> --message "reason" --yes'
 ```
 
 ## Adding Behavior

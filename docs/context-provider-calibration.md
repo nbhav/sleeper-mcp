@@ -6,8 +6,10 @@ validates its provenance, merges non-overlapping player/week fields, retains
 raw payloads separately, and reports provider, week, and player missingness.
 Provider failures are isolated so Sleeper-only operation remains usable.
 
-The deterministic harness is `python -m sleeper_tooling.context_backtest` and
-is runnable with `make context-backtest`. Its fixture rows are versioned in
+The deterministic harness is the `sleeper_tooling.context_backtest` module; run
+it inside Docker with `make context-backtest` (which wraps
+`docker compose -f infra/docker/docker-compose.yml run --rm --entrypoint /app/.venv/bin/python sleeper -m sleeper_tooling.context_backtest`).
+Its fixture rows are versioned in
 `DEFAULT_FIXTURES`; no network calls or credentials are involved.
 
 The current rules are deliberately simple and reproducible:

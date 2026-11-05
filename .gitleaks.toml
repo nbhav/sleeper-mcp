@@ -1,0 +1,17 @@
+# Gitleaks config for `make secrets-scan` (directory mode).
+# Extends the default rules and skips generated, ignored, or nested-worktree paths.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Generated and git-ignored paths"
+paths = [
+  '''(^|/)\.git/''',
+  '''(^|/)\.worktrees/''',
+  '''(^|/)node_modules/''',
+  '''(^|/)\.wrangler/''',
+  '''(^|/)data/''',
+  '''(^|/)dist/''',
+  '''(^|/)\.venv/''',
+  '''(^|/)\.dev\.vars$''',
+]

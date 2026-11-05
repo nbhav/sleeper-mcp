@@ -1,7 +1,10 @@
 COMPOSE := docker compose -f infra/docker/docker-compose.yml
+SECURITY_COMPOSE := $(COMPOSE) --profile security
+COMPOSE_PROJECT ?= $(or $(COMPOSE_PROJECT_NAME),sleeper-mcp)
+SCAN_IMAGES ?= $(COMPOSE_PROJECT)-sleeper $(COMPOSE_PROJECT)-cloudflare-worker
 WORKER_DEPLOY_ARGS ?=
 
-.PHONY: build test integration-test decision-smoke context-backtest shell sleeper sync-data sync-status mcp worker-build worker-install worker-typecheck worker-test worker-dev worker-deploy local-up local-down docker-prune teardown ci-teardown clean
+.PHONY: build test integration-test decision-smoke context-backtest shell sleeper sync-data sync-status mcp worker-build worker-install worker-typecheck worker-test worker-dev worker-deploy lock audit audit-python audit-worker lint-workflows secrets-scan scan-images sbom local-up local-down docker-prune teardown ci-teardown clean
 
 build:
 	$(COMPOSE) build sleeper sleeper-mcp
@@ -46,10 +49,47 @@ worker-test:
 	$(COMPOSE) run --rm cloudflare-worker run test
 
 worker-dev:
-	$(COMPOSE) run --rm --service-ports cloudflare-worker run dev
+	$(COMPOSE) run --rm --service-ports cloudflare-worker run dev -- --ip 0.0.0.0
 
 worker-deploy:
 	$(COMPOSE) run --rm cloudflare-worker run deploy $(if $(WORKER_DEPLOY_ARGS),-- $(WORKER_DEPLOY_ARGS),)
+
+lock:
+	$(COMPOSE) --profile tools run --rm uv lock $(ARGS)
+
+# audit runs both halves and fails if either one reports vulnerabilities.
+audit:
+	@status=0; \
+	$(MAKE) --no-print-directory audit-python || status=1; \
+	$(MAKE) --no-print-directory audit-worker || status=1; \
+	exit $$status
+
+audit-python:
+	$(SECURITY_COMPOSE) run --rm pip-audit
+
+audit-worker:
+	$(COMPOSE) run --rm cloudflare-worker audit --audit-level=high
+
+lint-workflows:
+	@status=0; \
+	$(SECURITY_COMPOSE) run --rm actionlint || status=1; \
+	$(SECURITY_COMPOSE) run --rm zizmor || status=1; \
+	exit $$status
+
+secrets-scan:
+	$(SECURITY_COMPOSE) run --rm gitleaks
+
+scan-images: build worker-build
+	@status=0; for image in $(SCAN_IMAGES); do \
+		$(SECURITY_COMPOSE) run --rm trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --table-mode detailed --exit-code 1 --no-progress $$image || status=1; \
+	done; exit $$status
+
+sbom: build worker-build
+	mkdir -p dist/sbom
+	for image in $(SCAN_IMAGES); do \
+		$(SECURITY_COMPOSE) run --rm syft scan docker:$$image --quiet --output spdx-json=/out/$$image.spdx.json || exit 1; \
+	done
+	@ls -1 dist/sbom
 
 local-up: build worker-build worker-install
 
@@ -71,3 +111,24 @@ clean:
 	$(COMPOSE) down -v
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	find . -name "*.pyc" -delete
+
+.PHONY: resolve-context worker-smoke worker-rollback
+
+# Print resolved Sleeper context as env lines on stdout. Reads
+# SLEEPER_DEFAULT_LEAGUE_URL and SLEEPER_DEFAULT_USER_REF from the environment.
+resolve-context:
+	@test -n "$$SLEEPER_DEFAULT_LEAGUE_URL" || { echo "SLEEPER_DEFAULT_LEAGUE_URL is required" >&2; exit 1; }
+	@test -n "$$SLEEPER_DEFAULT_USER_REF" || { echo "SLEEPER_DEFAULT_USER_REF is required" >&2; exit 1; }
+	@$(COMPOSE) run --rm -T sleeper configure-context "$$SLEEPER_DEFAULT_LEAGUE_URL" --user-ref "$$SLEEPER_DEFAULT_USER_REF" --output env
+
+# POST JSON-RPC initialize + tools/list to URL (the /mcp endpoint) and fail
+# unless both return HTTP 200 with a valid result. Set MCP_SMOKE_BEARER_TOKEN
+# in the environment to send `Authorization: Bearer <token>` (for OAuth).
+worker-smoke:
+	@test -n "$(URL)" || { echo "Usage: make worker-smoke URL=https://<host>/mcp" >&2; exit 1; }
+	$(COMPOSE) run --rm -T --no-deps -e MCP_SMOKE_BEARER_TOKEN -e WORKER_SMOKE_ATTEMPTS -e WORKER_SMOKE_DELAY_MS --entrypoint node cloudflare-worker scripts/worker-smoke.mjs "$(URL)"
+
+# Roll back to a previous Worker version. Pass wrangler flags via ARGS, e.g.
+# ARGS='<version-id> --message "reason"'. Needs CLOUDFLARE_API_TOKEN/ACCOUNT_ID.
+worker-rollback:
+	$(COMPOSE) run --rm -i cloudflare-worker exec -- wrangler rollback $(ARGS)

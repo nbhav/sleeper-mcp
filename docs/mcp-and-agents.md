@@ -362,4 +362,10 @@ Deploy requirements:
    `production` environment for Actions deploys.
 3. Set Worker vars for default league and roster context if desired.
 4. Protect the hostname with Cloudflare Access.
-5. Deploy with `make worker-deploy`.
+5. Deploy with `make worker-deploy`, then check it with
+   `make worker-smoke URL=https://sleeper-mcp.neilbhavsar.com/mcp`
+   (set `MCP_SMOKE_BEARER_TOKEN` once `/mcp` requires OAuth). Roll back with
+   `make worker-rollback`.
+
+GitHub Actions deploys read Cloudflare credentials from `production`
+environment secrets; see `docs/development.md` for the owner checklist.
